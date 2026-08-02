@@ -28,9 +28,12 @@ class TestOutcome:
         statistic: The test statistic.
         p_value: The (raw, pre-FDR) p-value; NaN if the test was undefined
             (e.g. degenerate samples).
-        effect_size: Standardized effect (Cohen's d for location tests,
+        effect_size: Standardized effect on the scale the test is gated on:
+            the KS statistic D for KS (a sup-norm CDF distance — the honest
+            effect for a test that detects any distributional change),
+            Cohen's d for the location corroboration tests (AD, Welch),
             percentage-point shift/100 for rates, variance ratio for Levene,
-            relative P95 shift for the bootstrap test).
+            relative P95 shift for the permutation test.
         effect_raw: Effect in original units (mean/rate/P95 difference,
             current minus reference).
         n_ref: Reference-window sample size.
@@ -63,12 +66,20 @@ def _degenerate(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> b
 def ks_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestOutcome:
     """Two-sample Kolmogorov-Smirnov test.
 
+    The reported effect is the KS statistic D itself, matching the scale the
+    materiality gate uses. KS detects ANY distributional change, so reporting
+    Cohen's d as its effect would make a genuine shape-change alert (equal
+    means, d ~ 0) look immaterial — the exact case the D gate exists to
+    catch. Cohen's d for the same comparison appears on the Welch
+    corroboration row.
+
     Args:
         ref: Reference-window values.
         cur: Current-window values.
 
     Returns:
-        Outcome with Cohen's d and the raw mean shift as effects.
+        Outcome with D as the effect and the raw mean shift in original
+        units.
     """
     if _degenerate(ref, cur):
         return TestOutcome("ks", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
@@ -77,7 +88,7 @@ def ks_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestO
         test="ks",
         statistic=float(res.statistic),
         p_value=float(res.pvalue),
-        effect_size=_cohens_d(ref, cur),
+        effect_size=float(res.statistic),
         effect_raw=float(np.mean(cur) - np.mean(ref)),
         n_ref=len(ref),
         n_cur=len(cur),

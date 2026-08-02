@@ -117,6 +117,7 @@ class TestMaterialityGate:
                 format_validity_pp=100.0,
                 rate_default_pp=100.0,
                 scalar_cohen_d=99.0,
+                ks_distance=1.01,  # D is bounded by 1: unattainable
                 variance_ratio=99.0,
                 p95_relative=99.0,
             ),

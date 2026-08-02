@@ -131,7 +131,7 @@ def _light_config() -> ProjectConfig:
 @pytest.mark.calibration
 class TestPipelineNullCalibration:
     def test_pipeline_alert_rate_bounded_over_500_null_runs(self, tmp_path: Path) -> None:
-        """The headline claim, measured properly.
+        """The headline claim, measured properly — at a STATED scale.
 
         500 seeded stable-agent runs through the full pipeline (structural
         signatures; embeddings excluded for runtime). The per-check
@@ -140,11 +140,23 @@ class TestPipelineNullCalibration:
         a pass/fail on 20 runs, which would pass 39% of the time even if the
         true alert rate were 10%.
 
-        The observed count and bound are reported in the assertion message.
+        Scale caveat (stated in docs/statistics.md): these runs use
+        12 canaries x 5 reps, not the 18 x 7 default, for runtime. Under a
+        calibrated null the alert rate is approximately scale-free, but the
+        materiality gates interact with N, so the bound is claimed AT THIS
+        SCALE and the docs say so.
+
+        This test also MEASURES the uncalibrated flag channel (PSI +
+        Page-Hinkley) on the same null runs. Flags carry no FDR control —
+        a stable agent will show flags on a nontrivial fraction of checks —
+        and the docs publish this measured rate as a known limitation
+        rather than pretending flags are alerts. The loose ceiling below
+        only guards against regression to near-certain flagging.
         """
         n_runs = 500
         cfg = _light_config()
         alerting_runs = 0
+        flagging_runs = 0
         for seed in range(n_runs):
             root = tmp_path / f"run{seed}"
             root.mkdir()
@@ -154,12 +166,25 @@ class TestPipelineNullCalibration:
                 store.append_many(records)
                 cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
                 set_golden_baseline(store, cycles[:3])
-                if run_check(store, config=cfg).n_alerts > 0:
+                result = run_check(store, config=cfg)
+                if result.n_alerts > 0:
                     alerting_runs += 1
+                if result.flags:
+                    flagging_runs += 1
         bound = wilson_upper(alerting_runs, n_runs)
+        flag_rate = flagging_runs / n_runs
+        print(
+            f"\npipeline null (12 canaries x 5 reps, 500 runs): "
+            f"alerts {alerting_runs}/{n_runs} (Wilson upper {bound:.4f}), "
+            f"any-flag rate {flag_rate:.3f}"
+        )
         assert bound < 0.05, (
             f"pipeline null alert rate: {alerting_runs}/{n_runs} runs alerted "
             f"(Wilson 95% upper bound {bound:.4f} >= 0.05)"
+        )
+        assert flag_rate < 0.9, (
+            f"uncalibrated flag channel fired on {flag_rate:.0%} of stable runs — "
+            "regression beyond the documented limitation"
         )
 
 
@@ -216,7 +241,9 @@ class TestPower:
     def test_ks_gate_passes_shape_change_with_equal_means(self) -> None:
         """The review's core case: a variance-only change (equal means) must
         be significant AND material under the KS-D gate — Cohen's d would
-        have wrongly gated it out."""
+        have wrongly gated it out. The gate value is read from config, not
+        hardcoded, so a default change cannot silently break this test."""
+        gate = Materiality().ks_distance
         rng = np.random.default_rng(789)
         material_hits = 0
         n_sims = 100
@@ -224,10 +251,48 @@ class TestPower:
             ref = rng.normal(0, 1, N)
             cur = rng.normal(0, 2.2, N)  # equal means, very different shape
             out = ks_test(ref, cur)
-            if out.p_value < 0.01 and out.statistic >= 0.15:
+            if out.p_value < 0.01 and out.effect_size >= gate:
                 material_hits += 1
-            assert abs(out.effect_size) < 0.6  # d stays small: the old gate's blind spot
+            # KS now reports D as its effect — identical to the gated scale.
+            assert out.effect_size == out.statistic
+            # Cohen's d (the Welch corroboration diagnostic) stays small:
+            # the old gate's blind spot, kept as a regression witness.
+            assert abs(welch_t_test(ref, cur).effect_size) < 0.6
         assert material_hits / n_sims >= 0.85
+
+    def test_ks_gate_binding_scale_is_as_documented(self) -> None:
+        """The configured ks_distance must bind exactly where the docs say.
+
+        The raw-alpha=0.05 two-sample critical value is
+        D_crit ~ c(0.05) * sqrt((n+m)/(n*m)) with c(0.05) ~ 1.358. The docs
+        state that at per-family scale (e.g. 21 current vs 105 pooled
+        reference) D_crit exceeds the default gate — so significance, not
+        the gate, is the operative filter there — and that the gate starts
+        binding for equal arms only at n >~ 2*(c/gate)^2 (~165 at 0.15).
+        This test recomputes both claims from the configured value, so a
+        config change that silently makes the gate decorative-everywhere or
+        binding-nowhere fails loudly.
+        """
+        gate = Materiality().ks_distance
+        c05 = 1.358
+
+        def d_crit(n: int, m: int) -> float:
+            return c05 * np.sqrt((n + m) / (n * m))
+
+        # Documented default family scale: 3 canaries x 7 reps = 21 per
+        # cycle; rolling reference pools 5 cycles. BH only raises this bar.
+        assert d_crit(105, 21) > gate, (
+            f"gate {gate} would bind at family scale (D_crit {d_crit(105, 21):.3f}); "
+            "docs claim significance dominates there — update docs or gate"
+        )
+        # Equal-arm binding threshold: gate must bind at realistic large n
+        # (i.e. it is a real guard, not decoration at every feasible scale).
+        n_bind = int(np.ceil(2 * (c05 / gate) ** 2))
+        assert d_crit(n_bind, n_bind) <= gate
+        assert n_bind <= 500, (
+            f"gate {gate} only binds beyond n={n_bind} per arm — decorative "
+            "at any feasible canary scale; lower it or re-document"
+        )
 
     def test_rate_power_documented_floor(self) -> None:
         """Two-proportion z power for a 10pp refusal shift (5% -> 15%) at

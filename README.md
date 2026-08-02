@@ -12,7 +12,8 @@ dedrift's differentiation is statistical correctness:
 
 - Every p-valued detector's false-alarm rate is *measured* by simulation tests in CI
   against stated acceptance bands — and the full pipeline's null alert rate is bounded
-  (Wilson 95% upper bound < 5%) over 500 seeded stable-agent runs.
+  (Wilson 95% upper bound < 5%) over 500 seeded stable-agent runs at a stated scale
+  (12 canaries × 5 repetitions; see [the statistics page](https://dedrift.ai/statistics/)).
 - All alerting passes through FDR control (Benjamini–Hochberg) over one primary test per
   channel; redundant tests run as corroboration outside the pool. No raw per-test
   p-values dressed up as alerts.
@@ -27,9 +28,10 @@ Pre-alpha, under active development. Working today: logging schema + store, cana
 (N repetitions per cycle), Tier-1 structural signatures, Tier-2 semantic signatures
 (pinned embedder, semantic displacement, MMD-RBF with a seeded permutation null and an
 auto-calibrated materiality floor), the full detector battery
-(KS/AD/Welch/Levene/bootstrap-P95/two-proportion z, PSI, Page–Hinkley) with BH-FDR and
-materiality gating, dual baselines, config-change attribution, and deterministic markdown
-reports — all with calibration and power tests enforced in CI.
+(KS/Levene/permutation-P95/two-proportion z/MMD as primaries; AD and Welch as
+corroboration; PSI and Page–Hinkley as labeled diagnostics) with BH-FDR over primaries
+and materiality gating, dual baselines, config-change attribution, and deterministic
+markdown reports — all with calibration and power tests enforced in CI.
 
 ## Install
 

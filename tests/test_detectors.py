@@ -26,7 +26,10 @@ class TestScalarTests:
         cur = RNG.normal(2, 1, 200)
         out = ks_test(ref, cur)
         assert out.p_value < 1e-6
-        assert out.effect_size == pytest.approx(2.0, abs=0.4)
+        # KS reports D as its effect (same scale the gate uses); for a 2-SD
+        # mean shift of normals, population D = 2*Phi(1) - 1 ~ 0.68.
+        assert out.effect_size == out.statistic
+        assert out.effect_size == pytest.approx(0.68, abs=0.1)
         assert out.effect_raw == pytest.approx(2.0, abs=0.4)
 
     def test_ks_null_not_tiny(self) -> None:
@@ -146,6 +149,17 @@ class TestPSI:
         res = psi(golden, current)
         assert res.label == "major"
         assert res.value > 0.25
+
+    def test_null_expectation_dominates_at_canary_scale(self) -> None:
+        """The domain-of-validity guard's arithmetic: at canary scale PSI's
+        null expectation alone exceeds 'major'; at production scale it is
+        negligible. The check pipeline refuses to emit PSI in the former."""
+        from dedrift.detectors import psi_null_expectation
+        from dedrift.detectors.heuristic import PSI_MAJOR, PSI_MODERATE
+
+        assert psi_null_expectation(30, 10) > PSI_MAJOR  # ~1.2: guaranteed flag
+        assert psi_null_expectation(5000, 2000) < PSI_MODERATE / 2
+        assert psi_null_expectation(0, 10) == float("inf")
 
     def test_bins_frozen_from_golden_are_reusable(self) -> None:
         golden = RNG.normal(0, 1, 1000)

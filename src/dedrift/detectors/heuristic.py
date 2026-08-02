@@ -17,6 +17,31 @@ PSI_MODERATE = 0.1
 PSI_MAJOR = 0.25
 
 
+def psi_null_expectation(n_ref: int, n_cur: int, n_bins: int = 10) -> float:
+    """Approximate E[PSI] under the null, from finite-sample noise alone.
+
+    PSI between two samples of the SAME distribution is not zero: to first
+    order it behaves like a scaled chi-square with
+    ``E[PSI] ~ (B - 1) * (1/n_ref + 1/n_cur)``. At canary scale (tens of
+    records per window) this expectation alone can exceed the 0.1 / 0.25
+    folk thresholds — e.g. B=10, n_ref=30, n_cur=10 gives ~1.2, guaranteed
+    "major" on unchanged data. PSI is a large-sample production-traffic
+    index; the check pipeline uses this function to refuse to emit PSI
+    flags where the index is dominated by its own sampling noise.
+
+    Args:
+        n_ref: Reference-window sample size.
+        n_cur: Current-window sample size.
+        n_bins: Number of bins used.
+
+    Returns:
+        The first-order null expectation of PSI.
+    """
+    if n_ref <= 0 or n_cur <= 0:
+        return float("inf")
+    return (n_bins - 1) * (1.0 / n_ref + 1.0 / n_cur)
+
+
 @dataclass(frozen=True)
 class PsiResult:
     """PSI of a current window against golden-baseline bins.

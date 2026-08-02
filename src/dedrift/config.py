@@ -31,6 +31,13 @@ class Materiality:
             [0, 1]) for KS alerts. KS detects any distributional change, so
             gating it on Cohen's d would wrongly discard shape changes with
             equal means; D is the honest effect measure for this channel.
+            Binding scale (stated, not hidden): the raw-alpha=0.05 critical
+            value is D_crit ~ 1.36*sqrt((n+m)/(n*m)), so for equal arms the
+            0.15 default lies below D_crit until n >~ 165 per arm — and BH
+            adjustment only raises the bar. At typical per-family scale
+            (tens of samples per window) significance is the stricter
+            filter and this gate cannot be the one that fires; it exists to
+            stop trivially significant D at large n from alerting.
         variance_ratio: Minimum variance ratio (or its inverse) for
             dispersion alerts; 1.5 means var must grow or shrink by 50%.
         p95_relative: Minimum relative P95 shift.

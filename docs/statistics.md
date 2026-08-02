@@ -12,13 +12,13 @@ distinct questions rather than three answers to the same one.
 
 | Channel | Primary test | Materiality gate | Corroboration |
 |---|---|---|---|
-| Location / shape | Two-sample Kolmogorov–Smirnov | KS statistic D ≥ 0.15 (sup-norm CDF distance — catches shape changes with equal means, where Cohen's d ≈ 0) | Anderson–Darling, Welch's t (raw p shown, never alert) |
+| Location / shape | Two-sample Kolmogorov–Smirnov | KS statistic D ≥ 0.15 (sup-norm CDF distance — catches shape changes with equal means, where Cohen's d ≈ 0). **D is also the reported effect** for this channel, so what gates is what you read; Cohen's d appears on the Welch corroboration row as a location diagnostic | Anderson–Darling, Welch's t (raw p shown, never alert) |
 | Dispersion | Levene (median-centered) | Variance ratio ≥ 1.5× either way | — |
 | Tail | P95 permutation test (pooled labels, seeded, add-one p) | Relative P95 shift ≥ 10% | — |
 | Rates | Two-proportion z, continuity-corrected | Percentage-point thresholds (refusal ≥ 2 pp, …) | — |
 | Semantic | MMD² (RBF), seeded permutation null ≥ 500 perms, **pooled** median-heuristic bandwidth (permutation-invariant, so the p-value is exact-level) | Auto-calibrated MMD² floor, same bandwidth as the observation | — |
 | Sequential per-cycle means | Page–Hinkley | Flag + onset localizer, not a p-value | — |
-| Industry heuristic | PSI, 10 bins frozen from golden | Labeled heuristic (0.1 / 0.25); **never** a test | — |
+| Industry heuristic | PSI, 10 bins frozen from golden | Labeled heuristic (0.1 / 0.25); **never** a test; emitted only above its validity scale (see fine print) | — |
 
 ## The gating pipeline — order matters
 
@@ -28,7 +28,11 @@ distinct questions rather than three answers to the same one.
 2. **Benjamini–Hochberg FDR at q = 0.05** across the primary tests in the
    check — one multiplicity family spanning both baselines.
 3. Survivors pass a **materiality gate** (per-channel thresholds in the
-   table above) — all configurable.
+   table above) — all configurable. Corroboration tests carry no
+   materiality verdict at all: the gates are defined on the primary effect
+   scales, and e.g. the Anderson–Darling statistic is not commensurable
+   with a sup-norm distance, so labeling it "material" would be
+   meaningless.
 4. Only primary tests passing **both** gates become alerts. Everything else
    appears in the report as "significant, below materiality", "not
    significant", or "corroboration".
@@ -50,6 +54,10 @@ runs (on every commit and inside the release pipeline):
   Wilson 95% upper bound below 0.05. (A pass/fail over 20 runs — the
   original spec — would pass 39% of the time even with a true 10% alert
   rate; 500 runs with a reported bound is the honest version of the claim.)
+  Scale caveat: these runs use 12 canaries × 5 repetitions, not the 18 × 7
+  default, for CI runtime. Under a calibrated null the alert rate is
+  approximately scale-free, but the materiality gates interact with N — so
+  the bound is established, and claimed, at that stated scale.
 - **Power checks** — injected shifts (mean, variance, distribution swap,
   equal-mean shape change, scripted model swap) must be detected at
   documented rates, with correct config attribution.
@@ -79,6 +87,32 @@ family or raise N.
   across windows and the two-sample tests apply. Power against shifts
   confined to a few canaries is correspondingly lower than for family-wide
   shifts.
+- **Where the KS gate binds.** The two-sample critical value at raw
+  α = 0.05 is D_crit ≈ 1.36·√((n+m)/(n·m)). For equal arms the default
+  gate (D ≥ 0.15) sits below D_crit until n ≳ 165 per arm — and BH only
+  raises the bar. At typical per-family scale (say 21 current vs 105
+  pooled reference, D_crit ≈ 0.32) significance is therefore the stricter
+  filter, and the KS gate cannot be the one that fires; its job is to stop
+  trivially significant D from alerting at large n. A config-aware test
+  recomputes both claims from the shipped default, so a threshold change
+  that breaks this description fails CI.
+- **The flag channel (Page–Hinkley, PSI) is uncalibrated and carries no
+  multiplicity control — treat flags as diagnostics, never as alerts.**
+  PH runs on every (family, signature) stream (~48 at default scale), so
+  per-stream rates compound: measured on the same 500 null runs as the
+  headline bound, **56% of stable checks showed at least one flag**. That
+  number is printed here deliberately — flags never alert, they exist to
+  localize onsets for attribution, and the report labels them as such.
+  Cross-stream correction for the flag channel is on the roadmap.
+- **PSI is refused where it cannot mean anything.** PSI between two finite
+  samples of the *same* distribution is not zero — to first order
+  E[PSI] ≈ (B−1)·(1/n_ref + 1/n_cur), which at canary scale (10 bins,
+  tens of records) exceeds the 0.25 "major" folk threshold from sampling
+  noise alone; before this guard, PSI flagged **100% of stable checks**.
+  The pipeline therefore emits PSI only when its null expectation is below
+  half the "moderate" threshold (roughly n ≳ 360 equal-arm samples). PSI
+  remains what it always was — a large-sample production-traffic index —
+  and simply does not pretend to work below its domain of validity.
 - **Anderson–Darling and Welch are corroboration, not evidence.** They test
   the same location/shape hypothesis as KS on the same data; admitting them
   to the FDR pool would roughly double m — halving every BH threshold — for

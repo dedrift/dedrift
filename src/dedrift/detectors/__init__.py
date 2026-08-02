@@ -9,7 +9,7 @@ as alerts.
 """
 
 from dedrift.detectors.fdr import benjamini_hochberg
-from dedrift.detectors.heuristic import psi
+from dedrift.detectors.heuristic import psi, psi_null_expectation
 from dedrift.detectors.mmd import calibrate_mmd_floor, mmd_rbf_test
 from dedrift.detectors.scalar import (
     TestOutcome,
@@ -34,6 +34,7 @@ __all__ = [
     "p95_permutation_test",
     "page_hinkley",
     "psi",
+    "psi_null_expectation",
     "two_proportion_z_test",
     "welch_t_test",
 ]

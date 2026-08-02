@@ -48,9 +48,11 @@ from dedrift.detectors import (
     p95_permutation_test,
     page_hinkley,
     psi,
+    psi_null_expectation,
     two_proportion_z_test,
     welch_t_test,
 )
+from dedrift.detectors.heuristic import PSI_MODERATE
 from dedrift.embeddings import embed_records, get_pinned_embedder
 from dedrift.schema import InteractionRecord
 from dedrift.signatures import signatures_frame
@@ -78,7 +80,10 @@ class TestRecord:
         p_adjusted: BH-adjusted p-value (NaN if the raw p was NaN or the
             test is corroboration-only).
         significant: True if BH rejected at q (primaries only).
-        material: True if the effect exceeds the materiality gate.
+        material: True if the effect exceeds the materiality gate; None for
+            corroboration tests — materiality gates are defined on primary
+            effect scales only (the AD statistic, for instance, is not a
+            sup-norm distance and has no meaningful threshold here).
         alert: significant AND material (primaries only).
     """
 
@@ -89,7 +94,7 @@ class TestRecord:
     primary: bool = True
     p_adjusted: float = float("nan")
     significant: bool = False
-    material: bool = False
+    material: bool | None = False
     alert: bool = False
 
 
@@ -203,10 +208,16 @@ def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
         return bool(r >= m.variance_ratio or (r > 0 and r <= 1 / m.variance_ratio))
     if test.test == "p95_perm":
         return bool(abs(test.effect_size) >= m.p95_relative)
-    if test.test in ("ks", "ad"):
+    if test.test == "ks":
         # KS detects ANY distributional change; a shape shift with equal
         # means has Cohen's d ~ 0 and is still real drift. Gate on the KS
-        # statistic D (sup-norm CDF distance); d stays a reported diagnostic.
+        # statistic D (sup-norm CDF distance), which is also the reported
+        # effect for this channel. NOTE on binding scale: the raw-alpha=0.05
+        # critical D is ~1.36*sqrt((n+m)/(n*m)), which for equal arms drops
+        # below the 0.15 default only at n >~ 165 per arm — below that (and
+        # always after BH tightening) significance is the stricter filter
+        # and this gate is a large-n guard against trivially significant D,
+        # not the operative filter. Documented in docs/statistics.md.
         return bool(test.statistic >= m.ks_distance)
     return bool(abs(test.effect_size) >= m.scalar_cohen_d)
 
@@ -425,12 +436,20 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
         adjusted[i] = adjusted_p[pos]
 
     # Gates 3-4: materiality, then alert = primary AND significant AND material.
+    # Corroboration tests carry material=None: the gates are defined on the
+    # primary effect scales, and e.g. the AD statistic is not commensurable
+    # with a sup-norm CDF distance.
     gated: list[TestRecord] = []
     for t, rej, adj in zip(tests, rejected, adjusted, strict=True):
-        if t.outcome.test == "mmd":
-            material = t.outcome.effect_size >= mmd_floors.get((t.baseline, t.family), 0.0)
+        material: bool | None
+        if not t.primary:
+            material = None
+        elif t.outcome.test == "mmd":
+            material = bool(t.outcome.effect_size >= mmd_floors.get((t.baseline, t.family), 0.0))
         elif t.signature in RATE_SIGNATURES:
-            material = abs(t.outcome.effect_raw) >= cfg.materiality.rate_threshold(t.signature)
+            material = bool(
+                abs(t.outcome.effect_raw) >= cfg.materiality.rate_threshold(t.signature)
+            )
         else:
             material = _material_scalar(t.outcome, cfg)
         gated.append(
@@ -456,9 +475,28 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             if g_fam.empty or c_fam.empty:
                 continue
             for sig in SCALAR_SIGNATURES:
-                res = psi(g_fam[sig].to_numpy(dtype=float), c_fam[sig].to_numpy(dtype=float))
+                g_vals = g_fam[sig].to_numpy(dtype=float)
+                c_vals = c_fam[sig].to_numpy(dtype=float)
+                # Domain-of-validity guard: PSI's null expectation is
+                # ~(B-1)*(1/n_ref + 1/n_cur); at canary scale this alone can
+                # exceed the folk thresholds (measured: PSI flagged 100% of
+                # stable runs before this guard). Emit PSI only where
+                # sampling noise cannot produce a "moderate" label by
+                # itself; it remains available for production-scale windows.
+                if psi_null_expectation(len(g_vals), len(c_vals)) > PSI_MODERATE / 2:
+                    continue
+                res = psi(g_vals, c_vals)
                 if res.label != "stable":
-                    flags.append(FlagRecord("psi", family, sig, res.value, res.label, None, True))
+                    # PSI's 0.1/0.25 thresholds are folk conventions, not a
+                    # materiality judgment; borrow the gated battery's
+                    # materiality for this (family, signature) instead of
+                    # hardcoding True.
+                    psi_material = any(
+                        bool(g.material) for g in gated if g.family == family and g.signature == sig
+                    )
+                    flags.append(
+                        FlagRecord("psi", family, sig, res.value, res.label, None, psi_material)
+                    )
     for family in families:
         fam_frame = frame[frame["family"] == family]
         for sig in SCALAR_SIGNATURES:
@@ -518,6 +556,14 @@ def _persist(store: Store, result: CheckResult) -> None:
         ),
     )
     check_id = cursor.lastrowid
+    # Effect units match the scale each test is gated AND reported on.
+    effect_units = {
+        "ks": "ks_D",
+        "levene": "variance_ratio",
+        "p95_perm": "relative_p95_shift",
+        "two_proportion_z": "rate_diff",
+        "mmd": "mmd2",
+    }
     for t in result.alerts():
         conn.execute(
             "INSERT INTO alerts (check_id, signature, family, test, p_adjusted,"
@@ -529,7 +575,7 @@ def _persist(store: Store, result: CheckResult) -> None:
                 t.outcome.test,
                 t.p_adjusted,
                 t.outcome.effect_size,
-                "cohen_d" if t.signature in SCALAR_SIGNATURES else "rate_diff",
+                effect_units.get(t.outcome.test, "cohen_d"),
                 json.dumps(
                     {
                         "baseline": t.baseline,

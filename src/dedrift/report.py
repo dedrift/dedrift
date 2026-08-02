@@ -65,9 +65,10 @@ No alerts, so no attribution performed.
 {% for f in r.flags -%}
 | {{ f.kind }} | {{ f.family }} | {{ f.signature }} | {{ '%.4g' | format(f.value) }} | {{ f.label }} | {{ f.change_cycle_id or '—' }} |
 {% endfor %}
-PSI is a heuristic index (0.1 / 0.25 conventional thresholds), not a p-value.
-Page-Hinkley alarms are sequential flags feeding attribution; they alert only
-through the same materiality gating as batch tests.
+Flags are uncalibrated diagnostics with NO multiplicity control — a stable
+agent will show occasional flags, and they never alert. PSI is a heuristic
+index (0.1 / 0.25 conventional thresholds), not a p-value. Page-Hinkley
+alarms localize drift onsets for attribution.
 {% else %}
 None.
 {% endif %}
@@ -116,6 +117,12 @@ def _effect_str(t: object) -> str:
         return f"var ratio {o.effect_size:.2f}"
     if o.test == "p95_perm":
         return f"P95 {o.effect_raw:+.4g} ({o.effect_size * 100:+.1f}%)"
+    if o.test == "ks":
+        # D is the gated effect; the mean shift is context. Cohen's d for the
+        # same comparison appears on the Welch corroboration row.
+        return f"D={o.effect_size:.2f} (Δmean {o.effect_raw:+.4g})"
+    if o.test == "mmd":
+        return f"MMD²={o.effect_size:.4g}"
     return f"d={o.effect_size:+.2f} (raw {o.effect_raw:+.4g})"
 
 
