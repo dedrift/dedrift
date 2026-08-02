@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-try:
+import sys
+
+if sys.version_info >= (3, 11):  # noqa: UP036 - fallback kept for 3.10 dev sandboxes
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 dev sandboxes only
-    import tomli as tomllib  # type: ignore[no-redef]
+else:  # pragma: no cover
+    import tomli as tomllib
 
 from dataclasses import dataclass, field
 from pathlib import Path
