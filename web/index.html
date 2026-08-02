@@ -357,22 +357,22 @@ footer{margin-top:96px;border-top:1px solid var(--line);padding:44px 0 56px}
 </section>
 
 <section class="wrap">
-  <div class="kicker">Who's behind dedrift</div>
-  <h2>Where serious statistics meets production AI</h2>
-  <div class="founder rv" style="margin-top:34px">
-    <p>dedrift was founded by a <b>PhD in Statistics from the University of Melbourne</b> —
-    doctoral research in Bayesian inference at genomic scale — who works as a
-    <b>Head of Data &amp; AI</b>, leading teams of data engineers, analysts, and scientists
-    shipping production ML and AI systems. dedrift is the monitoring tool that experience
-    kept demanding and the market never supplied: one whose p-values mean exactly what
-    they say.</p>
-    <p>The product bet is <b>statistical correctness</b> — multiplicity always controlled,
-    every alert gated on both significance and a material effect, every claim shipped with
-    the simulation that proves it. And because overclaiming is just drift of another kind,
-    the docs state plainly what dedrift <b>can't</b> detect.</p>
-    <p style="margin-top:18px"><a href="https://www.linkedin.com/in/alimahmoudi29/">LinkedIn ↗</a>
-    &nbsp;·&nbsp; <a href="/docs/statistics/">Audit the statistics</a></p>
+  <div class="kicker">Principles</div>
+  <h2>The bar we hold ourselves to</h2>
+  <div class="cards3" style="margin-top:34px">
+    <div class="card rv"><span class="ic">calibration ∈ CI</span><h3>No unmeasured claims</h3>
+      <p>If a number carries a p-value, the simulation proving its false-alarm rate runs on
+      every commit. A release that fails its own audit doesn't ship.</p></div>
+    <div class="card rv"><span class="ic">significant ∧ material</span><h3>Alerts must earn it twice</h3>
+      <p>FDR-controlled significance <em>and</em> an effect worth acting on. Statistically
+      real but practically trivial doesn't page you — alert fatigue kills monitoring.</p></div>
+    <div class="card rv"><span class="ic">power(2pp) ≈ 0.11</span><h3>We publish what we can't detect</h3>
+      <p>Small suites have limited power, and the docs show that math instead of hiding it.
+      Overclaiming is just drift of another kind.</p></div>
   </div>
+  <p style="text-align:center;margin-top:26px;color:var(--dim);font-size:.92rem">
+    Don't take our word for any of it — <a href="/docs/statistics/">audit the statistics</a>.
+  </p>
 </section>
 
 <footer>
