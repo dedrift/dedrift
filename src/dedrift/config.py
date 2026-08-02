@@ -30,6 +30,10 @@ class Materiality:
         variance_ratio: Minimum variance ratio (or its inverse) for
             dispersion alerts; 1.5 means var must grow or shrink by 50%.
         p95_relative: Minimum relative P95 shift.
+        embedding_mmd2_floor: MMD^2 materiality floor. Negative (default)
+            means auto-calibrate from reference-cycle pairs at check time
+            (95th percentile of the known-same-distribution MMD^2 null);
+            zero disables the floor; positive values are used as-is.
     """
 
     refusal_rate_pp: float = 2.0
@@ -38,6 +42,7 @@ class Materiality:
     scalar_cohen_d: float = 0.5
     variance_ratio: float = 1.5
     p95_relative: float = 0.10
+    embedding_mmd2_floor: float = -1.0
 
     def rate_threshold(self, signature: str) -> float:
         """Return the pp threshold for a rate signature (in [0,1] units)."""
@@ -104,6 +109,7 @@ class ProjectConfig:
             scalar_cohen_d=float(materiality_raw.get("scalar_cohen_d", 0.5)),
             variance_ratio=float(materiality_raw.get("variance_ratio", 1.5)),
             p95_relative=float(materiality_raw.get("p95_relative", 0.10)),
+            embedding_mmd2_floor=float(materiality_raw.get("embedding_mmd2_floor", -1.0)),
         )
         return cls(
             name=str(project.get("name", "default")),

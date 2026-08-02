@@ -1,0 +1,46 @@
+name: Release
+
+# Publishes to PyPI via Trusted Publishing (OIDC) when a version tag is pushed.
+# PyPI-side setup: project dedrift -> Publishing -> GitHub publisher with
+# owner "dedrift", repository "dedrift", workflow "release.yml", environment "pypi".
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: pip install build
+      - name: Run the full test suite first
+        run: |
+          pip install -e ".[dev]"
+          ruff check .
+          mypy
+          pytest -q
+      - name: Build distributions
+        run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

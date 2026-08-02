@@ -25,6 +25,43 @@ canary_app = typer.Typer(help="Canary suite operations.", no_args_is_help=True)
 app.add_typer(canary_app, name="canary")
 baseline_app = typer.Typer(help="Golden baseline management.", no_args_is_help=True)
 app.add_typer(baseline_app, name="baseline")
+embedder_app = typer.Typer(help="Pinned-embedder management.", no_args_is_help=True)
+app.add_typer(embedder_app, name="embedder")
+
+
+@embedder_app.command("pin")
+def embedder_pin(
+    name: Annotated[
+        str, typer.Argument(help="Embedder id: 'hash' or 'st:<sentence-transformers model>'.")
+    ],
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Pin the project's embedder FOREVER (enables Tier-2 semantic signatures)."""
+    from dedrift.embeddings import EmbedderMismatchError, pin_embedder, resolve_embedder
+
+    store = Store(path)
+    if not store.exists():
+        typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        resolve_embedder(name)  # validate before pinning
+        pin_embedder(store, name)
+    except (EmbedderMismatchError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Embedder pinned: {name}. Changing it later invalidates all history.")
+
+
+@embedder_app.command("show")
+def embedder_show(
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Show the pinned embedder."""
+    from dedrift.embeddings import get_pinned_embedder
+
+    store = Store(path)
+    pinned = get_pinned_embedder(store)
+    typer.echo(pinned or "No embedder pinned (Tier-2 semantic signatures disabled).")
 
 
 @app.command()

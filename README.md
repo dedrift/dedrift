@@ -20,11 +20,12 @@ dedrift's differentiation is statistical correctness:
 ## Status
 
 Pre-alpha, under active development. Working today: logging schema + store, canary runner
-(N repetitions per cycle), Tier-1 structural signatures, the full detector battery
+(N repetitions per cycle), Tier-1 structural signatures, Tier-2 semantic signatures
+(pinned embedder, semantic displacement, MMD-RBF with a seeded permutation null and an
+auto-calibrated materiality floor), the full detector battery
 (KS/AD/Welch/Levene/bootstrap-P95/two-proportion z, PSI, Page–Hinkley) with BH-FDR and
 materiality gating, dual baselines, config-change attribution, and deterministic markdown
-reports — all with calibration and power tests enforced in CI. Coming for v0.1.0:
-embedding signatures (MMD), the 10-minute README demo, and a PyPI release.
+reports — all with calibration and power tests enforced in CI.
 
 ## Install
 
@@ -36,16 +37,48 @@ pip install "dedrift[judge]"       # + LLM-judge tier
 
 For development: `pip install -e ".[dev]"`.
 
-## Quickstart (target v0 walkthrough)
+## Quickstart — a full simulated drift incident in five commands
+
+No API keys needed: `dedrift sim` ships a seeded synthetic agent whose "model
+version" is swapped mid-history, shifting output length, refusal rate, and
+format validity — the classic silent degradation.
 
 ```bash
-dedrift init                 # create a project
-# ... log agent interactions, run canaries ...
-dedrift check                # drift detection with FDR + materiality gating
-dedrift report               # deterministic markdown report with attribution
+pip install dedrift
+mkdir drift-demo && cd drift-demo
+
+dedrift init                                   # create the project
+dedrift embedder pin hash                      # optional: enable Tier-2 semantic signatures
+dedrift sim --cycles 8 --change-cycle 7        # 8 canary cycles; model swap at cycle 7
+dedrift baseline set cycle-0000 cycle-0001 cycle-0002   # freeze known-good cycles
+dedrift check                                  # exits 2: DRIFT DETECTED (both baselines)
+dedrift report --out report.md                 # deterministic markdown report
 ```
 
-A full simulated demo (synthetic agent, mid-log model swap, detection + attribution) ships with v0.1.0.
+The report shows what shifted in plain units (e.g. refusal +21 pp, output
+variance ratio ~9x), BH-adjusted p-values, and attribution: "nearest config
+event: model fingerprint change, 0.0 h before onset." With your own agent,
+replace `sim` with `dedrift canary run --suite canaries.yaml --agent
+yourmodule:agent_fn --model 'provider/model@version'` on a schedule.
+
+## Detection power: the honest table
+
+Statistical power depends on sample size, and canary suites are small. For a
+rate signature (e.g. refusal) at a 5% baseline in a family of 30 canaries,
+two-sided α=0.05 per test (before FDR, which reduces power further), simulated
+power to detect a shift of the given size:
+
+| Repetitions N | n per window | +2 pp | +5 pp | +10 pp | +15 pp |
+|---|---|---|---|---|---|
+| 5  | 150 | 0.07 | 0.28 | 0.78 | 0.97 |
+| 7 (default) | 210 | 0.11 | 0.42 | 0.91 | 1.00 |
+| 10 | 300 | 0.13 | 0.60 | 0.99 | 1.00 |
+
+Read the first column honestly: **a 2 pp refusal shift is essentially
+undetectable at this scale.** dedrift's default materiality gate (2 pp) is a
+floor on what may alert, not a promise of what will be detected. If small rate
+shifts matter to you, grow the refusal-boundary family or raise N — power
+comes from samples, not from wishful thresholds.
 
 ## dedrift Pro
 

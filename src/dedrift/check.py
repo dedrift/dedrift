@@ -21,7 +21,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 from dedrift.config import ProjectConfig
@@ -31,13 +34,17 @@ from dedrift.detectors import (
     ad_test,
     benjamini_hochberg,
     bootstrap_p95_test,
+    calibrate_mmd_floor,
     ks_test,
     levene_test,
+    mmd_rbf_test,
     page_hinkley,
     psi,
     two_proportion_z_test,
     welch_t_test,
 )
+from dedrift.embeddings import embed_records, get_pinned_embedder
+from dedrift.schema import InteractionRecord
 from dedrift.signatures import signatures_frame
 from dedrift.signatures.structural import RATE_SIGNATURES, SCALAR_SIGNATURES
 from dedrift.store import Store
@@ -191,6 +198,86 @@ def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
     return bool(abs(test.effect_size) >= m.scalar_cohen_d)
 
 
+def _add_semantic_displacement(
+    frame: pd.DataFrame,
+    records: list[InteractionRecord],
+    embeddings: dict[str, npt.NDArray[np.float64]],
+    golden_cycles: list[str],
+) -> None:
+    """Add a per-record semantic_displacement column to the signature frame.
+
+    Displacement = cosine distance from each record's embedding to the
+    centroid of the SAME canary's reference outputs (golden cycles when set,
+    else all cycles — mildly contaminated by the current cycle, which the
+    docs note as a reason to set a golden baseline). A scalar per record, so
+    it flows through the ordinary scalar battery — KS/AD/Levene/P95 apply.
+    """
+    ref_cycle_set = set(golden_cycles)
+    by_canary: dict[str, list[npt.NDArray[np.float64]]] = {}
+    for r in records:
+        in_ref = r.cycle_id in ref_cycle_set if ref_cycle_set else True
+        if r.canary_id is not None and in_ref:
+            by_canary.setdefault(r.canary_id, []).append(embeddings[r.id])
+    centroids = {c: np.mean(np.stack(v), axis=0) for c, v in by_canary.items() if v}
+
+    def displacement(record_id: str, canary_id: str | None) -> float:
+        centroid = centroids.get(canary_id or "")
+        if centroid is None:
+            return float("nan")
+        vec = embeddings[record_id]
+        denom = float(np.linalg.norm(vec) * np.linalg.norm(centroid))
+        if denom == 0:
+            return 1.0
+        return float(1.0 - float(vec @ centroid) / denom)
+
+    id_to_canary = {r.id: r.canary_id for r in records}
+    frame["semantic_displacement"] = [
+        displacement(rid, id_to_canary.get(rid)) for rid in frame["record_id"]
+    ]
+
+
+def _mmd_battery(
+    baseline_name: str,
+    ref_cycles: list[str],
+    current: str,
+    frame: pd.DataFrame,
+    embeddings: dict[str, npt.NDArray[np.float64]],
+    families: list[str],
+    cfg: ProjectConfig,
+    mmd_floors: dict[tuple[str, str], float],
+) -> list[TestRecord]:
+    """Run MMD per family against one baseline; record calibrated floors.
+
+    The materiality floor per (baseline, family) is the config override when
+    non-negative, else the 95th percentile of MMD^2 between pairs of the
+    baseline's own cycles (known-same distribution). With fewer than three
+    reference cycles the floor is 0.0 (uncalibratable; reported as such).
+    """
+    out: list[TestRecord] = []
+    for family in families:
+        fam = frame[frame["family"] == family]
+        ref_ids = fam[fam["cycle_id"].isin(ref_cycles)]["record_id"]
+        cur_ids = fam[fam["cycle_id"] == current]["record_id"]
+        if len(ref_ids) < 2 or len(cur_ids) < 2:
+            continue
+        ref_emb = np.stack([embeddings[i] for i in ref_ids])
+        cur_emb = np.stack([embeddings[i] for i in cur_ids])
+        outcome = mmd_rbf_test(
+            ref_emb, cur_emb, n_permutations=max(cfg.permutations, 500), seed=cfg.seed
+        )
+        if cfg.materiality.embedding_mmd2_floor >= 0:
+            floor = cfg.materiality.embedding_mmd2_floor
+        else:
+            per_cycle = [
+                np.stack([embeddings[i] for i in fam[fam["cycle_id"] == cycle]["record_id"]])
+                for cycle in ref_cycles
+            ]
+            floor = calibrate_mmd_floor([p for p in per_cycle if len(p) >= 2])
+        mmd_floors[(baseline_name, family)] = floor
+        out.append(TestRecord(baseline_name, family, "embedding", outcome))
+    return out
+
+
 def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
     """Run the full gated drift check for the latest cycle.
 
@@ -217,11 +304,26 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
     golden = [c for c in get_golden_baseline(store) if c in cycles and c != current]
     rolling = [c for c in history if c not in golden][-cfg.rolling_window_cycles :]
 
+    # Tier 2 (optional): embeddings via the pinned embedder. When pinned, a
+    # per-record semantic_displacement scalar joins the ordinary scalar
+    # battery, and MMD tests per family join the same BH pool. The MMD^2
+    # materiality floor is auto-calibrated per (family, baseline) from
+    # reference-cycle pairs (known-same distribution) unless overridden.
+    embeddings: dict[str, Any] | None = None
+    if get_pinned_embedder(store) is not None:
+        embeddings = embed_records(store, records)
+        _add_semantic_displacement(frame, records, embeddings, get_golden_baseline(store))
+
+    scalar_signatures = tuple(SCALAR_SIGNATURES) + (
+        ("semantic_displacement",) if embeddings is not None else ()
+    )
+
     cur_frame = frame[frame["cycle_id"] == current]
     degraded = bool(cur_frame["had_error"].mean() > DEGRADED_ERROR_FRACTION)
 
     tests: list[TestRecord] = []
     flags: list[FlagRecord] = []
+    mmd_floors: dict[tuple[str, str], float] = {}
     families = sorted(frame["family"].unique())
 
     def battery(baseline_name: str, ref_frame: pd.DataFrame) -> list[TestRecord]:
@@ -231,9 +333,9 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             cur_fam = cur_frame[cur_frame["family"] == family]
             if ref_fam.empty or cur_fam.empty:
                 continue
-            for sig in SCALAR_SIGNATURES:
-                ref = ref_fam[sig].to_numpy(dtype=float)
-                cur = cur_fam[sig].to_numpy(dtype=float)
+            for sig in scalar_signatures:
+                ref = ref_fam[sig].dropna().to_numpy(dtype=float)
+                cur = cur_fam[sig].dropna().to_numpy(dtype=float)
                 for fn in (ks_test, ad_test, welch_t_test, levene_test):
                     out.append(TestRecord(baseline_name, family, sig, fn(ref, cur)))
                 out.append(
@@ -271,6 +373,12 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             continue
         ref_frame = frame[frame["cycle_id"].isin(ref_cycles)]
         tests.extend(battery(name, ref_frame))
+        if embeddings is not None:
+            tests.extend(
+                _mmd_battery(
+                    name, ref_cycles, current, frame, embeddings, families, cfg, mmd_floors
+                )
+            )
         verdicts[name] = "pending"
 
     # Gate 2: one BH family across every p-valued test in this check.
@@ -279,7 +387,9 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
     # Gates 3-4: materiality, then alert = significant AND material.
     gated: list[TestRecord] = []
     for t, rej, adj in zip(tests, rejected, adjusted, strict=True):
-        if t.signature in RATE_SIGNATURES:
+        if t.outcome.test == "mmd":
+            material = t.outcome.effect_size >= mmd_floors.get((t.baseline, t.family), 0.0)
+        elif t.signature in RATE_SIGNATURES:
             material = abs(t.outcome.effect_raw) >= cfg.materiality.rate_threshold(t.signature)
         else:
             material = _material_scalar(t.outcome, cfg)
