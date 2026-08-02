@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+venv/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# dedrift project data (created by `dedrift init` during local testing)
+.dedrift/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

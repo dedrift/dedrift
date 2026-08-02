@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dedrift"
+version = "0.0.1"
+description = "Statistically rigorous behavioral drift detection for AI agents. Agents don't throw errors when they degrade — dedrift catches it."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Ali Mahmoudi" }]
+keywords = ["ai-agents", "drift-detection", "monitoring", "llm", "statistics"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "pydantic>=2.5",
+    "typer>=0.9",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+embeddings = ["sentence-transformers>=2.3"]
+judge = ["anthropic>=0.40", "openai>=1.50"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[project.scripts]
+dedrift = "dedrift.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/alimahmoudi/dedrift"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dedrift"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "D"]
+# UP017/UP042 ignored deliberately: we use timezone.utc and `str, Enum` (not
+# datetime.UTC / StrEnum) so the code also runs on 3.10 dev sandboxes; the
+# package itself requires >=3.11. D107: class docstrings cover __init__ args.
+ignore = ["D203", "D213", "D107", "UP017", "UP042"]
+pydocstyle.convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["dedrift"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "pandas.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "calibration: null false-alarm-rate calibration tests (slow, simulation-based)",
+    "power: detection power tests against injected shifts (slow, simulation-based)",
+]
