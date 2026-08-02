@@ -51,6 +51,12 @@ A full simulated demo (synthetic agent, mid-log model swap, detection + attribut
 
 Anytime-valid sequential inference (e-processes), conditional production-traffic drift, and importance weighting are part of a separate commercial tier and are not in this repository.
 
+## Contact
+
+Questions, bug reports, or interest in being a design partner:
+[open an issue](https://github.com/dedrift/dedrift/issues) or email
+[support@dedrift.ai](mailto:support@dedrift.ai).
+
 ## License
 
 AGPL-3.0-only. See `LICENSE`.
