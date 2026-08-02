@@ -132,6 +132,13 @@ class SimAgent:
         self.clock = start_time or datetime(2026, 1, 1, tzinfo=timezone.utc)
         self._record_counter = 0
 
+    def _family_for(self, canary_id: str) -> str:
+        """Assign canaries to families round-robin (stable per canary)."""
+        from dedrift.canary import FAMILIES
+
+        index = int(canary_id.rsplit("-", 1)[-1])
+        return FAMILIES[index % len(FAMILIES)]
+
     def _profile_for_cycle(self, cycle: int) -> BehaviorProfile:
         change = self.sim_config.change_cycle
         if change is not None and cycle >= change:
@@ -189,8 +196,12 @@ class SimAgent:
             ts=self.clock,
             source=Source.CANARY,
             canary_id=canary_id,
+            cycle_id=f"cycle-{cycle:04d}",
             repetition=repetition,
-            input=InteractionInput(text=f"canary input {canary_id}"),
+            input=InteractionInput(
+                text=f"canary input {canary_id}",
+                metadata={"family": self._family_for(canary_id)},
+            ),
             output=output,
             tool_calls=tool_calls,
             steps=1 + len(tool_calls),

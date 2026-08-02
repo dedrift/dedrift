@@ -98,6 +98,7 @@ class InteractionRecord(BaseModel):
     ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source: Source
     canary_id: str | None = None
+    cycle_id: str | None = None
     repetition: int | None = None
     input: InteractionInput
     output: InteractionOutput

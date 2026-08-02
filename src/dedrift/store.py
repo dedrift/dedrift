@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS records (
     ts TEXT NOT NULL,
     source TEXT NOT NULL,
     canary_id TEXT,
+    cycle_id TEXT,
     repetition INTEGER,
     config_fingerprint TEXT NOT NULL,
     latency_ms INTEGER NOT NULL,
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE INDEX IF NOT EXISTS idx_records_ts ON records (ts);
 CREATE INDEX IF NOT EXISTS idx_records_canary ON records (canary_id, ts);
+CREATE INDEX IF NOT EXISTS idx_records_cycle ON records (cycle_id);
 CREATE INDEX IF NOT EXISTS idx_records_fingerprint ON records (config_fingerprint);
 
 CREATE TABLE IF NOT EXISTS config_events (
@@ -223,14 +225,16 @@ class Store:
                 ),
             )
         conn.execute(
-            "INSERT OR REPLACE INTO records (id, ts, source, canary_id, repetition,"
-            " config_fingerprint, latency_ms, tokens_in, tokens_out, steps, retries,"
-            " n_errors, n_tool_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO records (id, ts, source, canary_id, cycle_id,"
+            " repetition, config_fingerprint, latency_ms, tokens_in, tokens_out, steps,"
+            " retries, n_errors, n_tool_calls)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.id,
                 record.ts.isoformat(),
                 record.source.value,
                 record.canary_id,
+                record.cycle_id,
                 record.repetition,
                 fingerprint,
                 record.latency_ms,
