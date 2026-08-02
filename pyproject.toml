@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dedrift"
-version = "0.0.2"
+version = "0.0.3"
 description = "Statistically rigorous behavioral drift detection for AI agents. Agents don't throw errors when they degrade — dedrift catches it."
 readme = "README.md"
 license = "AGPL-3.0-only"
