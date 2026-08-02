@@ -8,26 +8,36 @@ copyright: AGPL-3.0 &middot; <a href="mailto:support@dedrift.ai">support@dedrift
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: black
+      primary: custom
       accent: amber
       toggle:
         icon: material/weather-night
         name: Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: black
+      primary: custom
       accent: amber
       toggle:
         icon: material/weather-sunny
         name: Light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
+    - navigation.tabs
     - navigation.sections
     - navigation.footer
+    - navigation.top
     - content.code.copy
     - toc.integrate
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - Home: index.md
@@ -37,8 +47,13 @@ nav:
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - md_in_html
   - tables
   - pymdownx.highlight
   - pymdownx.superfences
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - toc:
       permalink: true

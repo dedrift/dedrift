@@ -1,0 +1,99 @@
+:root {
+  --dd-accent: #f5b301;
+  --dd-ink: #0b0f19;
+}
+
+/* ---------- hero ---------- */
+.dd-hero {
+  margin: 0 -0.8rem 2.2rem;
+  padding: 3.4rem 1.6rem 3rem;
+  text-align: center;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(245, 179, 1, 0.16), transparent),
+    linear-gradient(180deg, var(--dd-ink) 0%, #131a2b 100%);
+  border-radius: 0 0 1.2rem 1.2rem;
+}
+.dd-hero h1 {
+  color: #fff;
+  font-size: 2.4rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 auto 0.4rem;
+  max-width: 46rem;
+  line-height: 1.15;
+}
+.dd-hero h1 em {
+  font-style: normal;
+  color: var(--dd-accent);
+}
+.dd-hero p.dd-sub {
+  color: #b8c0d4;
+  font-size: 1.05rem;
+  max-width: 40rem;
+  margin: 0.8rem auto 1.6rem;
+  line-height: 1.55;
+}
+.dd-hero .md-button {
+  margin: 0.25rem 0.35rem;
+  border-color: var(--dd-accent);
+  color: var(--dd-accent);
+}
+.dd-hero .md-button--primary {
+  background-color: var(--dd-accent);
+  border-color: var(--dd-accent);
+  color: var(--dd-ink);
+  font-weight: 700;
+}
+.dd-hero .dd-pip {
+  display: inline-block;
+  margin-top: 1.5rem;
+  padding: 0.5rem 1.1rem;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.85rem;
+  color: #e8ecf5;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.5rem;
+}
+.dd-hero .dd-pip span { color: var(--dd-accent); }
+
+/* ---------- terminal demo ---------- */
+.dd-terminal {
+  background: var(--dd-ink);
+  border-radius: 0.7rem;
+  padding: 1rem 1.2rem 1.1rem;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: #d7dce8;
+  overflow-x: auto;
+  box-shadow: 0 12px 34px rgba(11, 15, 25, 0.35);
+}
+.dd-terminal .c { color: #6b7590; }   /* comment */
+.dd-terminal .p { color: #7ee0a3; }   /* prompt */
+.dd-terminal .a { color: var(--dd-accent); font-weight: 700; } /* alert */
+.dd-terminal .ok { color: #7ee0a3; }
+
+/* ---------- cards grid tune ---------- */
+.grid.cards > ul > li {
+  border-radius: 0.7rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+}
+.grid.cards > ul > li:hover {
+  border-color: var(--dd-accent);
+  box-shadow: 0 6px 18px rgba(245, 179, 1, 0.12);
+}
+
+/* section headings on landing */
+.dd-section-title {
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 800;
+  margin: 2.6rem 0 0.4rem;
+}
+.dd-section-sub {
+  text-align: center;
+  color: var(--md-default-fg-color--light);
+  margin: 0 auto 1.6rem;
+  max-width: 38rem;
+}
