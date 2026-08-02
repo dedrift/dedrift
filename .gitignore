@@ -30,3 +30,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Secrets - never commit
+.env
