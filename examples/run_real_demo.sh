@@ -5,9 +5,13 @@
 # Cycles 1-4 run MODEL_A; cycles 5-6 run MODEL_B — the "provider swapped
 # the model under you" scenario, for real.
 #
-# Usage:
+# Usage (API key):
 #   export ANTHROPIC_API_KEY=...
 #   sh examples/run_real_demo.sh [demo-dir]
+#
+# Usage (Claude subscription, via the Claude Code CLI, logged in):
+#   AGENT=examples.claude_code_agent:agent_fn MODEL_A=haiku MODEL_B=sonnet \
+#     sh examples/run_real_demo.sh [demo-dir]
 set -eu
 
 DIR="${1:-real-demo}"
@@ -15,7 +19,7 @@ MODEL_A="${MODEL_A:-claude-haiku-4-5}"
 MODEL_B="${MODEL_B:-claude-sonnet-5}"
 REPS="${REPS:-5}"
 SUITE="$(cd "$(dirname "$0")" && pwd)/canaries_real.yaml"
-AGENT="examples.anthropic_agent:agent_fn"
+AGENT="${AGENT:-examples.anthropic_agent:agent_fn}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
