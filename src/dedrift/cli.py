@@ -321,6 +321,11 @@ def check(
     )
     if result.degraded:
         typer.echo("DEGRADED DATA: current cycle error rate too high for drift analysis.")
+    for c in result.composition_issues:
+        typer.echo(
+            f"COMPOSITION MISMATCH [{c.baseline}] {c.family}: {c.detail} "
+            "(comparison suppressed — not drift)"
+        )
     typer.echo(f"Alerts: {result.n_alerts} (q={result.fdr_q}, materiality-gated)")
     for a in result.alerts()[:10]:
         typer.echo(

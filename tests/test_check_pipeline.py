@@ -127,6 +127,79 @@ class TestMaterialityGate:
         store.close()
 
 
+class TestCompositionGuard:
+    """Review finding #7: missing canary records must not masquerade as drift."""
+
+    def _project_missing_canary(self, tmp_path: Path) -> tuple[Store, str, str]:
+        """Stable project where one canary's records vanish from the current
+        cycle (as if it timed out and the runner never logged it)."""
+        config = SimConfig(n_canaries=18, repetitions=7, change_cycle=None, seed=5)
+        store = Store.init_project(tmp_path)
+        records = SimAgent(config).run_cycles(6)
+        cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        current = cycles[-1]
+        victim = next(r.canary_id for r in records if r.canary_id is not None)
+        kept = [r for r in records if not (r.cycle_id == current and r.canary_id == victim)]
+        victim_family = next(
+            r.input.metadata.get("family", "unknown") for r in records if r.canary_id == victim
+        )
+        store.append_many(kept)
+        set_golden_baseline(store, cycles[:3])
+        return store, victim, str(victim_family)
+
+    def test_missing_canary_suppresses_family_not_flagged_as_drift(self, tmp_path: Path) -> None:
+        store, victim, family = self._project_missing_canary(tmp_path)
+        result = run_check(store)
+        # The issue is reported, for both baselines, naming the canary...
+        issues = [i for i in result.composition_issues if i.family == family]
+        assert {i.baseline for i in issues} == {"rolling", "golden"}
+        assert all(victim in i.missing_canaries for i in issues)
+        # ...the family's comparison is suppressed entirely (no tests, no
+        # diagnostics manufactured on a known-broken design)...
+        assert not [t for t in result.tests if t.family == family]
+        assert not [f for f in result.flags if f.family == family]
+        # ...so nothing alerts, and other families are still tested.
+        assert result.n_alerts == 0
+        assert {t.family for t in result.tests}  # other families present
+        store.close()
+
+    def test_unbalanced_reps_detected(self, tmp_path: Path) -> None:
+        config = SimConfig(n_canaries=18, repetitions=7, change_cycle=None, seed=6)
+        store = Store.init_project(tmp_path)
+        records = SimAgent(config).run_cycles(6)
+        cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        current = cycles[-1]
+        victim = next(r.canary_id for r in records if r.canary_id is not None)
+        # Keep the canary present but drop most of its current-cycle reps.
+        dropped = 0
+        kept = []
+        for r in records:
+            if r.cycle_id == current and r.canary_id == victim and dropped < 5:
+                dropped += 1
+                continue
+            kept.append(r)
+        store.append_many(kept)
+        set_golden_baseline(store, cycles[:3])
+        result = run_check(store)
+        assert any(i.unbalanced for i in result.composition_issues)
+        assert result.n_alerts == 0
+        store.close()
+
+    def test_balanced_project_has_no_issues(self, tmp_path: Path) -> None:
+        store = seeded_project(tmp_path, change_cycle=None)
+        result = run_check(store)
+        assert result.composition_issues == []
+        store.close()
+
+    def test_report_shows_suppression(self, tmp_path: Path) -> None:
+        store, _, _ = self._project_missing_canary(tmp_path)
+        result = run_check(store)
+        md = render_report(store, result)
+        assert "COMPOSITION MISMATCH" in md
+        assert "suppressed" in md
+        store.close()
+
+
 class TestReport:
     def test_report_renders_and_is_deterministic(self, tmp_path: Path) -> None:
         store = seeded_project(tmp_path, n_cycles=8, change_cycle=7)

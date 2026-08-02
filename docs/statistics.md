@@ -81,12 +81,16 @@ family or raise N.
 
 ## Fine print, stated plainly
 
-- **Balanced-design exchangeability.** Both comparison windows contain the
-  same canaries at the same repetition count, so under the strong null ("no
-  change anywhere in the stack") pooled per-family samples are exchangeable
-  across windows and the two-sample tests apply. Power against shifts
-  confined to a few canaries is correspondingly lower than for family-wide
-  shifts.
+- **Balanced-design exchangeability — checked, not assumed.** The
+  two-sample tests require both windows to contain the same canaries at
+  uniform repetition counts; under the strong null ("no change anywhere in
+  the stack") pooled per-family samples are then exchangeable. Every check
+  verifies this per (baseline, family): if a canary's records vanish from
+  one window (a timeout, a partial run, a suite edit), the family mixture
+  shifts and KS would fire on a missing-data artifact — so the comparison
+  is **suppressed and reported as COMPOSITION MISMATCH** instead of drift.
+  Power against shifts confined to a few canaries remains lower than for
+  family-wide shifts.
 - **Where the KS gate binds.** The two-sample critical value at raw
   α = 0.05 is D_crit ≈ 1.36·√((n+m)/(n·m)). For equal arms the default
   gate (D ≥ 0.15) sits below D_crit until n ≳ 165 per arm — and BH only

@@ -122,6 +122,35 @@ class FlagRecord:
 
 
 @dataclass(frozen=True)
+class CompositionIssue:
+    """A violated balanced-design assumption for one (baseline, family).
+
+    The two-sample tests assume both windows contain the SAME canaries at
+    uniform repetition counts (exchangeability under the strong null). If a
+    canary's records vanish from one window — a timeout, a partial run, a
+    suite edit — the family's mixture shifts and KS would fire on a
+    missing-data artifact, not drift. The check therefore SUPPRESSES the
+    family's comparison against that baseline and reports the issue instead.
+
+    Attributes:
+        baseline: ``"rolling"`` or ``"golden"``.
+        family: Canary family whose comparison was suppressed.
+        missing_canaries: In the reference window but not the current cycle.
+        extra_canaries: In the current cycle but not the reference window.
+        unbalanced: True if repetition counts differ across canaries within
+            a window (mixture weights shifted even with identical sets).
+        detail: Human-readable explanation for the report.
+    """
+
+    baseline: str
+    family: str
+    missing_canaries: tuple[str, ...]
+    extra_canaries: tuple[str, ...]
+    unbalanced: bool
+    detail: str
+
+
+@dataclass(frozen=True)
 class CheckResult:
     """Everything one check produced (input for attribution and the report).
 
@@ -138,6 +167,8 @@ class CheckResult:
             for drift interpretation (overall verdict DEGRADED DATA).
         tests: All executed tests with gating outcomes.
         flags: PSI / Page-Hinkley indicators.
+        composition_issues: Suppressed (baseline, family) comparisons whose
+            windows were not composition-comparable.
         n_alerts: Convenience count of alerting tests.
     """
 
@@ -152,6 +183,7 @@ class CheckResult:
     degraded: bool
     tests: list[TestRecord] = field(default_factory=list)
     flags: list[FlagRecord] = field(default_factory=list)
+    composition_issues: list[CompositionIssue] = field(default_factory=list)
 
     @property
     def n_alerts(self) -> int:
@@ -260,6 +292,49 @@ def _add_semantic_displacement(
     ]
 
 
+def _composition_issue(
+    baseline: str, family: str, ref_fam: pd.DataFrame, cur_fam: pd.DataFrame
+) -> CompositionIssue | None:
+    """Check the balanced-design assumption for one (baseline, family).
+
+    Returns an issue when the two windows do not contain the same canaries,
+    or when repetition counts are non-uniform across canaries within a
+    window. Either way the family mixture differs between windows, so a
+    two-sample test would measure missing data, not drift.
+    """
+    ref_counts = ref_fam["canary_id"].value_counts()
+    cur_counts = cur_fam["canary_id"].value_counts()
+    missing = tuple(sorted(set(ref_counts.index) - set(cur_counts.index)))
+    extra = tuple(sorted(set(cur_counts.index) - set(ref_counts.index)))
+    unbalanced = bool(
+        (len(cur_counts) > 0 and cur_counts.min() != cur_counts.max())
+        or (len(ref_counts) > 0 and ref_counts.min() != ref_counts.max())
+    )
+    if not missing and not extra and not unbalanced:
+        return None
+    parts: list[str] = []
+    if missing:
+        parts.append(f"canaries in reference but absent from current cycle: {', '.join(missing)}")
+    if extra:
+        parts.append(f"canaries in current cycle but absent from reference: {', '.join(extra)}")
+    if unbalanced:
+        parts.append(
+            "repetition counts differ across canaries within a window "
+            f"(current min/max {int(cur_counts.min()) if len(cur_counts) else 0}/"
+            f"{int(cur_counts.max()) if len(cur_counts) else 0}, "
+            f"reference min/max {int(ref_counts.min()) if len(ref_counts) else 0}/"
+            f"{int(ref_counts.max()) if len(ref_counts) else 0})"
+        )
+    return CompositionIssue(
+        baseline=baseline,
+        family=family,
+        missing_canaries=missing,
+        extra_canaries=extra,
+        unbalanced=unbalanced,
+        detail="; ".join(parts),
+    )
+
+
 def _mmd_battery(
     baseline_name: str,
     ref_cycles: list[str],
@@ -357,12 +432,17 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
 
     tests: list[TestRecord] = []
     flags: list[FlagRecord] = []
+    issues: list[CompositionIssue] = []
     mmd_floors: dict[tuple[str, str], float] = {}
     families = sorted(frame["family"].unique())
 
-    def battery(baseline_name: str, ref_frame: pd.DataFrame) -> list[TestRecord]:
+    def battery(
+        baseline_name: str, ref_frame: pd.DataFrame, skip: frozenset[str]
+    ) -> list[TestRecord]:
         out: list[TestRecord] = []
         for family in families:
+            if family in skip:
+                continue
             ref_fam = ref_frame[ref_frame["family"] == family]
             cur_fam = cur_frame[cur_frame["family"] == family]
             if ref_fam.empty or cur_fam.empty:
@@ -415,11 +495,41 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             verdicts[name] = "NO REFERENCE"
             continue
         ref_frame = frame[frame["cycle_id"].isin(ref_cycles)]
-        tests.extend(battery(name, ref_frame))
+        # Composition guard (balanced-design exchangeability is CHECKED, not
+        # assumed): a family whose windows differ in canary membership or
+        # repetition balance is suppressed for this baseline — its
+        # two-sample tests would measure missing data, not drift.
+        skip: set[str] = set()
+        for family in families:
+            ref_fam = ref_frame[ref_frame["family"] == family]
+            cur_fam = cur_frame[cur_frame["family"] == family]
+            if not ref_fam.empty and cur_fam.empty:
+                # An entirely vanished family would otherwise be skipped
+                # silently; say why nothing was compared.
+                issues.append(
+                    CompositionIssue(
+                        baseline=name,
+                        family=family,
+                        missing_canaries=tuple(sorted(ref_fam["canary_id"].dropna().unique())),
+                        extra_canaries=(),
+                        unbalanced=False,
+                        detail="family entirely absent from the current cycle",
+                    )
+                )
+                skip.add(family)
+                continue
+            if ref_fam.empty or cur_fam.empty:
+                continue
+            issue = _composition_issue(name, family, ref_fam, cur_fam)
+            if issue is not None:
+                issues.append(issue)
+                skip.add(family)
+        tests.extend(battery(name, ref_frame, frozenset(skip)))
         if embeddings is not None:
+            ok_families = [f for f in families if f not in skip]
             tests.extend(
                 _mmd_battery(
-                    name, ref_cycles, current, frame, embeddings, families, cfg, mmd_floors
+                    name, ref_cycles, current, frame, embeddings, ok_families, cfg, mmd_floors
                 )
             )
         verdicts[name] = "pending"
@@ -467,9 +577,14 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
         )
 
     # Flags: PSI (golden bins) and Page-Hinkley (per-cycle means over history).
+    # Families with a composition issue are skipped here too — diagnostics
+    # computed on a known-broken design would only manufacture noise.
+    composition_bad = {i.family for i in issues}
     if golden:
         golden_frame = frame[frame["cycle_id"].isin(golden)]
         for family in families:
+            if family in composition_bad:
+                continue
             g_fam = golden_frame[golden_frame["family"] == family]
             c_fam = cur_frame[cur_frame["family"] == family]
             if g_fam.empty or c_fam.empty:
@@ -498,6 +613,8 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
                         FlagRecord("psi", family, sig, res.value, res.label, None, psi_material)
                     )
     for family in families:
+        if family in composition_bad:
+            continue
         fam_frame = frame[frame["family"] == family]
         for sig in SCALAR_SIGNATURES:
             means = fam_frame.groupby("cycle_id")[sig].mean().reindex(cycles).to_numpy()
@@ -530,6 +647,7 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
         degraded=degraded,
         tests=gated,
         flags=sorted(flags, key=lambda f: (f.kind, f.family, f.signature)),
+        composition_issues=sorted(issues, key=lambda i: (i.baseline, i.family)),
     )
     _persist(store, result)
     return result
@@ -549,6 +667,10 @@ def _persist(store: Store, result: CheckResult) -> None:
                     "golden": result.golden_cycles,
                     "fdr_q": result.fdr_q,
                     "seed": result.seed,
+                    "composition_issues": [
+                        {"baseline": i.baseline, "family": i.family, "detail": i.detail}
+                        for i in result.composition_issues
+                    ],
                 }
             ),
             f"sudden={result.verdict_sudden};cumulative={result.verdict_cumulative}"

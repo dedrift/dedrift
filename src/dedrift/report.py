@@ -27,6 +27,16 @@ FDR q = {{ r.fdr_q }}). Same logs + same config reproduce this report exactly.
 > **DEGRADED DATA:** more than {{ degraded_pct }}% of current-cycle records carry
 > errors. Drift conclusions are suppressed; fix data collection first.
 {% endif %}
+{% if r.composition_issues %}
+> **COMPOSITION MISMATCH — {{ r.composition_issues | length }} family comparison(s) suppressed.**
+> The windows below do not contain the same canaries at uniform repetition
+> counts, so a two-sample test there would measure missing data, not drift.
+> Fix the collection gap (or re-baseline after a suite change) and re-run.
+>
+{% for c in r.composition_issues -%}
+> - `[{{ c.baseline }}] {{ c.family }}`: {{ c.detail }}
+{% endfor %}
+{% endif %}
 
 ## Alerts ({{ alerts | length }})
 
