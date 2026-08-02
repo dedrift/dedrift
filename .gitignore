@@ -20,6 +20,12 @@ htmlcov/
 # dedrift project data (created by `dedrift init` during local testing)
 .dedrift/
 
+# Owner working docs — local only, never published
+CLAUDE.md
+ROADMAP.md
+SPEC.md
+dist/
+
 # OS / editor
 .DS_Store
 .idea/

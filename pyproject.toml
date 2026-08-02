@@ -51,6 +51,10 @@ Homepage = "https://github.com/alimahmoudi/dedrift"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dedrift"]
 
+[tool.hatch.build.targets.sdist]
+# Owner working docs are local-only; never ship them.
+exclude = ["CLAUDE.md", "ROADMAP.md", "SPEC.md", ".github/"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
