@@ -174,49 +174,53 @@ def levene_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> T
     )
 
 
-def bootstrap_p95_test(
+def p95_permutation_test(
     ref: npt.NDArray[np.float64],
     cur: npt.NDArray[np.float64],
-    n_boot: int = 1000,
+    n_permutations: int = 500,
     seed: int = 0,
 ) -> TestOutcome:
-    """Bootstrap test for a shift in the 95th percentile.
+    """Permutation test for a shift in the 95th percentile.
 
-    A studentless percentile bootstrap: resample each window independently,
-    compute the P95 difference, and derive a two-sided p-value from the
-    bootstrap distribution's position relative to zero. Seeded and therefore
-    reproducible. Effect size is the relative P95 shift.
+    Pools both windows, permutes the window labels, and recomputes the P95
+    difference; the two-sided p-value uses the add-one convention
+    ``(b+1)/(B+1)``, which is exact-level under exchangeability of the pooled
+    sample. This replaces an earlier centered percentile bootstrap: bootstrap
+    approximations of extreme-quantile nulls are unreliable at these sample
+    sizes (the P95 rests on a handful of order statistics), while the
+    permutation null is exact. Effect size is the relative P95 shift.
 
     Args:
         ref: Reference-window values.
         cur: Current-window values.
-        n_boot: Number of bootstrap resamples.
+        n_permutations: Number of label permutations (seeded).
         seed: RNG seed (recorded in the report).
 
     Returns:
         Outcome for the tail-behavior channel.
     """
     if _degenerate(ref, cur):
-        return TestOutcome("p95_boot", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
+        return TestOutcome("p95_perm", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
     rng = np.random.default_rng(seed)
+    n, m = len(ref), len(cur)
     p95_ref = float(np.percentile(ref, 95))
     p95_cur = float(np.percentile(cur, 95))
     observed = p95_cur - p95_ref
-    ref_idx = rng.integers(0, len(ref), size=(n_boot, len(ref)))
-    cur_idx = rng.integers(0, len(cur), size=(n_boot, len(cur)))
-    diffs = np.percentile(cur[cur_idx], 95, axis=1) - np.percentile(ref[ref_idx], 95, axis=1)
-    # Two-sided p: how often the centered bootstrap distribution exceeds |observed|.
-    centered = diffs - diffs.mean()
-    p = float((np.sum(np.abs(centered) >= abs(observed)) + 1) / (n_boot + 1))
+    pooled = np.concatenate([ref, cur])
+    # Vectorized label permutations: each row is a random ordering of pooled.
+    order = np.argsort(rng.random((n_permutations, n + m)), axis=1)
+    shuffled = pooled[order]
+    diffs = np.percentile(shuffled[:, n:], 95, axis=1) - np.percentile(shuffled[:, :n], 95, axis=1)
+    p = float((np.sum(np.abs(diffs) >= abs(observed)) + 1) / (n_permutations + 1))
     rel = observed / p95_ref if p95_ref != 0 else float("inf")
     return TestOutcome(
-        test="p95_boot",
+        test="p95_perm",
         statistic=observed,
         p_value=p,
         effect_size=float(rel),
         effect_raw=observed,
-        n_ref=len(ref),
-        n_cur=len(cur),
+        n_ref=n,
+        n_cur=m,
     )
 
 

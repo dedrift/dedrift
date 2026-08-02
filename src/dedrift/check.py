@@ -4,11 +4,19 @@ Gating order (SPEC.md §6 — order matters):
 
 1. Run all tests, collect p-values (PSI and Page-Hinkley produce flags,
    never p-values).
-2. Benjamini-Hochberg FDR at ``q`` across ALL p-valued tests in the check
-   (both baselines together — one multiplicity family per check).
-3. Survivors pass the materiality gate (per-channel effect thresholds).
+2. Benjamini-Hochberg FDR at ``q`` across the PRIMARY tests in the check
+   (both baselines together — one multiplicity family per check). One
+   primary per channel: KS for location/shape, Levene for dispersion, the
+   P95 permutation test for tails, two-proportion z for rates, MMD for
+   semantics. Anderson-Darling and Welch run as CORROBORATION only — they
+   ask the same question as KS on the same data, so admitting them to the
+   pool would roughly double m (and halve every BH threshold) at no
+   informational gain. Corroboration tests never alert.
+3. Survivors pass the materiality gate (per-channel effect thresholds; KS
+   gates on the KS statistic D — the sup-norm CDF distance — because a
+   shape change with equal means has Cohen's d ~ 0 and is still real drift).
 4. Only tests passing BOTH become alerts. Everything else is reported as
-   "observed, below materiality" or "not significant".
+   "observed, below materiality", "not significant", or "corroboration".
 
 Every check compares the current cycle against BOTH the rolling reference
 (sudden breaks) and the frozen golden baseline (boiling-frog drift) and
@@ -33,11 +41,11 @@ from dedrift.detectors import (
     TestOutcome,
     ad_test,
     benjamini_hochberg,
-    bootstrap_p95_test,
     calibrate_mmd_floor,
     ks_test,
     levene_test,
     mmd_rbf_test,
+    p95_permutation_test,
     page_hinkley,
     psi,
     two_proportion_z_test,
@@ -65,16 +73,20 @@ class TestRecord:
         family: Canary family.
         signature: Signature name.
         outcome: The statistical outcome.
-        p_adjusted: BH-adjusted p-value (NaN if the raw p was NaN).
-        significant: True if BH rejected at q.
+        primary: True if this test enters the BH pool and can alert;
+            False for corroboration tests (AD, Welch).
+        p_adjusted: BH-adjusted p-value (NaN if the raw p was NaN or the
+            test is corroboration-only).
+        significant: True if BH rejected at q (primaries only).
         material: True if the effect exceeds the materiality gate.
-        alert: significant AND material.
+        alert: significant AND material (primaries only).
     """
 
     baseline: str
     family: str
     signature: str
     outcome: TestOutcome
+    primary: bool = True
     p_adjusted: float = float("nan")
     significant: bool = False
     material: bool = False
@@ -176,15 +188,11 @@ def get_golden_baseline(store: Store) -> list[str]:
 
 
 def _ordered_cycles(frame: pd.DataFrame) -> list[str]:
-    """Cycle IDs ordered by each cycle's first record (execution order)."""
-    firsts = frame.groupby("cycle_id")["record_id"].min()
-    order = frame.drop_duplicates("cycle_id").set_index("cycle_id").index
-    # Order by appearance in the frame (records are stored in append order).
+    """Cycle IDs by first appearance in the frame (records are append-ordered)."""
     seen: list[str] = []
     for cid in frame["cycle_id"]:
         if cid not in seen:
             seen.append(cid)
-    del firsts, order
     return seen
 
 
@@ -193,8 +201,13 @@ def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
     if test.test == "levene":
         r = test.effect_size
         return bool(r >= m.variance_ratio or (r > 0 and r <= 1 / m.variance_ratio))
-    if test.test == "p95_boot":
+    if test.test == "p95_perm":
         return bool(abs(test.effect_size) >= m.p95_relative)
+    if test.test in ("ks", "ad"):
+        # KS detects ANY distributional change; a shape shift with equal
+        # means has Cohen's d ~ 0 and is still real drift. Gate on the KS
+        # statistic D (sup-norm CDF distance); d stays a reported diagnostic.
+        return bool(test.statistic >= m.ks_distance)
     return bool(abs(test.effect_size) >= m.scalar_cohen_d)
 
 
@@ -262,8 +275,18 @@ def _mmd_battery(
             continue
         ref_emb = np.stack([embeddings[i] for i in ref_ids])
         cur_emb = np.stack([embeddings[i] for i in cur_ids])
+        # One bandwidth per (family, baseline): pooled median heuristic over
+        # ref+cur, used for BOTH the observed statistic and the floor so the
+        # two are commensurable under one kernel.
+        from dedrift.detectors.mmd import median_heuristic_bandwidth
+
+        sigma = median_heuristic_bandwidth(np.vstack([ref_emb, cur_emb]))
         outcome = mmd_rbf_test(
-            ref_emb, cur_emb, n_permutations=max(cfg.permutations, 500), seed=cfg.seed
+            ref_emb,
+            cur_emb,
+            n_permutations=max(cfg.permutations, 500),
+            seed=cfg.seed,
+            sigma=sigma,
         )
         if cfg.materiality.embedding_mmd2_floor >= 0:
             floor = cfg.materiality.embedding_mmd2_floor
@@ -272,7 +295,7 @@ def _mmd_battery(
                 np.stack([embeddings[i] for i in fam[fam["cycle_id"] == cycle]["record_id"]])
                 for cycle in ref_cycles
             ]
-            floor = calibrate_mmd_floor([p for p in per_cycle if len(p) >= 2])
+            floor = calibrate_mmd_floor([p for p in per_cycle if len(p) >= 2], sigma=sigma)
         mmd_floors[(baseline_name, family)] = floor
         out.append(TestRecord(baseline_name, family, "embedding", outcome))
     return out
@@ -336,15 +359,24 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             for sig in scalar_signatures:
                 ref = ref_fam[sig].dropna().to_numpy(dtype=float)
                 cur = cur_fam[sig].dropna().to_numpy(dtype=float)
-                for fn in (ks_test, ad_test, welch_t_test, levene_test):
-                    out.append(TestRecord(baseline_name, family, sig, fn(ref, cur)))
+                # Primaries (enter BH, may alert): KS, Levene, P95 permutation.
+                out.append(TestRecord(baseline_name, family, sig, ks_test(ref, cur)))
+                out.append(TestRecord(baseline_name, family, sig, levene_test(ref, cur)))
                 out.append(
                     TestRecord(
                         baseline_name,
                         family,
                         sig,
-                        bootstrap_p95_test(ref, cur, n_boot=cfg.permutations, seed=cfg.seed),
+                        p95_permutation_test(
+                            ref, cur, n_permutations=cfg.permutations, seed=cfg.seed
+                        ),
                     )
+                )
+                # Corroboration only (same location hypothesis as KS on the
+                # same data; admitting them would inflate m at no gain).
+                out.append(TestRecord(baseline_name, family, sig, ad_test(ref, cur), primary=False))
+                out.append(
+                    TestRecord(baseline_name, family, sig, welch_t_test(ref, cur), primary=False)
                 )
             for sig in RATE_SIGNATURES:
                 ref_series = ref_fam[sig].dropna()
@@ -381,10 +413,18 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             )
         verdicts[name] = "pending"
 
-    # Gate 2: one BH family across every p-valued test in this check.
-    rejected, adjusted = benjamini_hochberg([t.outcome.p_value for t in tests], q=cfg.fdr_q)
+    # Gate 2: one BH family across the PRIMARY tests in this check.
+    primary_idx = [i for i, t in enumerate(tests) if t.primary]
+    rejected_p, adjusted_p = benjamini_hochberg(
+        [tests[i].outcome.p_value for i in primary_idx], q=cfg.fdr_q
+    )
+    rejected = [False] * len(tests)
+    adjusted = [float("nan")] * len(tests)
+    for pos, i in enumerate(primary_idx):
+        rejected[i] = rejected_p[pos]
+        adjusted[i] = adjusted_p[pos]
 
-    # Gates 3-4: materiality, then alert = significant AND material.
+    # Gates 3-4: materiality, then alert = primary AND significant AND material.
     gated: list[TestRecord] = []
     for t, rej, adj in zip(tests, rejected, adjusted, strict=True):
         if t.outcome.test == "mmd":
@@ -399,10 +439,11 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
                 family=t.family,
                 signature=t.signature,
                 outcome=t.outcome,
+                primary=t.primary,
                 p_adjusted=adj,
                 significant=rej,
                 material=material,
-                alert=bool(rej and material and not degraded),
+                alert=bool(t.primary and rej and material and not degraded),
             )
         )
 

@@ -8,9 +8,9 @@ import pytest
 from dedrift.detectors import (
     ad_test,
     benjamini_hochberg,
-    bootstrap_p95_test,
     ks_test,
     levene_test,
+    p95_permutation_test,
     page_hinkley,
     psi,
     two_proportion_z_test,
@@ -48,17 +48,17 @@ class TestScalarTests:
         assert out.p_value < 1e-6
         assert out.effect_size == pytest.approx(9.0, rel=0.5)
 
-    def test_bootstrap_p95_seeded_reproducible(self) -> None:
+    def test_p95_perm_seeded_reproducible(self) -> None:
         ref = RNG.normal(0, 1, 150)
         cur = RNG.normal(0.5, 1.5, 150)
-        a = bootstrap_p95_test(ref, cur, seed=42)
-        b = bootstrap_p95_test(ref, cur, seed=42)
+        a = p95_permutation_test(ref, cur, seed=42)
+        b = p95_permutation_test(ref, cur, seed=42)
         assert a == b
 
-    def test_bootstrap_p95_detects_tail_shift(self) -> None:
+    def test_p95_perm_detects_tail_shift(self) -> None:
         ref = RNG.normal(0, 1, 300)
         cur = np.concatenate([RNG.normal(0, 1, 270), RNG.normal(6, 1, 30)])
-        out = bootstrap_p95_test(ref, cur, seed=1)
+        out = p95_permutation_test(ref, cur, seed=1)
         assert out.p_value < 0.05
         assert out.effect_raw > 1.0
 

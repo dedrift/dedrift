@@ -1,15 +1,23 @@
 """MMD-RBF two-sample test with a seeded permutation null (SPEC.md §6).
 
-Implementation notes (follow SPEC exactly):
+Implementation notes:
 
-- RBF kernel with the median heuristic for bandwidth, computed on the
-  REFERENCE window ONLY — using pooled data would let the current window
-  influence the kernel and peek at the alternative.
+- RBF kernel with the POOLED median heuristic for bandwidth. The pooled
+  median is a permutation-invariant function of the combined sample, which
+  is what makes the permutation p-value exact-level under exchangeability:
+  a reference-only bandwidth would make the kernel depend on the original
+  labelling and the permutation distribution would no longer be the exact
+  null. (The median heuristic is not a tuned parameter, so pooling is not
+  "peeking" at the alternative — this deviates deliberately from an earlier
+  reading of the spec, with the owner's sign-off.)
 - Permutation test with >= 500 permutations, seeded; the p-value uses the
-  add-one convention (b+1)/(B+1), which is exact-level under exchangeability.
+  add-one convention (b+1)/(B+1).
 - Reports the biased (V-statistic) MMD^2 both as statistic and effect size;
   the permutation null makes the bias irrelevant for inference, and the
   biased estimate is non-negative, which makes floors interpretable.
+- The materiality floor is calibrated with the SAME bandwidth as the
+  observed statistic (pass ``sigma``), so calibrated floor and observed
+  MMD^2 are commensurable numbers under one kernel.
 """
 
 from __future__ import annotations
@@ -28,20 +36,23 @@ def _sq_dists(a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]) -> npt.NDA
     return result
 
 
-def median_heuristic_bandwidth(ref: npt.NDArray[np.float64]) -> float:
-    """Median pairwise distance of the REFERENCE window (never the pooled data).
+def median_heuristic_bandwidth(sample: npt.NDArray[np.float64]) -> float:
+    """Median pairwise distance of a sample (use the POOLED sample for tests).
+
+    Pooling keeps the kernel permutation-invariant, which the exactness of
+    the permutation p-value requires.
 
     Args:
-        ref: Reference embeddings, shape (n, d).
+        sample: Embeddings, shape (n, d).
 
     Returns:
         Bandwidth sigma (median of pairwise Euclidean distances); falls back
-        to 1.0 for degenerate windows.
+        to 1.0 for degenerate samples.
     """
-    n = len(ref)
+    n = len(sample)
     if n < 2:
         return 1.0
-    d2 = _sq_dists(ref, ref)
+    d2 = _sq_dists(sample, sample)
     upper = d2[np.triu_indices(n, k=1)]
     med = float(np.sqrt(np.median(upper)))
     return med if med > 0 else 1.0
@@ -63,6 +74,7 @@ def mmd_rbf_test(
     cur: npt.NDArray[np.float64],
     n_permutations: int = 500,
     seed: int = 0,
+    sigma: float | None = None,
 ) -> TestOutcome:
     """MMD^2 RBF two-sample test with a seeded permutation null.
 
@@ -71,6 +83,8 @@ def mmd_rbf_test(
         cur: Current-window embeddings, shape (m, d).
         n_permutations: Permutation count (SPEC minimum 500).
         seed: RNG seed, recorded in the report.
+        sigma: Kernel bandwidth; defaults to the pooled median heuristic
+            (permutation-invariant, keeping the p-value exact-level).
 
     Returns:
         Outcome with ``statistic = effect_size = effect_raw = MMD^2`` and the
@@ -79,8 +93,9 @@ def mmd_rbf_test(
     n, m = len(ref), len(cur)
     if n < 2 or m < 2:
         return TestOutcome("mmd", float("nan"), float("nan"), 0.0, 0.0, n, m)
-    sigma = median_heuristic_bandwidth(ref)
     pooled = np.vstack([ref, cur])
+    if sigma is None:
+        sigma = median_heuristic_bandwidth(pooled)
     k = np.exp(-_sq_dists(pooled, pooled) / (2.0 * sigma * sigma))
 
     idx = np.arange(n + m)
@@ -106,19 +121,23 @@ def mmd_rbf_test(
 
 def calibrate_mmd_floor(
     cycle_embeddings: list[npt.NDArray[np.float64]],
+    sigma: float,
     quantile: float = 0.95,
 ) -> float:
     """Calibrate the MMD^2 materiality floor from known-same reference cycles.
 
     Computes MMD^2 between every ordered pair of reference cycles — which are
     known-good and should differ only by sampling noise — and returns the
-    given quantile of that empirical null. An observed MMD^2 below this floor
+    given quantile of that empirical null. All pairs use the SAME bandwidth
+    ``sigma`` as the observed statistic, so the floor and the observation are
+    commensurable numbers under one kernel. An observed MMD^2 below the floor
     is within the project's own cycle-to-cycle noise and is never material,
     whatever its p-value. Requires >= 3 cycles (>= 3 pairs); returns 0.0
     otherwise (floor disabled, and the report should say so).
 
     Args:
         cycle_embeddings: One (n_i, d) embedding array per reference cycle.
+        sigma: Kernel bandwidth (use the one from the observed test).
         quantile: Quantile of the pairwise null distribution to use.
 
     Returns:
@@ -133,7 +152,6 @@ def calibrate_mmd_floor(
             a, b = cycle_embeddings[i], cycle_embeddings[j]
             if len(a) < 2 or len(b) < 2:
                 continue
-            sigma = median_heuristic_bandwidth(a)
             pooled = np.vstack([a, b])
             kmat = np.exp(-_sq_dists(pooled, pooled) / (2.0 * sigma * sigma))
             idx = np.arange(len(a) + len(b))

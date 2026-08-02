@@ -87,17 +87,22 @@ class TestMMD:
         assert np.isnan(mmd_rbf_test(np.ones((1, 2)), np.ones((5, 2))).p_value)
 
     def test_floor_calibration_orders_correctly(self) -> None:
-        # Floor from same-distribution cycles should be exceeded by a real shift.
+        # Floor from same-distribution cycles should be exceeded by a real
+        # shift, with ONE shared bandwidth for floor and observation
+        # (commensurability, per owner review finding #4).
+        from dedrift.detectors.mmd import median_heuristic_bandwidth
+
         cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(4)]
-        floor = calibrate_mmd_floor(cycles)
         shifted = RNG.normal(1.5, 1, size=(40, 6))
-        observed = mmd_rbf_test(cycles[0], shifted, seed=2).effect_size
+        sigma = median_heuristic_bandwidth(np.vstack([cycles[0], shifted]))
+        floor = calibrate_mmd_floor(cycles, sigma=sigma)
+        observed = mmd_rbf_test(cycles[0], shifted, seed=2, sigma=sigma).effect_size
         assert floor > 0
         assert observed > floor
 
     def test_floor_uncalibratable_below_three_cycles(self) -> None:
         cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(2)]
-        assert calibrate_mmd_floor(cycles) == 0.0
+        assert calibrate_mmd_floor(cycles, sigma=1.0) == 0.0
 
 
 @pytest.mark.calibration

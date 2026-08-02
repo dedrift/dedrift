@@ -14,9 +14,9 @@ from dedrift.detectors.mmd import calibrate_mmd_floor, mmd_rbf_test
 from dedrift.detectors.scalar import (
     TestOutcome,
     ad_test,
-    bootstrap_p95_test,
     ks_test,
     levene_test,
+    p95_permutation_test,
     two_proportion_z_test,
     welch_t_test,
 )
@@ -27,11 +27,11 @@ __all__ = [
     "TestOutcome",
     "ad_test",
     "benjamini_hochberg",
-    "bootstrap_p95_test",
     "calibrate_mmd_floor",
     "ks_test",
     "levene_test",
     "mmd_rbf_test",
+    "p95_permutation_test",
     "page_hinkley",
     "psi",
     "two_proportion_z_test",

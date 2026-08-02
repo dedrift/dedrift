@@ -93,13 +93,14 @@ No config events recorded.
 ## Appendix — all non-alerting results
 
 Results marked significant survived FDR but failed materiality; dedrift
-deliberately does not alert on them. AD p-values from SciPy are permutation
-based (seeded, {{ r.seed }}).
+deliberately does not alert on them. Anderson-Darling and Welch run as
+corroboration OUTSIDE the FDR pool (they test the same hypothesis as KS on
+the same data); their raw p-values are shown for context and never alert.
 
-| Baseline | Family | Signature | Test | Effect | p (adj) | Status |
+| Baseline | Family | Signature | Test | Effect | p | Status |
 |---|---|---|---|---|---|---|
 {% for t in non_alerts -%}
-| {{ t.baseline }} | {{ t.family }} | {{ t.signature }} | {{ t.outcome.test }} | {{ t | effect }} | {{ 'NA' if t.p_adjusted != t.p_adjusted else '%.4g' | format(t.p_adjusted) }} | {{ 'significant, below materiality' if t.significant else 'not significant' }} |
+| {{ t.baseline }} | {{ t.family }} | {{ t.signature }} | {{ t.outcome.test }} | {{ t | effect }} | {{ ('raw %.4g' | format(t.outcome.p_value)) if not t.primary and t.outcome.p_value == t.outcome.p_value else ('NA' if t.p_adjusted != t.p_adjusted else 'adj %.4g' | format(t.p_adjusted)) }} | {{ 'corroboration' if not t.primary else ('significant, below materiality' if t.significant else 'not significant') }} |
 {% endfor %}
 """
 
@@ -113,7 +114,7 @@ def _effect_str(t: object) -> str:
         return f"{o.effect_raw * 100:+.2f} pp"
     if o.test == "levene":
         return f"var ratio {o.effect_size:.2f}"
-    if o.test == "p95_boot":
+    if o.test == "p95_perm":
         return f"P95 {o.effect_raw:+.4g} ({o.effect_size * 100:+.1f}%)"
     return f"d={o.effect_size:+.2f} (raw {o.effect_raw:+.4g})"
 

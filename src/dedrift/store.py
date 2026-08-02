@@ -47,7 +47,10 @@ ph_delta = 0.3              # Idealized null crossing bound 2*exp(-2*delta*lambd
 refusal_rate_pp = 2.0       # percentage-point shift
 format_validity_pp = 1.0    # percentage-point shift
 rate_default_pp = 2.0       # other rate signatures, percentage points
-scalar_cohen_d = 0.5        # |Cohen's d| floor for scalar location shifts
+scalar_cohen_d = 0.5        # |Cohen's d| floor for location tests (Welch)
+ks_distance = 0.15          # KS statistic D floor (sup-norm CDF distance):
+                            # KS catches shape changes with equal means,
+                            # which Cohen's d would wrongly gate out
 variance_ratio = 1.5        # variance must grow/shrink by this factor
 p95_relative = 0.10         # relative P95 shift floor
 

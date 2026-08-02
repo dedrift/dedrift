@@ -10,8 +10,12 @@ Model updates, prompt edits, tool-schema changes, RAG index refreshes, and provi
 
 dedrift's differentiation is statistical correctness:
 
-- Every detector controls its documented false-alarm rate — validated by simulation tests in CI.
-- All alerting passes through FDR control (Benjamini–Hochberg). No raw per-test p-values dressed up as alerts.
+- Every p-valued detector's false-alarm rate is *measured* by simulation tests in CI
+  against stated acceptance bands — and the full pipeline's null alert rate is bounded
+  (Wilson 95% upper bound < 5%) over 500 seeded stable-agent runs.
+- All alerting passes through FDR control (Benjamini–Hochberg) over one primary test per
+  channel; redundant tests run as corroboration outside the pool. No raw per-test
+  p-values dressed up as alerts.
 - Every alert requires both statistical significance and a configurable effect-size (materiality) threshold. Fewer, higher-confidence alerts.
 - LLM outputs are stochastic: canaries run N times per cycle and we compare distributions, never single outputs.
 - Dual baselines: every check runs against a rolling recent window (sudden breaks) and a frozen golden baseline (boiling-frog drift).

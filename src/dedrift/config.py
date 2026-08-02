@@ -26,7 +26,11 @@ class Materiality:
         refusal_rate_pp: Minimum refusal-rate shift, percentage points.
         format_validity_pp: Minimum format-validity shift, percentage points.
         rate_default_pp: Minimum shift for other rate signatures, pp.
-        scalar_cohen_d: Minimum |Cohen's d| for scalar location shifts.
+        scalar_cohen_d: Minimum |Cohen's d| for location tests (Welch).
+        ks_distance: Minimum KS statistic D (sup-norm CDF distance, in
+            [0, 1]) for KS alerts. KS detects any distributional change, so
+            gating it on Cohen's d would wrongly discard shape changes with
+            equal means; D is the honest effect measure for this channel.
         variance_ratio: Minimum variance ratio (or its inverse) for
             dispersion alerts; 1.5 means var must grow or shrink by 50%.
         p95_relative: Minimum relative P95 shift.
@@ -40,6 +44,7 @@ class Materiality:
     format_validity_pp: float = 1.0
     rate_default_pp: float = 2.0
     scalar_cohen_d: float = 0.5
+    ks_distance: float = 0.15
     variance_ratio: float = 1.5
     p95_relative: float = 0.10
     embedding_mmd2_floor: float = -1.0
@@ -107,6 +112,7 @@ class ProjectConfig:
             format_validity_pp=float(materiality_raw.get("format_validity_pp", 1.0)),
             rate_default_pp=float(materiality_raw.get("rate_default_pp", 2.0)),
             scalar_cohen_d=float(materiality_raw.get("scalar_cohen_d", 0.5)),
+            ks_distance=float(materiality_raw.get("ks_distance", 0.15)),
             variance_ratio=float(materiality_raw.get("variance_ratio", 1.5)),
             p95_relative=float(materiality_raw.get("p95_relative", 0.10)),
             embedding_mmd2_floor=float(materiality_raw.get("embedding_mmd2_floor", -1.0)),
