@@ -7,7 +7,7 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: ["docs/**", "mkdocs.yml", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "web/**", "mkdocs.yml", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -28,7 +28,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install mkdocs-material
-      - run: mkdocs build --strict
+      # Site assembly: custom landing at the root, MkDocs under /docs/.
+      - run: mkdocs build --strict --site-dir site/docs
+      - run: cp -r web/. site/
+      - run: cp site/docs/404.html site/404.html
       - run: echo "dedrift.ai" > site/CNAME
       - uses: actions/upload-pages-artifact@v3
         with:

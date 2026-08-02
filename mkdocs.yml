@@ -1,9 +1,12 @@
 site_name: dedrift
-site_url: https://dedrift.ai
+site_url: https://dedrift.ai/docs/
 site_description: >-
   Statistically rigorous behavioral drift detection for AI agents.
 repo_url: https://github.com/dedrift/dedrift
 repo_name: dedrift/dedrift
+
+extra:
+  homepage: https://dedrift.ai
 copyright: AGPL-3.0 &middot; <a href="mailto:support@dedrift.ai">support@dedrift.ai</a>
 
 theme:

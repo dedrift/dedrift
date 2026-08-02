@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dedrift — silent behavioral drift detection for AI agents</title>
+<meta name="description" content="Agents don't throw errors when they degrade. dedrift catches silent behavioral drift with calibrated false-alarm rates, FDR-controlled alerts, and config-change attribution. Every statistical claim is enforced in CI.">
+<meta property="og:title" content="dedrift — catch silent behavioral drift in AI agents">
+<meta property="og:description" content="Calibrated, FDR-controlled drift detection for LLM agents. Proven on a real silent model swap.">
+<meta property="og:url" content="https://dedrift.ai">
+<meta property="og:image" content="https://dedrift.ai/docs/assets/fig1_the_catch.png">
+<link rel="icon" href="/docs/assets/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070a12; --bg2:#0b1020; --ink:#e8ecf5; --dim:#9aa5bd; --dimmer:#5d6780;
+  --amber:#f5b301; --violet:#8b7cf7; --teal:#4fd1c5; --green:#7ee0a3; --red:#ff6b6b;
+  --card:rgba(255,255,255,.035); --line:rgba(255,255,255,.09);
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:Inter,system-ui,sans-serif; line-height:1.6;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+body::before{ /* dot grid */
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:radial-gradient(rgba(255,255,255,.05) 1px, transparent 1px);
+  background-size:28px 28px;
+  mask-image:linear-gradient(180deg,#000 0%,transparent 70%);
+}
+a{color:var(--amber);text-decoration:none}
+.wrap{max-width:1100px;margin:0 auto;padding:0 24px;position:relative;z-index:1}
+
+/* ---------- nav ---------- */
+nav{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  background:rgba(7,10,18,.72);border-bottom:1px solid var(--line);
+}
+.nav-inner{max-width:1100px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;gap:28px}
+.logo{font-weight:800;font-size:1.15rem;color:var(--ink);letter-spacing:-.02em;display:flex;align-items:center;gap:8px}
+.logo .pulse{width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 12px var(--amber);animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.nav-links{display:flex;gap:22px;margin-left:auto;align-items:center}
+.nav-links a{color:var(--dim);font-size:.9rem;font-weight:500}
+.nav-links a:hover{color:var(--ink)}
+.btn{
+  display:inline-block;padding:.6rem 1.15rem;border-radius:.6rem;font-weight:600;font-size:.92rem;
+  border:1px solid var(--line);color:var(--ink);transition:all .18s;
+}
+.btn:hover{border-color:var(--amber);transform:translateY(-1px)}
+.btn-primary{background:var(--amber);border-color:var(--amber);color:#141414}
+.btn-primary:hover{box-shadow:0 6px 24px rgba(245,179,1,.35)}
+.btn-ghost{color:var(--dim)}
+.nav-links .btn{padding:.42rem .9rem}
+
+/* ---------- hero ---------- */
+.hero{position:relative;padding:96px 0 40px;text-align:center}
+.hero::before{
+  content:"";position:absolute;inset:-40% -20% auto;height:130%;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(38% 45% at 30% 20%, rgba(139,124,247,.16), transparent),
+    radial-gradient(42% 50% at 70% 15%, rgba(245,179,1,.14), transparent),
+    radial-gradient(30% 40% at 50% 60%, rgba(79,209,197,.07), transparent);
+  filter:blur(10px);
+}
+.chip{
+  display:inline-flex;align-items:center;gap:10px;
+  font-family:var(--mono);font-size:.78rem;color:var(--dim);
+  border:1px solid var(--line);border-radius:99px;padding:.35rem .95rem;
+  background:var(--card);margin-bottom:26px;
+}
+.chip b{color:var(--green);font-weight:600}
+h1{
+  font-size:clamp(2.2rem,5.4vw,3.6rem);font-weight:800;letter-spacing:-.03em;line-height:1.08;
+  max-width:850px;margin:0 auto 20px;
+}
+h1 .grad{
+  background:linear-gradient(92deg,var(--amber) 10%,#ffd75e 45%,var(--violet) 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.sub{color:var(--dim);font-size:1.12rem;max-width:640px;margin:0 auto 34px}
+.cta-row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:18px}
+.pip{
+  font-family:var(--mono);font-size:.85rem;color:var(--dim);
+  display:inline-block;margin-top:8px;
+}
+.pip b{color:var(--ink);font-weight:600}
+.pip .d{color:var(--amber)}
+
+/* ---------- terminal ---------- */
+.term{
+  max-width:760px;margin:52px auto 0;text-align:left;
+  background:linear-gradient(180deg,#0d1322,#0a0e1a);
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(245,179,1,.06);
+}
+.term-bar{display:flex;align-items:center;gap:7px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.term-bar i{width:11px;height:11px;border-radius:50%;display:block}
+.term-bar i:nth-child(1){background:#ff5f57}.term-bar i:nth-child(2){background:#febc2e}.term-bar i:nth-child(3){background:#28c840}
+.term-bar span{margin-left:10px;font-family:var(--mono);font-size:.74rem;color:var(--dimmer,#5d6780)}
+.term-body{padding:18px 20px 22px;font-family:var(--mono);font-size:.82rem;line-height:1.75;min-height:270px;white-space:pre-wrap}
+.term-body .p{color:var(--green)}
+.term-body .a{color:var(--amber);font-weight:600}
+.term-body .dim{color:#6b7590}
+.term-body .cur{display:inline-block;width:8px;height:15px;background:var(--amber);vertical-align:-2px;animation:pulse 1s infinite}
+
+/* ---------- stat strip ---------- */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin:64px 0 8px}
+.stat{
+  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 22px;text-align:center;
+}
+.stat .n{font-size:2.1rem;font-weight:800;letter-spacing:-.02em}
+.stat .n em{font-style:normal;color:var(--amber)}
+.stat .l{color:var(--dim);font-size:.87rem;margin-top:4px}
+
+/* ---------- sections ---------- */
+section{padding:84px 0 10px}
+.kicker{
+  font-family:var(--mono);font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--amber);text-align:center;margin-bottom:14px;
+}
+h2{font-size:clamp(1.6rem,3.4vw,2.3rem);font-weight:800;letter-spacing:-.02em;text-align:center;max-width:720px;margin:0 auto 14px;line-height:1.2}
+.lead{color:var(--dim);text-align:center;max-width:620px;margin:0 auto 44px}
+
+.cards3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 24px;
+  transition:border-color .2s, transform .2s;
+}
+.card:hover{border-color:rgba(245,179,1,.45);transform:translateY(-3px)}
+.card h3{font-size:1.02rem;font-weight:700;margin-bottom:8px}
+.card p{color:var(--dim);font-size:.92rem}
+.card .ic{font-family:var(--mono);color:var(--amber);font-size:.85rem;margin-bottom:12px;display:block}
+
+/* steps */
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;counter-reset:step}
+.step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 20px;position:relative}
+.step::before{
+  counter-increment:step;content:"0" counter(step);
+  font-family:var(--mono);color:var(--violet);font-size:.8rem;display:block;margin-bottom:10px;
+}
+.step h3{font-size:.98rem;margin-bottom:6px}
+.step p{color:var(--dim);font-size:.86rem}
+
+/* figure panels */
+.fig-panel{
+  background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;
+  box-shadow:0 24px 70px rgba(0,0,0,.4);
+}
+.fig-panel img{width:100%;border-radius:10px;display:block;background:#fff}
+.split{display:grid;grid-template-columns:1.15fr .85fr;gap:44px;align-items:center}
+.split h2{text-align:left;margin:0 0 14px}
+.split .lead{text-align:left;margin:0 0 22px}
+.split ul{list-style:none;margin:0 0 26px}
+.split li{color:var(--dim);padding:7px 0 7px 26px;position:relative;font-size:.95rem}
+.split li::before{content:"→";position:absolute;left:0;color:var(--amber);font-family:var(--mono)}
+
+/* pricing */
+.tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch}
+.tier{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:30px 26px;display:flex;flex-direction:column}
+.tier.hot{border-color:rgba(245,179,1,.55);background:linear-gradient(180deg,rgba(245,179,1,.06),var(--card));position:relative}
+.tier.hot::before{
+  content:"LIMITED SLOTS";position:absolute;top:-11px;left:50%;transform:translateX(-50%);
+  font-family:var(--mono);font-size:.64rem;letter-spacing:.12em;color:#141414;background:var(--amber);
+  padding:3px 12px;border-radius:99px;font-weight:700;
+}
+.tier h3{font-size:1.05rem}
+.tier .price{font-size:1.9rem;font-weight:800;margin:10px 0 2px}
+.tier .per{color:var(--dimmer,#5d6780);font-size:.8rem;margin-bottom:18px}
+.tier ul{list-style:none;margin-bottom:26px;flex:1}
+.tier li{color:var(--dim);font-size:.88rem;padding:5px 0 5px 24px;position:relative}
+.tier li::before{content:"✓";position:absolute;left:0;color:var(--green);font-family:var(--mono)}
+.tier li.no::before{content:"·";color:var(--dimmer,#5d6780)}
+.tier .btn{text-align:center}
+
+/* founder */
+.founder{
+  max-width:760px;margin:0 auto;background:var(--card);border:1px solid var(--line);
+  border-radius:16px;padding:34px 36px;
+}
+.founder p{color:var(--dim);font-size:.98rem;margin-bottom:14px}
+.founder p:last-child{margin:0}
+.founder b{color:var(--ink)}
+
+/* footer */
+footer{margin-top:96px;border-top:1px solid var(--line);padding:44px 0 56px}
+.foot{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;color:var(--dimmer,#5d6780);font-size:.85rem}
+.foot a{color:var(--dim)}
+.foot a:hover{color:var(--ink)}
+.foot .cols{display:flex;gap:44px}
+.foot .col{display:flex;flex-direction:column;gap:8px}
+.foot .col b{color:var(--ink);font-size:.8rem;text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px}
+
+/* reveal on scroll */
+.rv{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
+.rv.in{opacity:1;transform:none}
+@media (prefers-reduced-motion: reduce){
+  .rv{opacity:1;transform:none;transition:none}
+  .logo .pulse,.term-body .cur{animation:none}
+}
+@media (max-width:900px){
+  .stats,.cards3,.steps,.tiers{grid-template-columns:1fr}
+  .split{grid-template-columns:1fr}
+  .nav-links a:not(.btn){display:none}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a class="logo" href="/"><span class="pulse"></span>dedrift</a>
+    <div class="nav-links">
+      <a href="#product">Product</a>
+      <a href="#case-study">Case study</a>
+      <a href="#statistics">Statistics</a>
+      <a href="#pricing">Pricing</a>
+      <a href="/docs/">Docs</a>
+      <a class="btn" href="https://github.com/dedrift/dedrift">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <div class="chip"><b>●</b> v0.2.0 on PyPI · AGPL-3.0 · zero ML dependencies</div>
+  <h1>Your agent didn't crash.<br>It just quietly got <span class="grad">worse</span>.</h1>
+  <p class="sub">
+    Model updates, prompt edits, silent provider changes — none of them throw errors.
+    dedrift catches the behavioral shift, tells you what moved and by how much,
+    and points at the config change that did it.
+  </p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="/docs/quickstart/">Get started in 2 minutes</a>
+    <a class="btn" href="#case-study">Watch a real catch</a>
+  </div>
+  <div class="pip"><span class="d">$</span> <b>pip install dedrift</b></div>
+
+  <div class="term rv" id="term">
+    <div class="term-bar"><i></i><i></i><i></i><span>dedrift check — production agent, 18 canaries × 4 reps</span></div>
+    <div class="term-body" id="termbody"></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat rv"><div class="n"><em>1.4%</em></div><div class="l">measured null alert rate — 7 of 500 stable-agent checks, Wilson-bounded &lt; 5% in CI</div></div>
+    <div class="stat rv"><div class="n"><em>1 cycle</em></div><div class="l">to catch a real silent model swap, on both baselines, correctly attributed</div></div>
+    <div class="stat rv"><div class="n"><em>every</em></div><div class="l">p-valued detector calibration-tested against a documented band, on every commit</div></div>
+  </div>
+</header>
+
+<section id="product" class="wrap">
+  <div class="kicker">Why agents need this</div>
+  <h2>Observability catches crashes.<br>It doesn't catch character changes.</h2>
+  <p class="lead">LLM systems fail differently: outputs stay well-formed while length, refusals, tool use, latency tails, and meaning quietly shift.</p>
+  <div class="cards3">
+    <div class="card rv"><span class="ic">model@v2 → model@v3</span><h3>Silent provider updates</h3><p>The API alias stays the same. The model behind it doesn't. Nobody emails you.</p></div>
+    <div class="card rv"><span class="ic">git diff prompt.txt</span><h3>Prompt &amp; tool-schema edits</h3><p>A colleague "improves" the system prompt. Refusal behavior moves 8 points. No test fails.</p></div>
+    <div class="card rv"><span class="ic">reindex --all</span><h3>RAG &amp; pipeline refreshes</h3><p>New embeddings, new chunking, new retrieval order — same code, different agent.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="kicker">How it works</div>
+  <h2>A designed experiment, not a dashboard</h2>
+  <p class="lead">Frozen canary prompts, run N times per cycle, compared as distributions — because single LLM runs are noise.</p>
+  <div class="steps">
+    <div class="step rv"><h3>Freeze canaries</h3><p>A versioned suite across six behavioral families: happy-path to adversarial.</p></div>
+    <div class="step rv"><h3>Run N× per cycle</h3><p>Every record carries a config fingerprint of your model, prompt, and tools.</p></div>
+    <div class="step rv"><h3>Detect, gated twice</h3><p>One primary test per channel → BH-FDR → materiality. Fewer, higher-confidence alerts.</p></div>
+    <div class="step rv"><h3>Attribute</h3><p>"Behavior shifted 0.1 h after the model fingerprint change" — consistent with, never caused by.</p></div>
+  </div>
+</section>
+
+<section id="case-study" class="wrap">
+  <div class="split">
+    <div class="fig-panel rv">
+      <img src="/docs/assets/fig1_the_catch.png" alt="A real silent model swap: output tokens collapse after the swap; latency tails thicken" loading="lazy">
+    </div>
+    <div>
+      <div class="kicker" style="text-align:left">Proven on a real agent</div>
+      <h2>We swapped the model.<br>Nobody told the detector.</h2>
+      <p class="lead">Four cycles on one production model, then a silent switch to another — same prompt, same canaries.</p>
+      <ul>
+        <li>First post-swap check: <b style="color:var(--amber)">DRIFT DETECTED</b> on both baselines</li>
+        <li>36 gated alerts; output tokens D = 0.81, semantic shift D = 0.97</li>
+        <li>All alerts attributed to the fingerprint change, 0.11 h before onset</li>
+      </ul>
+      <a class="btn btn-primary" href="/docs/case-study/">Read the case study</a>
+      <a class="btn btn-ghost" href="https://github.com/dedrift/dedrift/tree/main/examples">Reproduce it ↗</a>
+    </div>
+  </div>
+</section>
+
+<section id="statistics" class="wrap">
+  <div class="split">
+    <div>
+      <div class="kicker" style="text-align:left">The differentiator</div>
+      <h2>Measured, not asserted</h2>
+      <p class="lead">Monitoring tools love p-values and hate publishing their false-alarm rates. We enforce ours in CI — a release cannot ship if the statistics fail their own audit.</p>
+      <ul>
+        <li>Every detector's null rate measured against a documented band</li>
+        <li>Pipeline-level: 7/500 stable checks alerted — Wilson bound &lt; 5%</li>
+        <li>Limitations measured too: power tables, flag rates, all published</li>
+      </ul>
+      <a class="btn btn-primary" href="/docs/statistics/">Read the statistics</a>
+    </div>
+    <div class="fig-panel rv">
+      <img src="/docs/assets/fig2_calibration.png" alt="Measured null false-alarm rate of every detector, with acceptance bands" loading="lazy">
+    </div>
+  </div>
+</section>
+
+<section id="pricing" class="wrap">
+  <div class="kicker">Pricing</div>
+  <h2>Open core, honestly priced</h2>
+  <p class="lead">The statistics are free forever. The advanced tier funds the work.</p>
+  <div class="tiers">
+    <div class="tier rv">
+      <h3>Open source</h3>
+      <div class="price">$0</div><div class="per">AGPL-3.0, forever</div>
+      <ul>
+        <li>Full detector battery, FDR + materiality gating</li>
+        <li>Dual baselines, attribution, reports</li>
+        <li>Calibration suite — audit us</li>
+        <li>Runs on a laptop: JSONL + SQLite</li>
+      </ul>
+      <a class="btn" href="/docs/quickstart/">pip install dedrift</a>
+    </div>
+    <div class="tier hot rv">
+      <h3>Design partner</h3>
+      <div class="price">Free</div><div class="per">for teams running production agents</div>
+      <ul>
+        <li>Hands-on setup on your agent</li>
+        <li>Canary suite designed for your failure modes</li>
+        <li>A statistician reading your drift reports</li>
+        <li>Priority input on the roadmap</li>
+      </ul>
+      <a class="btn btn-primary" href="mailto:support@dedrift.ai?subject=Design%20partner">Apply →</a>
+    </div>
+    <div class="tier rv">
+      <h3>Pro</h3>
+      <div class="price">Waitlist</div><div class="per">in development</div>
+      <ul>
+        <li>Anytime-valid sequential inference (e-processes)</li>
+        <li>Conditional production-traffic drift</li>
+        <li>Importance weighting</li>
+        <li class="no">Ships when it passes its own calibration bar</li>
+      </ul>
+      <a class="btn" href="mailto:support@dedrift.ai?subject=Pro%20waitlist">Join the waitlist</a>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="kicker">Who's behind this</div>
+  <h2>Built by a statistician who runs production ML</h2>
+  <div class="founder rv" style="margin-top:34px">
+    <p>dedrift exists because its founder — a <b>PhD statistician (stochastic processes)</b> who
+    operates production ML systems — got tired of monitoring tools whose p-values don't mean
+    what they say. The entire product bet is <b>statistical correctness</b>: multiplicity is
+    always controlled, every alert needs both significance and a material effect, and every
+    claim ships with the simulation that proves it.</p>
+    <p>That's also why the docs tell you what dedrift <b>can't</b> detect. A tool that
+    overclaims is just drift of a different kind.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <div class="logo" style="margin-bottom:10px"><span class="pulse"></span>dedrift</div>
+      <div>Silent behavioral drift detection for AI agents.<br>© 2026 dedrift · AGPL-3.0</div>
+    </div>
+    <div class="cols">
+      <div class="col"><b>Product</b>
+        <a href="/docs/quickstart/">Quickstart</a>
+        <a href="/docs/case-study/">Case study</a>
+        <a href="/docs/statistics/">The statistics</a>
+        <a href="#pricing">Pricing</a>
+      </div>
+      <div class="col"><b>Resources</b>
+        <a href="/docs/">Documentation</a>
+        <a href="https://github.com/dedrift/dedrift">GitHub</a>
+        <a href="https://pypi.org/project/dedrift/">PyPI</a>
+      </div>
+      <div class="col"><b>Contact</b>
+        <a href="mailto:support@dedrift.ai">support@dedrift.ai</a>
+        <a href="https://github.com/dedrift/dedrift/issues">Issues</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* terminal typing — the real case-study verdict */
+const LINES = [
+  ['p','$ '],['t','dedrift check\n'],
+  ['t','Current cycle: cycle-20260802T121457Z\n'],
+  ['t','Sudden (vs rolling 2 cycles): '],['a','DRIFT DETECTED\n'],
+  ['t','Cumulative (vs golden 3 cycles): '],['a','DRIFT DETECTED\n'],
+  ['t','Alerts: 36 (q=0.05, materiality-gated)\n'],
+  ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.972'],['t',', p_adj=1.5e-08\n'],
+  ['t','  [golden] adversarial/tokens_out ks: effect='],['a','+0.806'],['t',', p_adj=6.6e-05\n'],
+  ['t','  [golden] edge_case/latency_ms levene: effect='],['a','+4.734'],['t',', p_adj=0.015\n'],
+  ['dim','# attribution: model fingerprint change, 0.11 h before onset\n'],
+  ['dim','# consistent with the swap. nobody told it anything.\n'],
+];
+const body = document.getElementById('termbody');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function render(instant){
+  if (instant){
+    body.innerHTML = LINES.map(([c,t])=>`<span class="${c==='t'?'':c}">${t}</span>`).join('');
+    return;
+  }
+  let li=0, ci=0; const cur=document.createElement('span'); cur.className='cur';
+  body.appendChild(cur);
+  (function tick(){
+    if (li>=LINES.length){ cur.remove(); return; }
+    const [cls,text]=LINES[li];
+    if (ci===0){ const s=document.createElement('span'); if(cls!=='t') s.className=cls; body.insertBefore(s,cur); }
+    const span=cur.previousSibling;
+    span.textContent=text.slice(0,++ci);
+    if (ci>=text.length){ li++; ci=0; setTimeout(tick, text.endsWith('\n')?110:0); }
+    else setTimeout(tick, 8 + Math.random()*14);
+  })();
+}
+const io = new IntersectionObserver(es=>{
+  es.forEach(e=>{ if(e.isIntersecting){ io.unobserve(e.target);
+    e.target.classList.add('in');
+    if(e.target.id==='term') render(reduced);
+  }});
+},{threshold:.15});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
