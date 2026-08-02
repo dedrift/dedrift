@@ -19,16 +19,22 @@ dedrift's differentiation is statistical correctness:
 
 ## Status
 
-Pre-alpha. Phase 0 (scaffold, logging schema, storage, simulator) in progress. See `ROADMAP.md`.
+Pre-alpha, under active development. Working today: logging schema + store, canary runner
+(N repetitions per cycle), Tier-1 structural signatures, the full detector battery
+(KS/AD/Welch/Levene/bootstrap-P95/two-proportion z, PSI, Page–Hinkley) with BH-FDR and
+materiality gating, dual baselines, config-change attribution, and deterministic markdown
+reports — all with calibration and power tests enforced in CI. Coming for v0.1.0:
+embedding signatures (MMD), the 10-minute README demo, and a PyPI release.
 
 ## Install
 
 ```bash
-pip install -e .          # core: zero ML dependencies
-pip install -e ".[embeddings]"   # + semantic signatures (sentence-transformers)
-pip install -e ".[judge]"        # + LLM-judge tier
-pip install -e ".[dev]"          # development tooling
+pip install dedrift              # core: zero ML dependencies
+pip install "dedrift[embeddings]"  # + semantic signatures (sentence-transformers)
+pip install "dedrift[judge]"       # + LLM-judge tier
 ```
+
+For development: `pip install -e ".[dev]"`.
 
 ## Quickstart (target v0 walkthrough)
 
