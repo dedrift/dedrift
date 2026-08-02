@@ -47,7 +47,11 @@ def median_heuristic_bandwidth(ref: npt.NDArray[np.float64]) -> float:
     return med if med > 0 else 1.0
 
 
-def _mmd2_from_kernel(k: npt.NDArray[np.float64], idx_x: np.ndarray, idx_y: np.ndarray) -> float:  # type: ignore[type-arg]
+def _mmd2_from_kernel(
+    k: npt.NDArray[np.float64],
+    idx_x: npt.NDArray[np.intp],
+    idx_y: npt.NDArray[np.intp],
+) -> float:
     kxx = k[np.ix_(idx_x, idx_x)].mean()
     kyy = k[np.ix_(idx_y, idx_y)].mean()
     kxy = k[np.ix_(idx_x, idx_y)].mean()
