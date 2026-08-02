@@ -29,4 +29,14 @@ jobs:
       - name: Unit tests
         run: pytest -m "not calibration and not power"
       - name: Calibration & power tests
-        run: pytest -m "calibration or power"
+        # Exit code 5 = no tests collected; tolerated until the detector
+        # calibration/power suites land in Phase 2, then enforced as usual.
+        run: |
+          set +e
+          pytest -m "calibration or power"
+          rc=$?
+          if [ "$rc" -eq 5 ]; then
+            echo "No calibration/power tests yet (Phase 2)."
+            exit 0
+          fi
+          exit "$rc"
