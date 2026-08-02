@@ -22,6 +22,10 @@ Every statistical claim is enforced by simulation tests that run in CI.
 
 <div class="dd-pip"><span>$</span> pip install dedrift</div>
 
+<p class="dd-proof-strip">Proven on a real agent: a silent model swap, caught
+in one canary cycle with correct attribution —
+<a href="case-study/">read the case study</a>.</p>
+
 </div>
 
 <div class="dd-section-title">Your observability catches crashes.<br>It doesn't catch character changes.</div>
@@ -82,6 +86,36 @@ silent updates — all shift agent behavior without a single error in your logs.
 
 </div>
 
+<div class="dd-section-title">Watch it catch a real one</div>
+<p class="dd-section-sub">
+We swapped the model behind a live agent — same prompt, same canaries,
+nothing announced. The first post-swap check fired on both baselines, with
+every alert attributed to the config fingerprint change 0.11&nbsp;h before
+onset.
+</p>
+
+[![A real silent model swap, caught](assets/fig1_the_catch.png)](case-study.md)
+
+<p style="text-align:center" markdown>
+[Read the case study](case-study.md){ .md-button .md-button--primary }
+[Reproduce it yourself](https://github.com/dedrift/dedrift/tree/main/examples){ .md-button }
+</p>
+
+<div class="dd-section-title">Measured, not asserted</div>
+<p class="dd-section-sub">
+Every detector's false-alarm rate is measured against a documented
+acceptance band by simulation tests that run in CI on every commit. The
+full pipeline's null alert rate: 7 of 500 stable-agent checks (Wilson 95%
+upper bound 0.029). The parts that aren't calibrated — the diagnostic flag
+channel — carry their measured rate too, because honesty is the product.
+</p>
+
+[![Measured null false-alarm rates per detector](assets/fig2_calibration.png)](statistics.md)
+
+<p style="text-align:center" markdown>
+[The statistics, in full](statistics.md){ .md-button }
+</p>
+
 ## Try it in two minutes
 
 No API keys: the built-in simulator plays an agent whose model version is
@@ -104,7 +138,7 @@ Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span><br>
 Alerts: 168 (q=0.05, materiality-gated)<br>
 &nbsp;&nbsp;[golden] adversarial/refusal two_proportion_z: effect=<span class="a">+21.0 pp</span>, p_adj=0.0009<br>
 &nbsp;&nbsp;[golden] adversarial/format_valid two_proportion_z: effect=<span class="a">-21.9 pp</span>, p_adj=0.0023<br>
-&nbsp;&nbsp;[golden] edge_case/output_words ks: d=<span class="a">+1.89</span>, p_adj=1.4e-20<br>
+&nbsp;&nbsp;[golden] edge_case/output_words ks: effect=<span class="a">D=0.71</span>, p_adj=1.4e-20<br>
 <span class="c"># dedrift report --out report.md  →  attribution: nearest config event,</span><br>
 <span class="c"># model fingerprint change, 0.0 h before onset — consistent with the swap.</span>
 </div>
@@ -127,7 +161,23 @@ dedrift check && dedrift report
 ```
 
 Run it on a schedule. When behavior shifts, you'll know what moved, by how
-much, since when — and what changed in your stack at the same time.
+much, since when — and what changed in your stack at the same time. Full
+walkthrough: [quickstart](quickstart.md) ·
+[writing canary suites](canaries.md) ·
+[configuration](configuration.md).
+
+<div class="dd-section-title">Run it on your agent, with us watching the stats</div>
+<p class="dd-section-sub">
+We're onboarding a small number of <strong>design partners</strong>: teams
+running production agents who want drift monitoring they can actually
+trust. You get hands-on setup, a canary suite designed for your failure
+modes, and a statistician reading your reports. We get the thing no
+simulation can give — real drift, in the wild.
+</p>
+
+<p style="text-align:center" markdown>
+[Become a design partner](mailto:support@dedrift.ai?subject=Design%20partner){ .md-button .md-button--primary }
+</p>
 
 ## dedrift Pro
 

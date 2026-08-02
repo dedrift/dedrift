@@ -36,3 +36,4 @@ dist/
 
 # MkDocs build output
 site/
+launch/

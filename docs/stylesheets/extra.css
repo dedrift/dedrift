@@ -108,3 +108,36 @@
   margin: 0 auto 1.6rem;
   max-width: 38rem;
 }
+
+/* proof strip under the hero buttons */
+.dd-proof-strip {
+  margin: 1.4rem auto 0;
+  max-width: 42rem;
+  font-size: 0.86rem;
+  color: #b8c0d4;
+}
+.dd-proof-strip::before {
+  content: "●";
+  color: #7ee0a3;
+  margin-right: 0.45rem;
+  font-size: 0.7rem;
+}
+.dd-proof-strip a {
+  color: var(--dd-accent);
+  font-weight: 600;
+}
+
+/* figures on landing + docs pages: card treatment */
+.md-typeset img[src*="fig"] {
+  display: block;
+  margin: 0.6rem auto 1.2rem;
+  max-width: 100%;
+  border-radius: 0.7rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: 0 10px 30px rgba(11, 15, 25, 0.10);
+  background: #fff;
+  padding: 0.6rem;
+}
+[data-md-color-scheme="slate"] .md-typeset img[src*="fig"] {
+  background: #f4f6fb;
+}

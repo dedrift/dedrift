@@ -41,9 +41,14 @@ extra_css:
 
 nav:
   - Home: index.md
-  - How it works: how-it-works.md
-  - The statistics: statistics.md
-  - CLI reference: cli.md
+  - Quickstart: quickstart.md
+  - Case study: case-study.md
+  - Statistics: statistics.md
+  - Guide:
+      - How it works: how-it-works.md
+      - Writing canary suites: canaries.md
+      - Configuration: configuration.md
+      - CLI reference: cli.md
 
 markdown_extensions:
   - admonition

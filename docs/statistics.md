@@ -62,6 +62,8 @@ runs (on every commit and inside the release pipeline):
   equal-mean shape change, scripted model swap) must be detected at
   documented rates, with correct config attribution.
 
+![Measured null false-alarm rates with Wilson intervals and acceptance bands](assets/fig2_calibration.png)
+
 ## Detection power: the honest table
 
 Power comes from samples, and canary suites are small. For a rate signature
@@ -78,6 +80,8 @@ at a 5% baseline in a family of 30 canaries (two-sided α = 0.05 per test,
 default 2 pp materiality gate is a floor on what may alert, not a promise of
 what will be detected. If small shifts matter, grow the relevant canary
 family or raise N.
+
+![Power curves for the rate channel](assets/fig3_power.png)
 
 ## Fine print, stated plainly
 
@@ -140,6 +144,8 @@ family or raise N.
   empirical null from known-same-distribution data. With fewer than three
   reference cycles the floor is uncalibratable (0), and the config accepts an
   explicit override.
-- **Reproducibility.** All randomness is seeded; permutation and bootstrap
-  seeds are recorded in the report. Same logs + same config ⇒ identical
-  report, byte for byte.
+- **Reproducibility.** All randomness is seeded; permutation seeds are
+  recorded in the report. Same logs + same config ⇒ the same report up to
+  the recorded check timestamp: every statistic, p-value, effect, flag,
+  and verdict is byte-identical; the timestamp line is the sole
+  run-dependent field.
