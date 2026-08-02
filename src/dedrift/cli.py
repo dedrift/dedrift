@@ -23,6 +23,8 @@ app = typer.Typer(
 )
 canary_app = typer.Typer(help="Canary suite operations.", no_args_is_help=True)
 app.add_typer(canary_app, name="canary")
+baseline_app = typer.Typer(help="Golden baseline management.", no_args_is_help=True)
+app.add_typer(baseline_app, name="baseline")
 
 
 @app.command()
@@ -220,6 +222,98 @@ def signatures(
     ]
     with pd.option_context("display.max_rows", 200, "display.width", 200):
         typer.echo(table[show].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+
+
+@baseline_app.command("set")
+def baseline_set(
+    cycle_ids: Annotated[
+        list[str] | None,
+        typer.Argument(help="Cycle IDs to freeze as the golden baseline."),
+    ] = None,
+    last: Annotated[
+        int | None, typer.Option(help="Freeze the last N completed cycles instead.")
+    ] = None,
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Freeze known-good cycles as the golden baseline (never auto-updated)."""
+    from dedrift.check import get_golden_baseline, set_golden_baseline
+    from dedrift.signatures import signatures_frame
+
+    store = Store(path)
+    if not store.exists():
+        typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
+        raise typer.Exit(code=1)
+    with store:
+        if last is not None:
+            records = [r for r in store.read_records() if r.cycle_id is not None]
+            if not records:
+                typer.echo("No canary cycles found.", err=True)
+                raise typer.Exit(code=1)
+            frame = signatures_frame(records)
+            cycles = list(dict.fromkeys(frame["cycle_id"]))
+            chosen = cycles[-last:]
+        elif cycle_ids:
+            chosen = list(cycle_ids)
+        else:
+            typer.echo("Provide cycle IDs or --last N.", err=True)
+            raise typer.Exit(code=1)
+        set_golden_baseline(store, chosen)
+        typer.echo(f"Golden baseline frozen: {get_golden_baseline(store)}")
+
+
+@app.command()
+def check(
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Run the gated drift check for the latest cycle (dual baselines)."""
+    from dedrift.check import run_check
+
+    store = Store(path)
+    if not store.exists():
+        typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
+        raise typer.Exit(code=1)
+    with store:
+        result = run_check(store)
+    typer.echo(f"Current cycle: {result.current_cycle}")
+    typer.echo(f"Sudden (vs rolling {len(result.rolling_cycles)} cycles): {result.verdict_sudden}")
+    typer.echo(
+        f"Cumulative (vs golden {len(result.golden_cycles)} cycles): {result.verdict_cumulative}"
+    )
+    if result.degraded:
+        typer.echo("DEGRADED DATA: current cycle error rate too high for drift analysis.")
+    typer.echo(f"Alerts: {result.n_alerts} (q={result.fdr_q}, materiality-gated)")
+    for a in result.alerts()[:10]:
+        typer.echo(
+            f"  [{a.baseline}] {a.family}/{a.signature} {a.outcome.test}: "
+            f"effect={a.outcome.effect_size:+.3f}, p_adj={a.p_adjusted:.4g}"
+        )
+    if result.n_alerts > 0:
+        raise typer.Exit(code=2)
+
+
+@app.command()
+def report(
+    output: Annotated[
+        Path | None, typer.Option("--out", help="Write markdown here (default: stdout).")
+    ] = None,
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Run a check and render the full markdown report."""
+    from dedrift.check import run_check
+    from dedrift.report import render_report
+
+    store = Store(path)
+    if not store.exists():
+        typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
+        raise typer.Exit(code=1)
+    with store:
+        result = run_check(store)
+        markdown = render_report(store, result)
+    if output is None:
+        typer.echo(markdown)
+    else:
+        output.write_text(markdown, encoding="utf-8")
+        typer.echo(f"Report written to {output}")
 
 
 if __name__ == "__main__":

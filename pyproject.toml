@@ -66,6 +66,8 @@ pydocstyle.convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]
+# The markdown report template contains table rows that cannot wrap.
+"src/dedrift/report.py" = ["E501"]
 
 [tool.mypy]
 # 3.12, not 3.11: recent numpy stubs use PEP 695 `type` statements, which mypy

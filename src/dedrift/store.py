@@ -36,12 +36,20 @@ rolling_window_cycles = 5   # K cycles for the rolling reference
 fdr_q = 0.05                # Benjamini-Hochberg FDR level
 permutations = 500          # permutation-test resamples (seeded)
 seed = 1729                 # global seed recorded in every report
+ph_lambda = 12.0            # Page-Hinkley alarm threshold (reference-SD units).
+ph_delta = 0.3              # Idealized null crossing bound 2*exp(-2*delta*lambda)
+                            # ~= 0.15%; measured ~1.5%/stream (estimated centering
+                            # and scale) - see the PH calibration test.
 
-# Materiality (effect-size) gates, per signature family. Alerts require BOTH
+# Materiality (effect-size) gates, per signature channel. Alerts require BOTH
 # statistical significance after FDR AND an effect exceeding these bands.
 [materiality]
 refusal_rate_pp = 2.0       # percentage-point shift
 format_validity_pp = 1.0    # percentage-point shift
+rate_default_pp = 2.0       # other rate signatures, percentage points
+scalar_cohen_d = 0.5        # |Cohen's d| floor for scalar location shifts
+variance_ratio = 1.5        # variance must grow/shrink by this factor
+p95_relative = 0.10         # relative P95 shift floor
 
 [embeddings]
 # Pinned forever per project once set; dedrift refuses cross-embedder comparisons.

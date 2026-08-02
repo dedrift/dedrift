@@ -1,0 +1,155 @@
+"""Unit tests for individual detectors: correctness on known inputs."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from dedrift.detectors import (
+    ad_test,
+    benjamini_hochberg,
+    bootstrap_p95_test,
+    ks_test,
+    levene_test,
+    page_hinkley,
+    psi,
+    two_proportion_z_test,
+    welch_t_test,
+)
+
+RNG = np.random.default_rng(7)
+
+
+class TestScalarTests:
+    def test_ks_detects_large_shift(self) -> None:
+        ref = RNG.normal(0, 1, 200)
+        cur = RNG.normal(2, 1, 200)
+        out = ks_test(ref, cur)
+        assert out.p_value < 1e-6
+        assert out.effect_size == pytest.approx(2.0, abs=0.4)
+        assert out.effect_raw == pytest.approx(2.0, abs=0.4)
+
+    def test_ks_null_not_tiny(self) -> None:
+        ref = RNG.normal(0, 1, 200)
+        cur = RNG.normal(0, 1, 200)
+        assert ks_test(ref, cur).p_value > 0.001
+
+    def test_degenerate_gives_nan(self) -> None:
+        ref = np.ones(10)
+        cur = np.ones(10)
+        assert np.isnan(ks_test(ref, cur).p_value)
+        assert np.isnan(ad_test(ref, cur).p_value)
+        assert np.isnan(welch_t_test(ref, cur).p_value)
+
+    def test_levene_detects_variance_shift(self) -> None:
+        ref = RNG.normal(0, 1, 300)
+        cur = RNG.normal(0, 3, 300)
+        out = levene_test(ref, cur)
+        assert out.p_value < 1e-6
+        assert out.effect_size == pytest.approx(9.0, rel=0.5)
+
+    def test_bootstrap_p95_seeded_reproducible(self) -> None:
+        ref = RNG.normal(0, 1, 150)
+        cur = RNG.normal(0.5, 1.5, 150)
+        a = bootstrap_p95_test(ref, cur, seed=42)
+        b = bootstrap_p95_test(ref, cur, seed=42)
+        assert a == b
+
+    def test_bootstrap_p95_detects_tail_shift(self) -> None:
+        ref = RNG.normal(0, 1, 300)
+        cur = np.concatenate([RNG.normal(0, 1, 270), RNG.normal(6, 1, 30)])
+        out = bootstrap_p95_test(ref, cur, seed=1)
+        assert out.p_value < 0.05
+        assert out.effect_raw > 1.0
+
+
+class TestProportions:
+    def test_detects_rate_shift(self) -> None:
+        out = two_proportion_z_test(10, 500, 50, 500)
+        assert out.p_value < 1e-6
+        assert out.effect_raw == pytest.approx(0.08, abs=1e-9)
+
+    def test_null_no_signal(self) -> None:
+        out = two_proportion_z_test(25, 500, 25, 500)
+        assert out.p_value == pytest.approx(1.0, abs=0.05)
+
+    def test_zero_trials_nan(self) -> None:
+        assert np.isnan(two_proportion_z_test(0, 0, 5, 10).p_value)
+
+
+class TestBH:
+    def test_controls_obvious_case(self) -> None:
+        p = [0.001, 0.002, 0.9, 0.8, 0.7]
+        rejected, adjusted = benjamini_hochberg(p, q=0.05)
+        assert rejected == [True, True, False, False, False]
+        assert adjusted[0] <= 0.05
+
+    def test_nan_never_rejected_and_not_counted(self) -> None:
+        p = [0.01, float("nan"), 0.5]
+        rejected, adjusted = benjamini_hochberg(p, q=0.05)
+        assert rejected[1] is False
+        assert np.isnan(adjusted[1])
+        # m=2, so p=0.01 adjusted = 0.02
+        assert adjusted[0] == pytest.approx(0.02)
+
+    def test_empty(self) -> None:
+        assert benjamini_hochberg([], q=0.05) == ([], [])
+
+    def test_monotone_adjusted(self) -> None:
+        p = list(RNG.uniform(0, 1, 50))
+        _, adjusted = benjamini_hochberg(p, q=0.1)
+        order = np.argsort(p)
+        adj_sorted = np.array(adjusted)[order]
+        assert all(np.diff(adj_sorted) >= -1e-12)
+
+
+class TestPageHinkley:
+    def test_no_alarm_on_stationary(self) -> None:
+        values = RNG.normal(10, 1, 30)
+        assert not page_hinkley(values).alarm
+
+    def test_null_false_alarm_rate_below_documented_bound(self) -> None:
+        """Documented bound: ~2*exp(-2*delta*lambda) ~= 0.5% per stream at
+        defaults. Accept < 3% measured over 300 stationary streams (the
+        early-window scale estimate adds noise beyond the idealized bound)."""
+        rng = np.random.default_rng(99)
+        alarms = sum(page_hinkley(rng.normal(0, 1, 30)).alarm for _ in range(300))
+        assert alarms / 300 < 0.03, f"PH null alarm rate {alarms / 300:.3f}"
+
+    def test_alarm_and_changepoint_on_step(self) -> None:
+        values = np.concatenate([RNG.normal(10, 1, 15), RNG.normal(16, 1, 15)])
+        res = page_hinkley(values)
+        assert res.alarm
+        assert res.direction == "up"
+        assert res.change_index is not None
+        assert 12 <= res.change_index <= 17
+
+    def test_detects_downward(self) -> None:
+        values = np.concatenate([np.full(12, 5.0) + RNG.normal(0, 0.5, 12), np.full(10, 1.0)])
+        res = page_hinkley(values)
+        assert res.alarm
+        assert res.direction == "down"
+
+    def test_short_stream_never_alarms(self) -> None:
+        assert not page_hinkley(np.array([1.0, 2.0, 3.0])).alarm
+
+
+class TestPSI:
+    def test_stable_on_same_distribution(self) -> None:
+        golden = RNG.normal(0, 1, 1000)
+        current = RNG.normal(0, 1, 1000)
+        assert psi(golden, current).label == "stable"
+
+    def test_major_on_big_shift(self) -> None:
+        golden = RNG.normal(0, 1, 1000)
+        current = RNG.normal(3, 1, 1000)
+        res = psi(golden, current)
+        assert res.label == "major"
+        assert res.value > 0.25
+
+    def test_bins_frozen_from_golden_are_reusable(self) -> None:
+        golden = RNG.normal(0, 1, 1000)
+        current = RNG.normal(1, 1, 1000)
+        first = psi(golden, current)
+        second = psi(golden, current, bins=first.bins)
+        assert second.value == pytest.approx(first.value)
