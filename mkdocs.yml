@@ -1,0 +1,44 @@
+site_name: dedrift
+site_url: https://dedrift.ai
+site_description: >-
+  Statistically rigorous behavioral drift detection for AI agents.
+repo_url: https://github.com/dedrift/dedrift
+repo_name: dedrift/dedrift
+copyright: AGPL-3.0 &middot; <a href="mailto:support@dedrift.ai">support@dedrift.ai</a>
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+    - toc.integrate
+
+nav:
+  - Home: index.md
+  - How it works: how-it-works.md
+  - The statistics: statistics.md
+  - CLI reference: cli.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - toc:
+      permalink: true

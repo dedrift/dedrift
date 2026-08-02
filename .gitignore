@@ -33,3 +33,6 @@ dist/
 
 # Secrets - never commit
 .env
+
+# MkDocs build output
+site/
