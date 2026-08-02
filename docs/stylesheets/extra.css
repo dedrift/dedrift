@@ -1,6 +1,14 @@
 :root {
   --dd-accent: #f5b301;
   --dd-ink: #0b0f19;
+  /* Material "custom" primary: dark ink header matching the hero */
+  --md-primary-fg-color: #0b0f19;
+  --md-primary-fg-color--light: #1a2233;
+  --md-primary-fg-color--dark: #06080f;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0b0f19;
 }
 
 /* ---------- hero ---------- */

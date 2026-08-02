@@ -1,3 +1,9 @@
+---
+hide:
+  - navigation
+  - toc
+---
+
 # dedrift {.dd-visually-hidden style="display:none"}
 
 <div class="dd-hero" markdown>
