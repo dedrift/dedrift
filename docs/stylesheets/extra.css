@@ -65,6 +65,9 @@
 }
 .dd-hero .dd-pip span { color: var(--dd-accent); }
 
+/* no permalink anchors in the hero */
+.dd-hero .headerlink { display: none; }
+
 /* ---------- terminal demo ---------- */
 .dd-terminal {
   background: var(--dd-ink);

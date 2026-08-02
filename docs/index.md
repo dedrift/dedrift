@@ -13,7 +13,7 @@ hide:
 <p class="dd-sub">
 dedrift catches silent behavioral drift in AI agents — with calibrated
 false-alarm rates, FDR-controlled alerting, and config-change attribution.
-Built by a statistician who got tired of monitoring tools whose p-values lie.
+Every statistical claim is enforced by simulation tests that run in CI.
 </p>
 
 [Get started](#try-it-in-two-minutes){ .md-button .md-button--primary }
