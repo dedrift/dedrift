@@ -270,6 +270,9 @@ def baseline_set(
     last: Annotated[
         int | None, typer.Option(help="Freeze the last N completed cycles instead.")
     ] = None,
+    first: Annotated[
+        int | None, typer.Option(help="Freeze the first N cycles (the known-good era).")
+    ] = None,
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
     """Freeze known-good cycles as the golden baseline (never auto-updated)."""
@@ -281,18 +284,18 @@ def baseline_set(
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
     with store:
-        if last is not None:
+        if last is not None or first is not None:
             records = [r for r in store.read_records() if r.cycle_id is not None]
             if not records:
                 typer.echo("No canary cycles found.", err=True)
                 raise typer.Exit(code=1)
             frame = signatures_frame(records)
             cycles = list(dict.fromkeys(frame["cycle_id"]))
-            chosen = cycles[-last:]
+            chosen = cycles[:first] if first is not None else cycles[-(last or 0) :]
         elif cycle_ids:
             chosen = list(cycle_ids)
         else:
-            typer.echo("Provide cycle IDs or --last N.", err=True)
+            typer.echo("Provide cycle IDs, --first N, or --last N.", err=True)
             raise typer.Exit(code=1)
         set_golden_baseline(store, chosen)
         typer.echo(f"Golden baseline frozen: {get_golden_baseline(store)}")
