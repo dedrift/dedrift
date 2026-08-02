@@ -34,8 +34,8 @@ dedrift needs exactly one function — text in, behavior out:
 def agent_fn(input: dict) -> dict:
     response = my_agent.run(input["text"])
     return {
-        "text": response.text,          # required
-        "structured": response.json,    # optional: enables format/exact-match signatures
+        "text": response.text,  # required
+        "structured": response.json,  # optional: enables format/exact-match signatures
         "tokens_out": response.usage.output_tokens,  # optional
     }
 ```
