@@ -46,7 +46,9 @@ dev = [
 dedrift = "dedrift.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/alimahmoudi/dedrift"
+Homepage = "https://dedrift.ai"
+Repository = "https://github.com/dedrift/dedrift"
+Issues = "https://github.com/dedrift/dedrift/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dedrift"]
