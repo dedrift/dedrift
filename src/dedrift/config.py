@@ -81,7 +81,17 @@ class AnytimeConfig:
         alpha: Lifetime, battery-wide false-alert budget. The claim is
             "P(ever alerting on a stable agent) <= alpha", per epoch.
         gamma_total: Portion of ``alpha`` spent on nuisance coverage;
-            ``alpha_prime = alpha - gamma_total`` is the e-BH level.
+            ``alpha_prime = alpha - gamma_total`` is the e-BH level. The
+            default 0.02 was chosen from a sweep over allocations whose
+            battery-wide claim is actually 0.05 (per-process split
+            included). Within that valid region the trade is one-sided —
+            detection at +10pp rises 13% -> 47% as gamma_total goes
+            0.005 -> 0.03 with the measured null rate 0 throughout — so the
+            choice is made on power alone, since validity does not
+            discriminate. We stop at 0.02 rather than 0.03 because
+            ``alpha_prime`` *is* the battery's FDR level, and spending most
+            of the lifetime budget insuring against a coverage failure that
+            has never been observed buys little.
         tilts: Base odds-ratio tilts; symmetrised to ``{psi, 1/psi}`` so
             drift in either direction is covered.
         epoch_allocation: ``"per_epoch"`` (default, honest: a reset means
@@ -91,7 +101,7 @@ class AnytimeConfig:
     """
 
     alpha: float = 0.05
-    gamma_total: float = 0.01
+    gamma_total: float = 0.02
     tilts: tuple[float, ...] = (1.5, 2.0, 3.0)
     epoch_allocation: str = "per_epoch"
 
@@ -160,7 +170,7 @@ class ProjectConfig:
         anytime_raw = data.get("anytime", {})
         anytime = AnytimeConfig(
             alpha=float(anytime_raw.get("alpha", 0.05)),
-            gamma_total=float(anytime_raw.get("gamma_total", 0.01)),
+            gamma_total=float(anytime_raw.get("gamma_total", 0.02)),
             tilts=tuple(float(x) for x in anytime_raw.get("tilts", (1.5, 2.0, 3.0))),
             epoch_allocation=str(anytime_raw.get("epoch_allocation", "per_epoch")),
         )

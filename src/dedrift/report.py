@@ -116,6 +116,136 @@ the same data); their raw p-values are shown for context and never alert.
 """
 
 
+_ANYTIME_TEMPLATE = """\
+# dedrift report (anytime-valid) — {{ r.verdict }}
+
+Cycle `{{ r.current_cycle }}`, epoch fingerprint `{{ r.fingerprint }}`
+(check ts {{ r.ts }}).
+
+## The guarantee, stated exactly
+
+Over an **unbounded** monitoring horizon, the probability of ever raising a
+false alert on a stable agent is at most **α = {{ r.alpha }}** — *per epoch*.
+
+| Component | Value | What it pays for |
+|---|---|---|
+| α (lifetime, battery-wide) | {{ r.alpha }} | the whole claim |
+| α′ (e-BH level) | {{ '%.4g' | format(r.alpha_prime) }} | multiplicity across {{ r.n_processes }} e-processes |
+| γ total | {{ r.gamma_total }} | nuisance-parameter coverage |
+| γ per process | {{ '%.2e' | format(r.gamma_per_process) }} | γ total ÷ {{ r.n_processes }} |
+
+γ is divided by the pool size because e-BH requires every input to be a
+valid e-value: a process whose coverage interval misses the truth is not
+one, so coverage failures union-bound across the battery. Using the total
+per process would state {{ r.alpha }} while delivering
+{{ '%.2f' | format(r.alpha_prime + r.n_processes * r.gamma_total) }}.
+
+**"Per epoch" is not a caveat to skim.** An epoch ends when the canary
+suite, embedder, golden baseline or extractor changes — which changes the
+hypothesis, so evidence gathered before it is not evidence about the null
+being tested now. A guarantee spanning a hypothesis change would be
+meaningless rather than stronger.
+{% if r.resets %}
+## ⚠ Epoch resets at this check ({{ r.resets | length }})
+
+Wealth was returned to zero for these processes. Their guarantee restarts
+from this cycle.
+{% for note in r.resets %}
+- {{ note }}
+{% endfor %}
+{% endif %}
+{% if r.degraded %}
+> **DEGRADED DATA:** too many current-cycle records carry errors. Alerts are
+> suppressed; e-values were still accumulated because a suppressed cycle
+> contributes `E_t = 1` exactly, which preserves the supermartingale.
+{% endif %}
+
+## Alerts ({{ alerts | length }})
+
+{% if alerts %}
+Rejected by e-BH at q = {{ '%.4g' | format(r.alpha_prime) }} over the running e-processes.
+
+| Process | log-wealth | evidence 1/α reached | onset ≈ cycle | crossed at |
+|---|---|---|---|---|
+{% for p in alerts -%}
+| {{ p.label }} | {{ '%.2f' | format(p.log_wealth) }} | {{ '%.3g' | format(p.evalue_capped) }} | {{ p.rise_cycle or '—' }} | {{ p.crossed_at or '—' }} |
+{% endfor %}
+{% else %}
+No alerts. Wealth has not accumulated past the e-BH threshold on any
+process.
+{% endif %}
+
+## All e-processes
+
+Wealth is the accumulated evidence *since the epoch began*. Negative means
+the bets have lost — evidence **for** stability, which the fixed-sample path
+cannot express. "Bets" counts cycles where a bet was admissible; a
+suppressed or degenerate cycle contributes exactly 1 (log 0) and is not a
+missing update.
+
+| Process | log-wealth | epoch | cycles | bets | onset | alert |
+|---|---|---|---|---|---|---|
+{% for p in processes -%}
+| {{ p.label }} | {{ '%.2f' | format(p.log_wealth) }} | {{ p.epoch }} | {{ p.cycles }} | {{ p.bets_placed }} | {{ p.rise_cycle or '—' }} | {{ 'YES' if p.rejected else '' }} |
+{% endfor %}
+
+## Known inefficiency: idle processes still cost multiplicity
+
+{{ idle }} of {{ r.n_processes }} processes have never placed a bet — a
+signature with no usable data (an unpopulated `exact_match`, say) cannot
+produce evidence, yet it still enlarges the pool, which both shrinks the
+per-process coverage budget and raises the e-BH threshold. Nothing here is
+invalid; it is power given away. Filtering the pool is not as simple as
+dropping empty rows: the coverage interval for a frozen baseline is only a
+single fixed event if the pool size is constant within the epoch, so the
+filter has to be decided at epoch start rather than per cycle. Queued
+rather than improvised.
+
+## What is proven, and what is measured
+
+- **Proven, per process:** Ville's inequality bounds the probability of ever
+  crossing at α′, for any stopping rule.
+- **Proven, per check:** e-BH controls FDR under arbitrary dependence among
+  the e-values.
+- **Measured, not proven, over the trajectory:** applying e-BH at every
+  cycle to running e-processes is anytime-valid under a causal condition
+  (no unobserved confounding from the past) that our dependent streams
+  plausibly but not provably satisfy. The realised rate is measured by
+  simulation instead; see the statistics documentation.
+- **Honest about power:** the nuisance worst-casing makes each bet
+  conservative, so small shifts accumulate slowly or not at all. Detection
+  delay by effect size is published rather than implied.
+"""
+
+
+def render_anytime_report(result: object) -> str:
+    """Render the markdown report for an anytime-valid check.
+
+    Deliberately a separate template rather than a branch inside the
+    fixed-sample one: the two paths report different objects (wealth
+    trajectories and epochs versus p-values and effect sizes), and merging
+    them would blur exactly the distinction an operator needs to keep
+    straight.
+
+    Args:
+        result: An :class:`dedrift.anytime.AnytimeCheckResult`.
+
+    Returns:
+        Markdown text; deterministic given identical state.
+    """
+    from dedrift.anytime import AnytimeCheckResult
+
+    assert isinstance(result, AnytimeCheckResult)
+    env = Environment(autoescape=False)
+    template = env.from_string(_ANYTIME_TEMPLATE)
+    return template.render(
+        r=result,
+        alerts=result.alerts(),
+        processes=sorted(result.processes, key=lambda p: -p.log_wealth),
+        idle=sum(1 for p in result.processes if p.bets_placed == 0),
+    )
+
+
 def _effect_str(t: object) -> str:
     from dedrift.check import TestRecord
 

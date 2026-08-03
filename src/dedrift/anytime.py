@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from dedrift.check import DEGRADED_ERROR_FRACTION, get_golden_baseline
@@ -85,6 +86,15 @@ class ProcessReport:
         """Report-friendly identity, e.g. ``[golden] edge_case/refusal (rate)``."""
         b, f, s, c = self.key
         return f"[{b}] {f}/{s} ({c})"
+
+    @property
+    def evalue_capped(self) -> float:
+        """``E`` on the natural scale, capped so reports never print ``inf``.
+
+        Wealth overflows float64 well before it stops being interesting, so
+        the decision rule runs in logs; this exists only for display.
+        """
+        return float(np.exp(min(self.log_wealth, 700.0)))
 
 
 @dataclass(frozen=True)

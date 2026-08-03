@@ -398,18 +398,36 @@ def report(
         Path | None, typer.Option("--out", help="Write markdown here (default: stdout).")
     ] = None,
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+    inference: Annotated[
+        str,
+        typer.Option(
+            "--inference",
+            help="fixed (p-values, default) or anytime (e-processes, lifetime guarantee).",
+        ),
+    ] = "",
 ) -> None:
     """Run a check and render the full markdown report."""
     from dedrift.check import run_check
-    from dedrift.report import render_report
+    from dedrift.config import ProjectConfig
+    from dedrift.report import render_anytime_report, render_report
 
     store = Store(path)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
+    cfg = ProjectConfig.load(store.project_dir)
+    mode = inference or cfg.inference
+    if mode not in ("fixed", "anytime"):
+        typer.echo(f"--inference must be 'fixed' or 'anytime', got {mode!r}", err=True)
+        raise typer.Exit(code=1)
     with store:
-        result = run_check(store)
-        markdown = render_report(store, result)
+        if mode == "anytime":
+            from dedrift.anytime import run_anytime_check
+
+            markdown = render_anytime_report(run_anytime_check(store, cfg))
+        else:
+            result = run_check(store)
+            markdown = render_report(store, result)
     if output is None:
         typer.echo(markdown)
     else:

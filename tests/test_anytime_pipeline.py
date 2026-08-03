@@ -19,6 +19,7 @@ from dedrift.check import run_check, set_golden_baseline
 from dedrift.cli import app
 from dedrift.config import AnytimeConfig, ProjectConfig
 from dedrift.evalues.rates import per_process_gamma
+from dedrift.report import render_anytime_report
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
 from dedrift.store import Store
 
@@ -167,3 +168,54 @@ class TestCli:
         out = runner.invoke(app, ["check", "--project", str(tmp_path), "--inference", "bayes"])
         assert out.exit_code == 1
         assert "must be 'fixed' or 'anytime'" in out.output
+
+
+class TestAnytimeReport:
+    """The report has to state the guarantee exactly, caveats included."""
+
+    def test_report_states_the_budget_and_the_per_epoch_caveat(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        for _ in range(3):
+            res = run_anytime_check(store)
+        md = render_anytime_report(res)
+        store.close()
+
+        assert "per epoch" in md
+        assert "unbounded" in md
+        # the budget decomposition, and *why* gamma is divided
+        assert "γ per process" in md
+        assert "union-bound" in md
+        assert f"÷ {res.n_processes}" in md
+        # no float noise in the headline numbers
+        assert "0.030000" not in md
+        # honesty sections that must never be dropped
+        assert "What is proven, and what is measured" in md
+        assert "Known inefficiency" in md
+        assert "evidence **for** stability" in md
+
+    def test_report_is_deterministic_given_state(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        res = run_anytime_check(store)
+        first = render_anytime_report(res)
+        second = render_anytime_report(res)
+        store.close()
+        assert first == second
+
+    def test_reset_is_announced_in_the_report(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        run_anytime_check(store)
+        cycles = sorted({r.cycle_id for r in store.read_records() if r.cycle_id})
+        set_golden_baseline(store, cycles[:2])
+        res = run_anytime_check(store)
+        md = render_anytime_report(res)
+        store.close()
+        assert "Epoch resets at this check" in md
+        assert "returned to zero" in md
+
+    def test_cli_report_honours_the_inference_flag(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        store.close()
+        out = runner.invoke(app, ["report", "--project", str(tmp_path), "--inference", "anytime"])
+        assert out.exit_code == 0, out.output
+        assert "anytime-valid" in out.output
+        assert "per epoch" in out.output
