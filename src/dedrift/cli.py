@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from dedrift.schema import AgentConfig, InteractionRecord
 from dedrift.sim import SimAgent, SimConfig, drifted_profile
 from dedrift.store import Store
+
+if TYPE_CHECKING:  # annotation only: keeps CLI start-up import-light
+    from dedrift.config import ProjectConfig
 
 app = typer.Typer(
     name="dedrift",
@@ -356,7 +359,7 @@ def check(
         raise typer.Exit(code=2)
 
 
-def _check_anytime(store: Store, cfg: object) -> None:
+def _check_anytime(store: Store, cfg: ProjectConfig) -> None:
     """Render the anytime-valid check. Exit 2 on drift, matching `fixed`."""
     from dedrift.anytime import run_anytime_check
 
