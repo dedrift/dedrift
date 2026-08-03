@@ -38,7 +38,11 @@ auto-calibrated materiality floor), the full detector battery
 (KS/Levene/permutation-P95/two-proportion z/MMD as primaries; AD and Welch as
 corroboration; PSI and Page–Hinkley as labeled diagnostics) with BH-FDR over primaries
 and materiality gating, dual baselines, config-change attribution, and deterministic
-markdown reports — all with calibration and power tests enforced in CI.
+markdown reports — all with calibration and power tests enforced in CI. Plus an
+opt-in **anytime-valid** inference path (`--inference anytime`): e-values,
+e-processes and e-BH giving a lifetime rather than per-check guarantee, with
+per-epoch semantics and persisted process state. Rate channel only so far —
+run both modes.
 
 ## Install
 
