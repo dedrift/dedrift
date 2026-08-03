@@ -33,12 +33,11 @@ N_CUR, N_REF = 21, 105
 #: 24 rate e-processes: 6 families x 2 rate signatures x 2 baselines,
 #: spanning rare (0.02) to near-certain (0.99) — the regimes behave
 #: differently and both belong in the measurement.
-BASE_RATES = np.array(
-    [0.05, 0.05, 0.10, 0.02, 0.15, 0.08]
-    + [0.98, 0.99, 0.97, 0.99, 0.95, 0.98]
-    + [0.05, 0.05, 0.10, 0.02, 0.15, 0.08]
-    + [0.98, 0.99, 0.97, 0.99, 0.95, 0.98]
-)
+#: refusal-like rates per family, then format-validity-like; repeated for
+#: the second baseline (golden and rolling share the current cycle).
+_REFUSAL_LIKE = [0.05, 0.05, 0.10, 0.02, 0.15, 0.08]
+_VALIDITY_LIKE = [0.98, 0.99, 0.97, 0.99, 0.95, 0.98]
+BASE_RATES = np.array([*_REFUSAL_LIKE, *_VALIDITY_LIKE, *_REFUSAL_LIKE, *_VALIDITY_LIKE])
 K = len(BASE_RATES)
 
 
