@@ -21,6 +21,25 @@ Hence ``gamma_i = gamma_total / K``, computed from the live process count
 rather than typed in. At 24 processes, using ``gamma_i = gamma_total``
 directly would state 0.05 while delivering 0.28.
 
+Why only the golden baseline
+----------------------------
+The bound above needs each process's nuisance interval to be a *single
+fixed event*, settled once and then held. A frozen golden baseline gives
+exactly that: the reference counts never change, so one Clopper-Pearson
+interval at level ``gamma_i`` covers or does not, once, for the whole
+epoch.
+
+A *rolling* reference is recomputed every cycle, so its interval is a new
+event each cycle and the union bound over a horizon of ``T`` cycles is
+``T * gamma_i``, not ``gamma_i``. At the shipped default and ``T = 2000``
+that is not a guarantee at all. Honouring it needs a time-uniform interval
+-- a confidence sequence -- which this package does not yet have. Until it
+does, rolling processes are **excluded from the anytime pool** and
+:func:`dedrift.evalues.rates.rate_evalue` refuses to build a bet on a
+non-frozen reference rather than labelling one as if it were covered.
+Rolling comparisons remain fully supported on the fixed-sample path, which
+is where they were always adjudicated.
+
 What is and is not established
 ------------------------------
 * Per process, Ville's inequality bounds the probability of *ever* crossing.
@@ -64,6 +83,16 @@ from dedrift.store import Store
 #: fingerprint, because evidence gathered with a different instrument is
 #: not evidence about the same null.
 EXTRACTOR_VERSION = "1"
+
+#: The only baseline the anytime path admits. A rolling reference lacks a
+#: time-uniform interval (module docstring); until a confidence sequence
+#: exists, betting against it would state a guarantee we cannot deliver.
+ANYTIME_BASELINE = "golden"
+
+#: Verdict when the epoch has no frozen baseline to bet against. Distinct
+#: from ``OK`` on purpose: an empty pool means nothing was monitored, and
+#: an operator reading ``OK`` would conclude the opposite.
+NO_BASELINE_VERDICT = "NO GOLDEN BASELINE"
 
 
 @dataclass(frozen=True)
@@ -303,7 +332,6 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
     cycles = list(dict.fromkeys(frame["cycle_id"]))
     current = cycles[-1]
     golden = [c for c in get_golden_baseline(store) if c in cycles and c != current]
-    rolling = [c for c in cycles[:-1] if c not in golden][-cfg.rolling_window_cycles :]
 
     fingerprint = epoch_fingerprint(
         suite_version=str(len({r.canary_id for r in records if r.canary_id})),
@@ -323,7 +351,10 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
     # recomputed per cycle would quietly turn it into a sequence of
     # different events.
     ts = datetime.now(timezone.utc).isoformat()
-    baselines = [("rolling", rolling), ("golden", golden)]
+    # Golden only: a rolling reference has no time-uniform interval, so its
+    # coverage event is fresh every cycle and the budget arithmetic above
+    # does not hold for it. See the module docstring.
+    baselines = [(ANYTIME_BASELINE, golden)]
     pool_keys = load_pool(store, fingerprint)
     pool_declared_now = False
     if not pool_keys:
@@ -362,7 +393,7 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
             prior,
             gamma=gamma_i,
             grid=grid,
-            frozen_reference=(baseline_name == "golden"),
+            frozen_reference=(baseline_name == ANYTIME_BASELINE),
         )
         upd = update_process(
             state,
@@ -398,7 +429,12 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
 
     save_states(store, updated, ts)
     n_alerts = sum(1 for p in processes if p.rejected)
-    verdict = "DEGRADED DATA" if degraded else ("DRIFT DETECTED" if n_alerts else "OK")
+    if not pool_keys:
+        verdict = NO_BASELINE_VERDICT
+    elif degraded:
+        verdict = "DEGRADED DATA"
+    else:
+        verdict = "DRIFT DETECTED" if n_alerts else "OK"
 
     result = AnytimeCheckResult(
         ts=ts,

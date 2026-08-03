@@ -72,6 +72,15 @@ class SimConfig:
         pre: Behavior before the change.
         post: Behavior after the change (ignored in the null scenario).
         change_cycle: Cycle index at which the config change takes effect.
+        cycle_effect_sigma: Standard deviation of a per-cycle latent offset
+            shared by every record of that cycle. **Zero by default**, which
+            is the exactly-exchangeable null the acceptance bands are stated
+            for. Above zero the *configured stack* is still unchanged, but
+            the per-record law is not constant across cycles — the situation
+            a hosted model actually presents (load, routing, cache state,
+            rolling deployments behind a stable alias). See
+            ``TestCycleEffectRobustness`` for what it costs; it is a
+            robustness dial, not part of any guarantee.
         seed: Master seed; identical seeds give identical record streams
             (modulo record UUIDs and wall-clock-free timestamps, which are
             deterministic here too — time is simulated).
@@ -82,6 +91,7 @@ class SimConfig:
     pre: BehaviorProfile = field(default_factory=BehaviorProfile)
     post: BehaviorProfile = field(default_factory=BehaviorProfile)
     change_cycle: int | None = None
+    cycle_effect_sigma: float = 0.0
     seed: int = 1729
 
 
@@ -139,11 +149,49 @@ class SimAgent:
         index = int(canary_id.rsplit("-", 1)[-1])
         return FAMILIES[index % len(FAMILIES)]
 
+    def _cycle_offset(self, cycle: int) -> float:
+        """Latent offset shared by every record of ``cycle``.
+
+        Drawn from a generator seeded by ``(master seed, cycle)`` rather
+        than from ``self.rng``, so it is a property of the cycle and not of
+        the order in which records happen to be generated. Reproducibility
+        is preserved and records within a cycle genuinely share it.
+        """
+        sigma = self.sim_config.cycle_effect_sigma
+        if sigma <= 0:
+            return 0.0
+        gen = np.random.default_rng([self.sim_config.seed, cycle])
+        return float(gen.normal(0.0, sigma))
+
     def _profile_for_cycle(self, cycle: int) -> BehaviorProfile:
         change = self.sim_config.change_cycle
-        if change is not None and cycle >= change:
-            return self.sim_config.post
-        return self.sim_config.pre
+        base = (
+            self.sim_config.post
+            if (change is not None and cycle >= change)
+            else self.sim_config.pre
+        )
+        offset = self._cycle_offset(cycle)
+        if offset == 0.0:
+            return base
+
+        # Apply on the natural scale of each parameter: log for positive
+        # magnitudes, logit for probabilities. A single latent moves them
+        # together, which is the point — provider-side state does not
+        # politely confine itself to one signature.
+        def _logit_shift(p: float, u: float) -> float:
+            odds = p / (1 - p) if 0 < p < 1 else p
+            if odds <= 0:
+                return p
+            shifted = odds * np.exp(u)
+            return float(shifted / (1 + shifted))
+
+        return replace(
+            base,
+            mean_length_words=base.mean_length_words * float(np.exp(offset)),
+            refusal_prob=_logit_shift(base.refusal_prob, offset),
+            format_error_prob=_logit_shift(base.format_error_prob, offset),
+            latency_mean_ms=base.latency_mean_ms * float(np.exp(offset)),
+        )
 
     def _agent_config_for_cycle(self, cycle: int) -> AgentConfig:
         change = self.sim_config.change_cycle
@@ -191,6 +239,25 @@ class SimAgent:
         self.clock += timedelta(seconds=float(self.rng.uniform(1, 5)))
         self._record_counter += 1
         n_words_out = len(output.text.split())
+        # Tokens and steps must not be deterministic functions of another
+        # signature in the same BH pool.
+        #
+        # An earlier version set ``tokens_out = int(1.3 * n_words_out)`` and
+        # ``steps = 1 + len(tool_calls)``. The two-sample KS statistic is
+        # invariant under a strictly monotone transform, so ``ks(tokens_out)``
+        # was *the same test* as ``ks(output_words)`` and ``ks(steps)`` the
+        # same as ``ks(tool_call_count)``. Roughly a quarter of every
+        # calibration and power number was measured on duplicated
+        # hypotheses -- which is precisely the redundancy the design refuses
+        # at test level (one primary per channel) reappearing at signature
+        # level in the generator.
+        #
+        # Real tokenisers are not linear in whitespace words, and real agents
+        # take steps that are not tool calls (planning, retries, reflection).
+        # Both now carry that noise, so the columns are correlated -- as they
+        # are in practice -- without being deterministic images of each other.
+        tokens_out = max(1, round(n_words_out * float(self.rng.normal(1.3, 0.18))))
+        extra_steps = int(self.rng.binomial(2, 0.25))
         return InteractionRecord(
             id=f"sim-{self.sim_config.seed}-{self._record_counter:08d}",
             ts=self.clock,
@@ -204,12 +271,12 @@ class SimAgent:
             ),
             output=output,
             tool_calls=tool_calls,
-            steps=1 + len(tool_calls),
+            steps=1 + len(tool_calls) + extra_steps,
             retries=0,
             errors=[],
             latency_ms=int(latency),
             tokens_in=64,
-            tokens_out=int(n_words_out * 1.3),
+            tokens_out=tokens_out,
             config=self._agent_config_for_cycle(cycle),
         )
 

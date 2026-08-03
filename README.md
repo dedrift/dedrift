@@ -24,10 +24,11 @@ dedrift's differentiation is statistical correctness:
 - **Anytime-valid mode** (`--inference anytime`): swaps per-check FDR for a
   *lifetime* guarantee — over an unbounded horizon, P(ever falsely alerting on
   a stable agent) ≤ α, per epoch. Measured 0 false alerts across 500
-  stable-agent runs of 2000 cycles each (flat in the horizon), against 100%
-  for the per-check path on identical histories. It costs detection power —
-  a +2 pp shift becomes undetectable — so it is opt-in and both numbers are
-  published.
+  stable-agent runs of 2000 cycles each with dependent streams (flat in the
+  horizon), against 100% for the per-check path on identical histories. It
+  costs detection power, and the cost is inconsistency rather than delay: a
+  +10 pp shift on one channel is caught in only 23% of runs. Opt-in, golden
+  baseline only, and both numbers are published.
 
 ## Status
 

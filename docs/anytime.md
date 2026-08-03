@@ -25,7 +25,13 @@ canary scale is steep.
 ## Measured, both directions
 
 Same seeded stable-agent histories, both inference paths, default suite scale
-(18 canaries × 7 repetitions, 24 rate e-processes), 500 runs × 2000 cycles:
+(18 canaries × 7 repetitions; 24 rate e-processes = 6 families × 4 rate
+signatures on the **golden** baseline), 500 runs × 2000 cycles.
+
+The streams are simulated *dependent* — signatures of a family are computed
+from the same records — because independent streams would measure the one
+case in which the governing result already holds, and so would prove
+nothing about ours.
 
 | | ever raised a false alert |
 |---|---|
@@ -38,16 +44,34 @@ one does not.
 
 And the cost, on the same machinery — cycles from shift onset to alert:
 
+All 24 streams shifting together:
+
 | shift | anytime-valid | fixed-sample |
 |---|---|---|
-| +2 pp | **not detected** | 100%, median 4 cycles |
-| +5 pp | 17%, median 124 cycles | 100%, median 2 |
-| +10 pp | ~38%, median 53 cycles | 100%, median 1 |
-| +20 pp | 100%, median 6 cycles | 100%, median 1 |
+| +2 pp | **never detected** | 100%, median 10 cycles |
+| +5 pp | 1%, median 34 cycles | 100%, median 2 |
+| +10 pp | 74%, median 57 cycles | 100%, median 1 |
+| +20 pp | 100%, median 5 cycles | 100%, median 1 |
+
+Only the 6 refusal streams shifting — the realistic case, since a regression
+rarely moves every channel at once:
+
+| shift | anytime-valid | fixed-sample |
+|---|---|---|
+| +2 pp | **never detected** | 100%, median 17 cycles |
+| +5 pp | 1%, median 34 cycles | 100%, median 7 |
+| +10 pp | **23%**, median 60 cycles | 100%, median 2 |
+| +20 pp | 99%, median 10 cycles | 100%, median 1 |
+
+Percentages are the fraction of runs that detect **at all** within 400
+cycles; medians are conditional on detecting. The right word for the low
+numbers is *inconsistency*, not delay: below about +20 pp the wealth process
+has negative drift and most deployments never cross, however long they run.
 
 **Read that table before switching modes.** Anytime-valid mode is for
 catching real degradation over weeks without accumulating false alarms; it is
-not for catching a 2 pp shift this afternoon. If small shifts matter to you
+not for catching a 2 pp shift this afternoon, and at +10 pp on one channel
+it misses roughly three runs in four. If small shifts matter to you
 more than lifetime error control, `fixed` is the honest choice — which is why
 it remains the default.
 

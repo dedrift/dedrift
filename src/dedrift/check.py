@@ -267,6 +267,24 @@ def _add_semantic_displacement(
     else all cycles — mildly contaminated by the current cycle, which the
     docs note as a reason to set a golden baseline). A scalar per record, so
     it flows through the ordinary scalar battery — KS/AD/Levene/P95 apply.
+
+    Reference records are scored **leave-one-out**
+    ---------------------------------------------
+    A reference record helped define its own centroid, so scoring it against
+    the full mean measures an in-sample distance while a current-cycle
+    record is measured out-of-sample. With ``n`` reference embeddings per
+    canary the null expectations differ by a factor of roughly
+    ``(1 + 1/n) / (1 - 1/n)`` — about 1.2x at the default ``n = 12`` — which
+    inflates the current window's location *and* dispersion on completely
+    unchanged data. KS, Brown-Forsythe and the P95 permutation test on this
+    column would all be anticonservative by construction.
+
+    Removing the record from its own centroid restores the comparison: both
+    windows are then scored against a centroid that excludes them. For a
+    reference record ``i`` of canary ``c``, the leave-one-out centroid is
+    ``(n * mean_c - x_i) / (n - 1)``, computed in closed form rather than by
+    recomputing ``n`` means. Canaries with a single reference record cannot
+    be scored leave-one-out and yield NaN, which the battery already drops.
     """
     ref_cycle_set = set(golden_cycles)
     by_canary: dict[str, list[npt.NDArray[np.float64]]] = {}
@@ -275,16 +293,31 @@ def _add_semantic_displacement(
         if r.canary_id is not None and in_ref:
             by_canary.setdefault(r.canary_id, []).append(embeddings[r.id])
     centroids = {c: np.mean(np.stack(v), axis=0) for c, v in by_canary.items() if v}
+    counts = {c: len(v) for c, v in by_canary.items() if v}
+    reference_ids = {
+        r.id
+        for r in records
+        if r.canary_id is not None and ((r.cycle_id in ref_cycle_set) if ref_cycle_set else True)
+    }
 
-    def displacement(record_id: str, canary_id: str | None) -> float:
-        centroid = centroids.get(canary_id or "")
-        if centroid is None:
-            return float("nan")
-        vec = embeddings[record_id]
+    def _cosine_distance(vec: npt.NDArray[np.float64], centroid: npt.NDArray[np.float64]) -> float:
         denom = float(np.linalg.norm(vec) * np.linalg.norm(centroid))
         if denom == 0:
             return 1.0
         return float(1.0 - float(vec @ centroid) / denom)
+
+    def displacement(record_id: str, canary_id: str | None) -> float:
+        key = canary_id or ""
+        centroid = centroids.get(key)
+        if centroid is None:
+            return float("nan")
+        vec = embeddings[record_id]
+        if record_id in reference_ids:
+            n = counts[key]
+            if n < 2:
+                return float("nan")
+            centroid = (n * centroid - vec) / (n - 1)
+        return _cosine_distance(vec, centroid)
 
     id_to_canary = {r.id: r.canary_id for r in records}
     frame["semantic_displacement"] = [

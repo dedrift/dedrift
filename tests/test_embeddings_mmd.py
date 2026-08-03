@@ -168,3 +168,132 @@ class TestEndToEndWithEmbeddings:
         result = run_check(store)
         assert result.n_alerts == 0
         store.close()
+
+
+class TestDisplacementIsLeaveOneOut:
+    """The reference window must not be scored in-sample.
+
+    A reference record helps define its own canary centroid. Scored against
+    the full mean it sits closer than a current-cycle record does purely by
+    construction, so every test on this column would see a location and
+    dispersion shift on unchanged data. The centroid is therefore recomputed
+    without the record being scored; these tests pin that, because the bug
+    is invisible in any single check and shows up only as a channel that
+    alerts more than it should.
+    """
+
+    def _embeddings(self, n_ref: int, dim: int, seed: int) -> tuple[dict, list, list]:
+        from dedrift.schema import AgentConfig, InteractionRecord
+
+        cfg = AgentConfig(model="m", prompt_hash="p", tool_schema_hash="t", agent_version="v")
+        rng = np.random.default_rng(seed)
+        # Realistic geometry: outputs for one canary cluster around a canary
+        # mean with modest noise. Zero-mean isotropic vectors would make the
+        # centroid pure noise and cosine distance meaningless.
+        mu = rng.normal(size=dim)
+        mu = mu / np.linalg.norm(mu)
+        noise = 0.3
+        records, emb = [], {}
+        for i in range(n_ref + n_ref):
+            rid = f"r{i}"
+            cycle = "cycle-0000" if i < n_ref else "cycle-0001"
+            records.append(
+                InteractionRecord(
+                    id=rid,
+                    source="canary",
+                    input={"text": "x"},
+                    output={"text": "y"},
+                    canary_id="c1",
+                    cycle_id=cycle,
+                    config=cfg,
+                )
+            )
+            emb[rid] = mu + noise * rng.normal(size=dim)
+        return emb, records, ["cycle-0000"]
+
+    def test_reference_and_current_have_equal_null_means(self) -> None:
+        """Under H0 both windows must have the same expected displacement.
+
+        Measured over many draws: with the full-mean centroid the reference
+        window sits systematically closer; leave-one-out removes the gap.
+        The assertion is on the ratio of *grand* means, not the mean of
+        per-draw ratios — with 12 records a window, the denominator is noisy
+        enough that averaging ratios is visibly upward-biased by Jensen and
+        would fail a correct implementation.
+
+        Theory for squared distance: in-sample gives ``(1+1/n)/(1-1/n)``
+        = 1.18 at n=12, leave-one-out gives ``(1+1/n)/(1+1/(n-1))`` = 0.993.
+        The residual 0.7% is the one-record difference in centroid precision
+        and is far below anything the battery can resolve.
+        """
+        import pandas as pd
+
+        from dedrift.check import _add_semantic_displacement
+
+        ref_vals: list[float] = []
+        cur_vals: list[float] = []
+        for seed in range(400):
+            emb, records, golden = self._embeddings(n_ref=12, dim=8, seed=seed)
+            frame = pd.DataFrame(
+                {
+                    "record_id": [r.id for r in records],
+                    "cycle_id": [r.cycle_id for r in records],
+                }
+            )
+            _add_semantic_displacement(frame, records, emb, golden)
+            ref_vals.extend(frame[frame["cycle_id"] == "cycle-0000"]["semantic_displacement"])
+            cur_vals.extend(frame[frame["cycle_id"] == "cycle-0001"]["semantic_displacement"])
+        mean_ratio = float(np.mean(cur_vals) / np.mean(ref_vals))
+        assert 0.96 <= mean_ratio <= 1.04, (
+            f"current/reference displacement ratio {mean_ratio:.3f} — the reference "
+            "window is being scored in-sample"
+        )
+
+    def test_in_sample_centroid_would_be_visibly_biased(self) -> None:
+        """The contrast that makes the test above meaningful.
+
+        Without leave-one-out the same data gives a ratio near 1.18, a
+        location shift the battery would happily call drift. Asserting the
+        broken behaviour is large is what turns the previous test from
+        "passes" into "passes for the right reason".
+        """
+        rng = np.random.default_rng(11)
+        n, dim = 12, 8
+        ref_in, cur_in = [], []
+        for _ in range(400):
+            mu = rng.normal(size=dim)
+            mu = mu / np.linalg.norm(mu)
+            ref = mu + 0.3 * rng.normal(size=(n, dim))
+            cur = mu + 0.3 * rng.normal(size=(n, dim))
+            centroid = ref.mean(axis=0)
+
+            def cos(x: np.ndarray, c: np.ndarray = centroid) -> float:
+                return float(1 - x @ c / (np.linalg.norm(x) * np.linalg.norm(c)))
+
+            ref_in.extend(cos(x) for x in ref)
+            cur_in.extend(cos(x) for x in cur)
+        biased_ratio = float(np.mean(cur_in) / np.mean(ref_in))
+        assert biased_ratio > 1.15, (
+            f"expected a large in-sample bias to guard against, got {biased_ratio:.3f}"
+        )
+
+    def test_single_reference_record_yields_nan_not_zero(self) -> None:
+        """One reference record cannot be scored leave-one-out.
+
+        Returning 0.0 (distance to itself) would look like a perfectly
+        stable canary; NaN is dropped by the battery, which is correct.
+        """
+        import pandas as pd
+
+        from dedrift.check import _add_semantic_displacement
+
+        emb, records, golden = self._embeddings(n_ref=1, dim=8, seed=3)
+        frame = pd.DataFrame(
+            {
+                "record_id": [r.id for r in records],
+                "cycle_id": [r.cycle_id for r in records],
+            }
+        )
+        _add_semantic_displacement(frame, records, emb, golden)
+        ref_val = frame[frame["cycle_id"] == "cycle-0000"]["semantic_displacement"].iloc[0]
+        assert np.isnan(ref_val)

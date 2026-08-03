@@ -259,18 +259,35 @@ def rate_evalue(
             or empty, which yields ``E_t = 1`` (no bet) — the correct
             contribution, preserving the supermartingale exactly.
         prior: Completed-cycle summaries. The *only* input to the bet.
-        gamma: Coverage budget for the nuisance interval. Paid once for a
-            frozen reference; a lifetime budget for an accruing one.
+        gamma: Coverage budget for the nuisance interval, paid once for the
+            frozen reference.
         grid: Symmetric tilt grid; defaults to
             :data:`DEFAULT_TILT_GRID` symmetrised.
-        frozen_reference: True for the golden channel (fixed interval),
-            False for rolling (the interval must be read as one member of a
-            confidence sequence; the caller supplies a ``gamma`` already
-            adjusted for time-uniformity).
+        frozen_reference: Must be True. Retained as an explicit argument so
+            that the unsupported case fails loudly at the call site rather
+            than silently producing a number with no guarantee behind it.
 
     Returns:
         The outcome; ``log_e = 0`` whenever no admissible bet exists.
+
+    Raises:
+        NotImplementedError: If ``frozen_reference`` is False. A reference
+            recomputed each cycle needs a *time-uniform* interval -- a
+            confidence sequence -- or its coverage event is a fresh event
+            every cycle and the union bound over a horizon of ``T`` cycles
+            is ``T * gamma`` rather than ``gamma``. An earlier version of
+            this function accepted the flag and changed only a display
+            string, which stated a guarantee it did not deliver. Refusing
+            is the honest behaviour until the construction exists.
     """
+    if not frozen_reference:
+        msg = (
+            "rate_evalue requires a frozen reference. A rolling reference needs a "
+            "time-uniform interval (confidence sequence), which is not implemented; "
+            "without one the lifetime coverage budget is T*gamma, not gamma. Use the "
+            "fixed-sample path (`dedrift check`) for rolling comparisons."
+        )
+        raise NotImplementedError(msg)
     tilts = grid if grid is not None else symmetric_grid()
     if trials <= 0:
         return EValueOutcome(0.0, False, "no current-cycle trials", tilts)
@@ -280,12 +297,12 @@ def rate_evalue(
     interval = clopper_pearson(prior.reference_successes, prior.reference_trials, gamma)
     log_e = worst_case_log_evalue(successes, trials, interval, tilts)
     log_e = max(log_e, LOG_FLOOR)
-    kind = "fixed CI" if frozen_reference else "confidence sequence member"
     return EValueOutcome(
         log_e=log_e,
         placed=True,
         detail=(
-            f"worst case over p in [{interval[0]:.4f}, {interval[1]:.4f}] ({kind}, gamma={gamma})"
+            f"worst case over p in [{interval[0]:.4f}, {interval[1]:.4f}] "
+            f"(frozen reference, fixed CI, gamma={gamma})"
         ),
         bet=tilts,
     )

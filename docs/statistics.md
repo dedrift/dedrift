@@ -85,10 +85,29 @@ family or raise N.
 
 ## Fine print, stated plainly
 
-- **Balanced-design exchangeability — checked, not assumed.** The
-  two-sample tests require both windows to contain the same canaries at
-  uniform repetition counts; under the strong null ("no change anywhere in
-  the stack") pooled per-family samples are then exchangeable. Every check
+- **Balance is checked; exchangeability is measured, not assumed.**
+  Balanced windows give equal *composition*. Exchangeability needs more:
+  the per-record law must be constant across cycles, which is strictly
+  stronger than "nothing in the configured stack changed". A hosted model
+  varies within a fixed version alias, and the reference pools five cycles
+  against a current window of one, so a shared per-cycle offset shows up as
+  location and dispersion movement no two-sample test can distinguish from
+  drift. Measured, on stable agents (100 runs per level):
+
+  | shared per-cycle offset σ | runs alerting | Wilson 95% upper |
+  |---|---|---|
+  | 0.00 | 2/100 | 0.070 |
+  | 0.10 | 23/100 | 0.322 |
+  | 0.25 | 68/100 | 0.763 |
+
+  A ~10% inter-cycle swing takes the alert rate from 2% to 23%. The 7/500
+  headline is measured at σ = 0 and describes that regime only. If your
+  provider is noisy between cycles, prefer `--inference anytime`, which is
+  much less affected (0/100 up to σ = 0.20 at matched scope), and read
+  [anytime-valid mode](anytime.md) for what that costs. The structural fix
+  — a two-level design treating cycle as a random effect — is open work.
+
+  The composition check remains: Every check
   verifies this per (baseline, family): if a canary's records vanish from
   one window (a timeout, a partial run, a suite edit), the family mixture
   shifts and KS would fire on a missing-data artifact — so the comparison
@@ -149,12 +168,16 @@ family or raise N.
   no informational gain. Their raw p-values are printed for context and can
   never alert. (AD's p is additionally capped by SciPy's asymptotics to
   [0.001, 0.25].)
-- **BH validity for this battery is asserted under PRDS, not proven.** The
-  primary tests are positively correlated on the same data, which PRDS is
-  believed to cover, but Levene-vs-KS dependence under non-normality is not
-  a theorem we can cite. The pipeline-level calibration measures the
-  realized alert rate directly, which is the operative guarantee; a
-  Benjamini–Yekutieli option is on the roadmap for the cautious.
+- **BH is used without a PRDS claim.** This page previously said PRDS was
+  "believed to cover" positively correlated two-sided tests. That belief is
+  no longer available: Dobriban (2026, arXiv:2607.12208) constructs
+  correlated two-sided Gaussian p-values for which BH provably exceeds its
+  nominal level, disproving a twenty-year-old conjecture. Our primaries are
+  two-sided and computed on shared data — the exact configuration. The
+  pipeline-level measured alert rate is therefore the operative guarantee
+  for the default path; Benjamini–Yekutieli is on the roadmap for users who
+  want a theorem, and `--inference anytime` uses e-BH, which holds under
+  arbitrary dependence.
 - **Page–Hinkley** (λ = 12, δ = 0.3 in reference-SD units, scale from the
   median absolute successive difference): the idealized null crossing bound
   is ~0.15% per stream, but because centering and scale are estimated, the

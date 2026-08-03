@@ -307,3 +307,111 @@ class TestPower:
             if two_proportion_z_test(a, N, b, N).p_value < 0.05:
                 detections += 1
         assert detections / n_sims >= 0.70
+
+
+@pytest.mark.calibration
+class TestCycleEffectRobustness:
+    """The assumption the design's exchangeability argument actually needs.
+
+    Balance across windows gives equal *composition*. It does not give
+    exchangeability: that additionally requires the per-record law to be
+    constant across cycles, which is strictly stronger than "nothing in the
+    configured stack changed". A hosted model drifts within a version --
+    load, routing, cache state, rolling deployment behind a stable alias --
+    and the reference window pools five cycles against a current window of
+    one, so any cycle-level offset shows up as location, dispersion and tail
+    movement that no two-sample test can distinguish from drift.
+
+    The 500-run acceptance bound elsewhere in this file is measured with
+    ``cycle_effect_sigma = 0``, i.e. in a generator built so that the
+    assumption cannot fail. That number is honest about what it is, but on
+    its own it would be a calibration measured against its own premise.
+    This class measures the premise.
+
+    What it establishes is a *degradation curve*, not a guarantee: the
+    alert rate is expected to rise with sigma, and the useful output is
+    where it stops being acceptable. Published in docs/statistics.md.
+    """
+
+    def _null_rate(self, tmp_path: Path, sigma: float, n_runs: int) -> tuple[int, int]:
+        cfg = _light_config()
+        alerting = 0
+        for seed in range(n_runs):
+            root = tmp_path / f"s{sigma}_run{seed}"
+            root.mkdir(parents=True)
+            sim = SimConfig(
+                n_canaries=12,
+                repetitions=5,
+                change_cycle=None,
+                cycle_effect_sigma=sigma,
+                seed=seed,
+            )
+            with Store.init_project(root) as store:
+                records = SimAgent(sim).run_cycles(6)
+                store.append_many(records)
+                cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+                set_golden_baseline(store, cycles[:3])
+                if run_check(store, config=cfg).n_alerts > 0:
+                    alerting += 1
+        return alerting, n_runs
+
+    def test_alert_rate_under_cycle_effect_is_pinned(self, tmp_path: Path) -> None:
+        """Measure the curve and pin it. Do not editorialise about it.
+
+        Measured (100 runs per level, 12 canaries x 5 reps, 6 cycles):
+
+        =========  =================  =====================
+        sigma      runs alerting      Wilson 95% upper
+        =========  =================  =====================
+        0.00       2/100              0.070
+        0.10       23/100             0.322
+        0.25       68/100             0.763
+        =========  =================  =====================
+
+        That is not graceful degradation and this test does not pretend it
+        is. A shared per-cycle offset of sigma = 0.10 -- roughly a 10% swing
+        in mean output length and latency between cycles, well inside what a
+        hosted endpoint does on its own -- takes the per-check alert rate
+        from 2% to 23%. The pooled-reference-versus-single-current-cycle
+        design has no way to separate that from drift, and neither does any
+        other two-sample test on these signatures.
+
+        Two honest readings, both of which belong in the docs:
+
+        1. If the offset is *real behavioral variation*, alerting is
+           correct and the operator's problem is that the alert is not
+           actionable. Widening the reference window does not help; only a
+           two-level design that models cycle as a random effect does.
+        2. If the offset is *instrumentation* (adapter overhead, a noisy
+           neighbour), it is a false alarm and the 2% headline does not
+           describe the deployment.
+
+        The 500-run bound elsewhere in this file is measured at sigma = 0
+        and is therefore a statement about the first regime only. It says
+        so, and so does docs/statistics.md.
+
+        100 runs per level bounds each rate to about +/-6pp: enough to
+        establish the shape, not enough to quote three significant figures.
+        The assertions pin the shape.
+        """
+        rates = {}
+        for sigma in (0.0, 0.10, 0.25):
+            hits, n = self._null_rate(tmp_path, sigma, n_runs=100)
+            rates[sigma] = (hits, n, wilson_upper(hits, n))
+            print(
+                f"\ncycle effect sigma={sigma:.2f}: {hits}/{n} alerted "
+                f"(Wilson {rates[sigma][2]:.3f})"
+            )
+
+        assert rates[0.0][2] < 0.10, f"the sigma=0 baseline must stay calibrated, got {rates[0.0]}"
+        assert rates[0.10][0] > rates[0.0][0], (
+            "a cycle effect the design cannot model should raise the alert rate; "
+            f"if this stops being true the guard has silently changed: {rates}"
+        )
+        assert rates[0.25][0] >= rates[0.10][0], (
+            f"alert rate must be monotone in the cycle effect, got {rates}"
+        )
+        assert rates[0.25][0] < 100, (
+            "at sigma=0.25 the tool should not yet be alerting on literally "
+            f"every stable history; got {rates[0.25]}"
+        )
