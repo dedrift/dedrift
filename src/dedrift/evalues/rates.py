@@ -129,6 +129,38 @@ def _log_mixture_evalue(successes: int, trials: int, p: float, grid: tuple[float
     return float(m + np.log(np.mean(np.exp(logs - m))))
 
 
+def per_process_gamma(gamma_total: float, n_processes: int) -> float:
+    """Split the coverage budget across processes — do not skip this.
+
+    The temptation is to read ``alpha = alpha' + gamma`` as the whole story.
+    It is the *per-process* story. e-BH's FDR guarantee requires every input
+    to be a valid e-value, and a process whose nuisance interval misses the
+    truth is not one, so coverage failures union-bound across the battery:
+
+        P(ever a false alert) <= alpha' + sum_i gamma_i
+
+    With 24 processes at ``gamma_i = 0.01`` that is ``0.04 + 0.24 = 0.28``,
+    not 0.05 — the guarantee would be off by more than five times while
+    every number in the report looked fine. Splitting ``gamma_total`` by the
+    live process count keeps the arithmetic correct when the operator
+    changes the suite, which is precisely when a hand-computed constant
+    would go stale.
+
+    The cost is real and belongs in the docs: narrower budgets mean wider
+    intervals, more conservative bets, and less power.
+
+    Args:
+        gamma_total: Total coverage budget (``alpha - alpha'``).
+        n_processes: Number of e-processes entering the e-BH pool.
+
+    Returns:
+        Per-process coverage level.
+    """
+    if n_processes <= 0:
+        return gamma_total
+    return gamma_total / n_processes
+
+
 def clopper_pearson(successes: int, trials: int, gamma: float) -> tuple[float, float]:
     """Exact ``(1 - gamma)`` interval for a binomial rate.
 

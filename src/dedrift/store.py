@@ -110,6 +110,34 @@ CREATE TABLE IF NOT EXISTS alerts (
     effect_units TEXT NOT NULL,
     details_json TEXT NOT NULL
 );
+
+-- Anytime-valid inference state. Unlike the fixed-sample path, which is
+-- stateless (it just compares windows), an e-process accumulates across
+-- cycles, so its wealth must survive between invocations. The fingerprint
+-- column is what makes the guarantee honest: evidence gathered under a
+-- different suite, embedder, golden baseline or extractor concerns a
+-- different null, so a fingerprint change resets the row rather than
+-- silently continuing.
+CREATE TABLE IF NOT EXISTS eprocess_state (
+    baseline TEXT NOT NULL,
+    family TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    log_wealth REAL NOT NULL,
+    cycles INTEGER NOT NULL,
+    bets_placed INTEGER NOT NULL,
+    epoch INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    peak_log_wealth REAL NOT NULL,
+    rise_cycle INTEGER,
+    crossed_at INTEGER,
+    prior_successes INTEGER NOT NULL,
+    prior_trials INTEGER NOT NULL,
+    reference_successes INTEGER NOT NULL,
+    reference_trials INTEGER NOT NULL,
+    updated_ts TEXT NOT NULL,
+    PRIMARY KEY (baseline, family, signature, channel)
+);
 """
 
 

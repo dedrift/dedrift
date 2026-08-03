@@ -304,14 +304,34 @@ def baseline_set(
 @app.command()
 def check(
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+    inference: Annotated[
+        str,
+        typer.Option(
+            "--inference",
+            help=(
+                "fixed = per-check FDR (default, the reference implementation); "
+                "anytime = e-processes with a lifetime guarantee. Both run on "
+                "identical logs, so results are directly comparable."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Run the gated drift check for the latest cycle (dual baselines)."""
     from dedrift.check import run_check
+    from dedrift.config import ProjectConfig
 
     store = Store(path)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
+    cfg = ProjectConfig.load(store.project_dir)
+    mode = inference or cfg.inference
+    if mode not in ("fixed", "anytime"):
+        typer.echo(f"--inference must be 'fixed' or 'anytime', got {mode!r}", err=True)
+        raise typer.Exit(code=1)
+    if mode == "anytime":
+        _check_anytime(store, cfg)
+        return
     with store:
         result = run_check(store)
     typer.echo(f"Current cycle: {result.current_cycle}")
@@ -333,6 +353,39 @@ def check(
             f"effect={a.outcome.effect_size:+.3f}, p_adj={a.p_adjusted:.4g}"
         )
     if result.n_alerts > 0:
+        raise typer.Exit(code=2)
+
+
+def _check_anytime(store: Store, cfg: object) -> None:
+    """Render the anytime-valid check. Exit 2 on drift, matching `fixed`."""
+    from dedrift.anytime import run_anytime_check
+
+    with store:
+        res = run_anytime_check(store, cfg)
+    typer.echo(f"Current cycle: {res.current_cycle}   epoch fingerprint {res.fingerprint}")
+    typer.echo(
+        f"Anytime-valid: alpha={res.alpha} = alpha'({res.alpha_prime}) "
+        f"+ gamma_total({res.gamma_total}); {res.n_processes} e-processes, "
+        f"gamma per process {res.gamma_per_process:.2e}"
+    )
+    typer.echo(f"Verdict: {res.verdict}")
+    for notice in res.resets:
+        typer.echo(f"  RESET {notice}")
+    if res.degraded:
+        typer.echo("DEGRADED DATA: current cycle error rate too high for drift analysis.")
+    typer.echo(f"Alerts: {res.n_alerts} (e-BH at q={res.alpha_prime})")
+    for p in res.alerts()[:10]:
+        typer.echo(f"  {p.label}: log-wealth={p.log_wealth:.2f}, onset~cycle {p.rise_cycle}")
+    top = sorted(res.processes, key=lambda x: -x.log_wealth)[:3]
+    if top and not res.alerts():
+        typer.echo("Highest wealth (no alert):")
+        for p in top:
+            typer.echo(f"  {p.label}: log-wealth={p.log_wealth:.2f} over {p.cycles} cycles")
+    typer.echo(
+        "Guarantee: P(ever alerting on a stable agent) <= alpha, PER EPOCH "
+        "(a suite/embedder/baseline change resets the evidence)."
+    )
+    if res.n_alerts:
         raise typer.Exit(code=2)
 
 

@@ -66,6 +66,42 @@ class Materiality:
 
 
 @dataclass(frozen=True)
+class AnytimeConfig:
+    """Anytime-valid inference settings (``[anytime]`` in config.toml).
+
+    The budget decomposes as ``alpha = alpha_prime + gamma_total``, where
+    ``alpha_prime`` is the e-BH level and ``gamma_total`` pays for the
+    nuisance-parameter coverage of *all* processes together — it is divided
+    by the live process count at check time, because e-BH needs every input
+    to be a valid e-value and coverage failures union-bound across the
+    battery. Getting that split wrong inflates the real guarantee without
+    changing anything visible in a report, so it is computed, never typed.
+
+    Attributes:
+        alpha: Lifetime, battery-wide false-alert budget. The claim is
+            "P(ever alerting on a stable agent) <= alpha", per epoch.
+        gamma_total: Portion of ``alpha`` spent on nuisance coverage;
+            ``alpha_prime = alpha - gamma_total`` is the e-BH level.
+        tilts: Base odds-ratio tilts; symmetrised to ``{psi, 1/psi}`` so
+            drift in either direction is covered.
+        epoch_allocation: ``"per_epoch"`` (default, honest: a reset means
+            the hypothesis changed) or ``"geometric"`` (spends
+            ``alpha * 2**-e`` on epoch ``e``, giving a genuine
+            unbounded-epoch lifetime bound at a power cost).
+    """
+
+    alpha: float = 0.05
+    gamma_total: float = 0.01
+    tilts: tuple[float, ...] = (1.5, 2.0, 3.0)
+    epoch_allocation: str = "per_epoch"
+
+    @property
+    def alpha_prime(self) -> float:
+        """e-BH level after paying for nuisance coverage."""
+        return self.alpha - self.gamma_total
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     """Parsed project configuration with defaults matching config.toml.
 
@@ -80,6 +116,11 @@ class ProjectConfig:
         ph_delta: Page-Hinkley dead-zone (standardized units).
         materiality: Effect-size gates.
         embedder: Pinned embedding model identifier ("" = embeddings unused).
+        anytime: Anytime-valid inference settings.
+        inference: Default inference mode, ``"fixed"`` or ``"anytime"``.
+            Stays ``"fixed"`` until the anytime path has been reviewed on a
+            project's own data; both paths run on identical logs so the
+            comparison is reproducible.
     """
 
     name: str = "default"
@@ -92,6 +133,8 @@ class ProjectConfig:
     ph_delta: float = 0.3
     materiality: Materiality = field(default_factory=Materiality)
     embedder: str = ""
+    anytime: AnytimeConfig = field(default_factory=AnytimeConfig)
+    inference: str = "fixed"
 
     @classmethod
     def load(cls, project_dir: Path) -> ProjectConfig:
@@ -114,6 +157,13 @@ class ProjectConfig:
         detection = data.get("detection", {})
         materiality_raw = data.get("materiality", {})
         embeddings = data.get("embeddings", {})
+        anytime_raw = data.get("anytime", {})
+        anytime = AnytimeConfig(
+            alpha=float(anytime_raw.get("alpha", 0.05)),
+            gamma_total=float(anytime_raw.get("gamma_total", 0.01)),
+            tilts=tuple(float(x) for x in anytime_raw.get("tilts", (1.5, 2.0, 3.0))),
+            epoch_allocation=str(anytime_raw.get("epoch_allocation", "per_epoch")),
+        )
         materiality = Materiality(
             refusal_rate_pp=float(materiality_raw.get("refusal_rate_pp", 2.0)),
             format_validity_pp=float(materiality_raw.get("format_validity_pp", 1.0)),
@@ -135,4 +185,6 @@ class ProjectConfig:
             ph_delta=float(detection.get("ph_delta", 0.3)),
             materiality=materiality,
             embedder=str(embeddings.get("model", "")),
+            anytime=anytime,
+            inference=str(detection.get("inference", "fixed")),
         )
