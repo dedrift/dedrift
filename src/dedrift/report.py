@@ -134,6 +134,18 @@ false alert on a stable agent is at most **α = {{ r.alpha }}** — *per epoch*.
 | γ total | {{ r.gamma_total }} | nuisance-parameter coverage |
 | γ per process | {{ '%.2e' | format(r.gamma_per_process) }} | γ total ÷ {{ r.n_processes }} |
 
+{% if r.pool_declared_now %}
+The pool of {{ r.n_processes }} e-processes was **declared at this check** —
+this is the epoch's first. Membership is now frozen for the epoch, because
+the pool size sets the coverage budget, which sets the nuisance interval,
+which is part of the bet: for a frozen baseline the guarantee needs that
+interval to be one fixed event rather than a sequence of them. A signature
+with no reference data right now therefore waits for the next epoch to join.
+{% else %}
+Pool membership was frozen when this epoch began; only combinations with
+reference data at that moment are in it.
+{% endif %}
+
 γ is divided by the pool size because e-BH requires every input to be a
 valid e-value: a process whose coverage interval misses the truth is not
 one, so coverage failures union-bound across the battery. Using the total
@@ -189,17 +201,15 @@ missing update.
 | {{ p.label }} | {{ '%.2f' | format(p.log_wealth) }} | {{ p.epoch }} | {{ p.cycles }} | {{ p.bets_placed }} | {{ p.rise_cycle or '—' }} | {{ 'YES' if p.rejected else '' }} |
 {% endfor %}
 
-## Known inefficiency: idle processes still cost multiplicity
+## Multiplicity spent, and on what
 
-{{ idle }} of {{ r.n_processes }} processes have never placed a bet — a
-signature with no usable data (an unpopulated `exact_match`, say) cannot
-produce evidence, yet it still enlarges the pool, which both shrinks the
-per-process coverage budget and raises the e-BH threshold. Nothing here is
-invalid; it is power given away. Filtering the pool is not as simple as
-dropping empty rows: the coverage interval for a frozen baseline is only a
-single fixed event if the pool size is constant within the epoch, so the
-filter has to be decided at epoch start rather than per cycle. Queued
-rather than improvised.
+{{ idle }} of {{ r.n_processes }} processes in this epoch's pool have not
+placed a bet yet. Combinations with no reference data at epoch start are
+excluded from the pool entirely — they cannot produce evidence, so charging
+the battery's coverage budget for them would be power given away. What
+remains here are processes that are admissible but have had no usable
+current-cycle data yet; they contribute ``E_t = 1`` exactly, which preserves
+the supermartingale rather than skipping an update.
 
 ## What is proven, and what is measured
 

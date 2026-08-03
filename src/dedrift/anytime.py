@@ -109,7 +109,11 @@ class AnytimeCheckResult:
         alpha_prime: e-BH level.
         gamma_total: Total coverage budget.
         gamma_per_process: ``gamma_total / K``, the level each interval uses.
-        n_processes: Processes in the pool.
+        n_processes: Processes in the epoch's declared pool.
+        pool_declared_now: True when this check declared the pool, i.e. it is
+            the epoch's first. Worth surfacing: membership is frozen here, so
+            a signature with no reference data at this moment waits for the
+            next epoch to join.
         verdict: ``DRIFT DETECTED`` / ``OK`` / ``DEGRADED DATA``.
         degraded: Whether drift conclusions were suppressed.
         processes: Per-process report rows.
@@ -125,6 +129,7 @@ class AnytimeCheckResult:
     gamma_total: float
     gamma_per_process: float
     n_processes: int
+    pool_declared_now: bool
     verdict: str
     degraded: bool
     processes: list[ProcessReport] = field(default_factory=list)
@@ -211,6 +216,65 @@ def save_states(store: Store, states: list[EProcessState], ts: str) -> None:
     conn.commit()
 
 
+Key = tuple[str, str, str, str]
+
+
+def load_pool(store: Store, fingerprint: str) -> list[Key]:
+    """Return the pool declared for this epoch, or empty if undeclared."""
+    conn = store.connect()
+    rows = conn.execute(
+        "SELECT baseline, family, signature, channel FROM epoch_pool "
+        "WHERE fingerprint = ? ORDER BY baseline, family, signature, channel",
+        (fingerprint,),
+    )
+    return [(b, f, s, c) for b, f, s, c in rows]
+
+
+def declare_pool(store: Store, fingerprint: str, keys: list[Key], ts: str) -> None:
+    """Freeze the pool for this epoch. Called once, on the epoch's first check."""
+    conn = store.connect()
+    conn.executemany(
+        "INSERT OR REPLACE INTO epoch_pool "
+        "(fingerprint, baseline, family, signature, channel, declared_ts) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [(fingerprint, *k, ts) for k in keys],
+    )
+    conn.commit()
+
+
+def live_keys(
+    frame: pd.DataFrame,
+    families: list[str],
+    baselines: list[tuple[str, list[str]]],
+) -> list[Key]:
+    """Combinations with usable REFERENCE data — the admissible pool.
+
+    A signature with no reference observations (an ``exact_match`` column
+    that is entirely absent because the suite declares no expected answers,
+    say) cannot ever produce evidence, yet including it shrinks every other
+    process's coverage budget and raises the e-BH threshold. Excluding it is
+    pure gain.
+
+    The test uses reference data only. Current-cycle availability is *not*
+    consulted: that would make pool membership depend on the very cycle
+    being bet on, which is the predictability violation this package is
+    built to prevent. The consequence is stated rather than hidden — a
+    signature that gains data mid-epoch waits until the next epoch to join,
+    and one that loses data stays in the pool contributing ``E_t = 1``.
+    """
+    keys: list[Key] = []
+    for baseline_name, ref_cycles in baselines:
+        if not ref_cycles:
+            continue
+        ref_frame = frame[frame["cycle_id"].isin(ref_cycles)]
+        for family in families:
+            fam = ref_frame[ref_frame["family"] == family]
+            for sig in RATE_SIGNATURES:
+                if len(fam[sig].dropna()) > 0:
+                    keys.append((baseline_name, family, sig, "rate"))
+    return sorted(keys)
+
+
 def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> AnytimeCheckResult:
     """Fold the latest cycle into the rate-channel e-processes and adjudicate.
 
@@ -252,17 +316,22 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
     degraded = bool(cur_frame["had_error"].mean() > DEGRADED_ERROR_FRACTION)
     families = sorted(frame["family"].unique())
 
-    # The pool must be enumerated before any bet is placed: the coverage
-    # budget per process depends on the pool size, and the interval is part
-    # of the bet, so a pool that changed mid-check would break predictability.
-    pool: list[tuple[str, str, list[str]]] = [
-        (name, sig, ref)
-        for name, ref in (("rolling", rolling), ("golden", golden))
-        if ref
-        for sig in RATE_SIGNATURES
-    ]
-    n_pool = len(pool) * len(families)
-    gamma_i = per_process_gamma(ac.gamma_total, max(n_pool, 1))
+    # The pool is declared ONCE per epoch and then frozen. Its size sets the
+    # per-process coverage budget, which sets the nuisance interval, which is
+    # part of the bet — and for a frozen baseline the guarantee needs that
+    # interval to be a single fixed event settled at epoch start. A pool
+    # recomputed per cycle would quietly turn it into a sequence of
+    # different events.
+    ts = datetime.now(timezone.utc).isoformat()
+    baselines = [("rolling", rolling), ("golden", golden)]
+    pool_keys = load_pool(store, fingerprint)
+    pool_declared_now = False
+    if not pool_keys:
+        pool_keys = live_keys(frame, families, baselines)
+        declare_pool(store, fingerprint, pool_keys, ts)
+        pool_declared_now = True
+    ref_by_baseline = dict(baselines)
+    gamma_i = per_process_gamma(ac.gamma_total, max(len(pool_keys), 1))
     grid = symmetric_grid(ac.tilts)
 
     states = load_states(store)
@@ -271,44 +340,44 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
     rows: list[dict[str, Any]] = []
     resets: list[str] = []
 
-    for baseline_name, sig, ref_cycles in pool:
+    for key in pool_keys:
+        baseline_name, family, sig, _channel = key
+        ref_cycles = ref_by_baseline.get(baseline_name, [])
         ref_frame = frame[frame["cycle_id"].isin(ref_cycles)]
-        for family in families:
-            key = (baseline_name, family, sig, "rate")
-            state = states.get(key, EProcessState(key=key))
-            ref_fam = ref_frame[ref_frame["family"] == family][sig].dropna()
-            cur_fam = cur_frame[cur_frame["family"] == family][sig].dropna()
+        state = states.get(key, EProcessState(key=key))
+        ref_fam = ref_frame[ref_frame["family"] == family][sig].dropna()
+        cur_fam = cur_frame[cur_frame["family"] == family][sig].dropna()
 
-            prior = PriorState(
-                n_cycles=state.prior.n_cycles,
-                successes=state.prior.successes,
-                trials=state.prior.trials,
-                reference_successes=int(ref_fam.sum()),
-                reference_trials=len(ref_fam),
-            )
-            successes, trials = int(cur_fam.sum()), len(cur_fam)
-            outcome = rate_evalue(
-                successes,
-                trials,
-                prior,
-                gamma=gamma_i,
-                grid=grid,
-                frozen_reference=(baseline_name == "golden"),
-            )
-            upd = update_process(
-                state,
-                outcome,
-                fingerprint=fingerprint,
-                alpha_prime=ac.alpha_prime,
-                successes=successes,
-                trials=trials,
-                reference=(prior.reference_successes, prior.reference_trials),
-            )
-            if upd.reset_notice:
-                resets.append(f"{key}: {upd.reset_notice}")
-            updated.append(upd.state)
-            log_evalues.append(upd.state.log_wealth)
-            rows.append({"key": key, "state": upd.state, "detail": outcome.detail})
+        prior = PriorState(
+            n_cycles=state.prior.n_cycles,
+            successes=state.prior.successes,
+            trials=state.prior.trials,
+            reference_successes=int(ref_fam.sum()),
+            reference_trials=len(ref_fam),
+        )
+        successes, trials = int(cur_fam.sum()), len(cur_fam)
+        outcome = rate_evalue(
+            successes,
+            trials,
+            prior,
+            gamma=gamma_i,
+            grid=grid,
+            frozen_reference=(baseline_name == "golden"),
+        )
+        upd = update_process(
+            state,
+            outcome,
+            fingerprint=fingerprint,
+            alpha_prime=ac.alpha_prime,
+            successes=successes,
+            trials=trials,
+            reference=(prior.reference_successes, prior.reference_trials),
+        )
+        if upd.reset_notice:
+            resets.append(f"{key}: {upd.reset_notice}")
+        updated.append(upd.state)
+        log_evalues.append(upd.state.log_wealth)
+        rows.append({"key": key, "state": upd.state, "detail": outcome.detail})
 
     decision = ebh_from_logs(log_evalues, alpha=ac.alpha_prime)
     processes = [
@@ -327,7 +396,6 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
         for i, r in enumerate(rows)
     ]
 
-    ts = datetime.now(timezone.utc).isoformat()
     save_states(store, updated, ts)
     n_alerts = sum(1 for p in processes if p.rejected)
     verdict = "DEGRADED DATA" if degraded else ("DRIFT DETECTED" if n_alerts else "OK")
@@ -341,6 +409,7 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
         gamma_total=ac.gamma_total,
         gamma_per_process=gamma_i,
         n_processes=len(processes),
+        pool_declared_now=pool_declared_now,
         verdict=verdict,
         degraded=degraded,
         processes=processes,
@@ -366,6 +435,7 @@ def _persist(store: Store, result: AnytimeCheckResult) -> None:
                     "gamma_total": result.gamma_total,
                     "gamma_per_process": result.gamma_per_process,
                     "n_processes": result.n_processes,
+                    "pool_declared_now": result.pool_declared_now,
                     "ville_threshold_log": ville_threshold(result.alpha_prime),
                 }
             ),

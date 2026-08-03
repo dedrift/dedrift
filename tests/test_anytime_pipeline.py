@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from dedrift.anytime import load_states, run_anytime_check, wealth_table
+from dedrift.anytime import load_pool, load_states, run_anytime_check, wealth_table
 from dedrift.check import run_check, set_golden_baseline
 from dedrift.cli import app
 from dedrift.config import AnytimeConfig, ProjectConfig
@@ -190,7 +190,7 @@ class TestAnytimeReport:
         assert "0.030000" not in md
         # honesty sections that must never be dropped
         assert "What is proven, and what is measured" in md
-        assert "Known inefficiency" in md
+        assert "Multiplicity spent, and on what" in md
         assert "evidence **for** stability" in md
 
     def test_report_is_deterministic_given_state(self, tmp_path: Path) -> None:
@@ -219,3 +219,77 @@ class TestAnytimeReport:
         assert out.exit_code == 0, out.output
         assert "anytime-valid" in out.output
         assert "per epoch" in out.output
+
+
+class TestEpochPool:
+    """Membership is decided once per epoch — the property the guarantee needs."""
+
+    def test_signatures_without_reference_data_are_excluded(self, tmp_path: Path) -> None:
+        """A process that cannot produce evidence must not consume budget.
+
+        The simulator declares no expected answers, so ``exact_match`` is
+        entirely absent. Including it would shrink every other process's
+        coverage budget and raise the e-BH threshold for nothing.
+        """
+        store = project(tmp_path)
+        res = run_anytime_check(store)
+        pool = load_pool(store, res.fingerprint)
+        store.close()
+
+        signatures = {k[2] for k in pool}
+        assert "exact_match" not in signatures, "a dead signature is charging the budget"
+        assert signatures, "pool is empty"
+        assert len(pool) == res.n_processes
+
+    def test_pool_is_declared_once_and_then_frozen(self, tmp_path: Path) -> None:
+        """Only the epoch's first check declares; later ones reuse.
+
+        This is what keeps the frozen-baseline coverage event a *single* event:
+        a pool recomputed per cycle would vary the per-process budget, hence
+        the interval, hence what the coverage guarantee refers to.
+        """
+        store = project(tmp_path)
+        first = run_anytime_check(store)
+        second = run_anytime_check(store)
+        third = run_anytime_check(store)
+        store.close()
+
+        assert first.pool_declared_now is True
+        assert second.pool_declared_now is False
+        assert third.pool_declared_now is False
+        assert first.n_processes == second.n_processes == third.n_processes
+        assert first.gamma_per_process == pytest.approx(second.gamma_per_process)
+
+    def test_pool_size_is_stable_even_as_data_accumulates(self, tmp_path: Path) -> None:
+        """New cycles must not move the budget mid-epoch."""
+        store = project(tmp_path)
+        first = run_anytime_check(store)
+        # add another cycle's worth of records under the same epoch
+        cfg = SimConfig(n_canaries=18, repetitions=7, change_cycle=None, seed=99)
+        store.append_many(SimAgent(cfg).run_cycles(1))
+        later = run_anytime_check(store)
+        store.close()
+        assert later.n_processes == first.n_processes
+        assert later.gamma_per_process == pytest.approx(first.gamma_per_process)
+
+    def test_new_epoch_declares_a_fresh_pool(self, tmp_path: Path) -> None:
+        """A changed hypothesis gets a new pool as well as new wealth."""
+        store = project(tmp_path)
+        first = run_anytime_check(store)
+        cycles = sorted({r.cycle_id for r in store.read_records() if r.cycle_id})
+        set_golden_baseline(store, cycles[:2])
+        second = run_anytime_check(store)
+        store.close()
+
+        assert second.fingerprint != first.fingerprint
+        assert second.pool_declared_now is True, "new epoch reused the old pool"
+        assert load_pool(store, second.fingerprint)
+
+    def test_report_explains_when_membership_was_fixed(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        first = render_anytime_report(run_anytime_check(store))
+        later = render_anytime_report(run_anytime_check(store))
+        store.close()
+        assert "declared at this check" in first
+        assert "frozen when this epoch began" in later
+        assert "Multiplicity spent, and on what" in later

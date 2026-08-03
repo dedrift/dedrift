@@ -138,6 +138,26 @@ CREATE TABLE IF NOT EXISTS eprocess_state (
     updated_ts TEXT NOT NULL,
     PRIMARY KEY (baseline, family, signature, channel)
 );
+
+-- The e-process pool, declared once per epoch and then frozen.
+--
+-- Why this is a table rather than a per-cycle computation: the pool size
+-- sets the per-process coverage budget, which sets the nuisance interval,
+-- which is part of the bet. For a frozen golden baseline the guarantee
+-- relies on that interval being a SINGLE fixed event settled at epoch
+-- start; a pool that shrank or grew between cycles would quietly turn it
+-- into a sequence of different events, and the coverage budget would no
+-- longer cover what it claims. So membership is decided once, from data
+-- already in hand, and persisted.
+CREATE TABLE IF NOT EXISTS epoch_pool (
+    fingerprint TEXT NOT NULL,
+    baseline TEXT NOT NULL,
+    family TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    declared_ts TEXT NOT NULL,
+    PRIMARY KEY (fingerprint, baseline, family, signature, channel)
+);
 """
 
 
