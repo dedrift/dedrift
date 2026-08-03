@@ -176,7 +176,7 @@ simulation can give — real drift, in the wild.
 </p>
 
 <p style="text-align:center" markdown>
-[Become a design partner](mailto:support@dedrift.ai?subject=Design%20partner){ .md-button .md-button--primary }
+[Become a design partner](https://dedrift.ai/#pricing){ .md-button .md-button--primary }
 </p>
 
 ## dedrift Pro

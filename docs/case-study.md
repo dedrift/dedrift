@@ -93,4 +93,5 @@ pip install -e .
 
 Runs on a laptop in under an hour at demo scale. If you'd like help running
 it against **your** agent — that's exactly what we're looking for design
-partners for: [support@dedrift.ai](mailto:support@dedrift.ai).
+partners for. Write to `support@dedrift.ai`, or
+[apply from the pricing section](https://dedrift.ai/#pricing).

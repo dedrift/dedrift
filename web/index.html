@@ -209,6 +209,37 @@ footer{margin-top:96px;border-top:1px solid var(--line);padding:44px 0 56px}
 .foot .col{display:flex;flex-direction:column;gap:8px}
 .foot .col b{color:var(--ink);font-size:.8rem;text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px}
 
+/* ---------- contact dialog ---------- */
+dialog#contact{
+  border:1px solid var(--line); border-radius:16px; padding:0;
+  background:linear-gradient(180deg,#0d1322,#0a0e1a); color:var(--ink);
+  max-width:520px; width:calc(100% - 32px);
+  box-shadow:0 40px 100px rgba(0,0,0,.6);
+}
+dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
+.dlg{padding:30px 30px 26px}
+.dlg h3{font-size:1.15rem;font-weight:800;margin-bottom:6px}
+.dlg p{color:var(--dim);font-size:.92rem;margin-bottom:18px}
+.dlg .addr{
+  display:flex;align-items:center;gap:10px;justify-content:space-between;
+  background:rgba(255,255,255,.05);border:1px solid var(--line);
+  border-radius:10px;padding:12px 14px;margin-bottom:14px;
+}
+.dlg .addr code{font-family:var(--mono);font-size:.95rem;color:var(--amber);user-select:all}
+.dlg .addr button{
+  border:1px solid var(--line);background:transparent;color:var(--ink);
+  font:inherit;font-size:.82rem;padding:.38rem .8rem;border-radius:.5rem;cursor:pointer;
+}
+.dlg .addr button:hover{border-color:var(--amber)}
+.dlg .tips{font-size:.85rem;color:var(--dim);margin-bottom:20px;line-height:1.7}
+.dlg .tips b{color:var(--ink);font-weight:600}
+.dlg .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.dlg .close{
+  position:absolute;top:14px;right:16px;background:none;border:0;
+  color:var(--dim);font-size:1.4rem;cursor:pointer;line-height:1;
+}
+.dlg .close:hover{color:var(--ink)}
+
 /* reveal on scroll */
 .rv{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
 .rv.in{opacity:1;transform:none}
@@ -366,12 +397,12 @@ Alerts: 36 (q=0.05, materiality-gated)
         <li>A statistician reading your drift reports</li>
         <li>Priority input on the roadmap</li>
       </ul>
-      <a class="btn btn-primary" href="mailto:support@dedrift.ai?subject=Design%20partner%20%E2%80%94%20%5Byour%20team%5D&body=What%20we%20run%3A%20%0AWhat%20drift%20we%20worry%20about%3A%20">Apply →</a>
+      <a class="btn btn-primary" href="mailto:support@dedrift.ai?subject=Design%20partner" data-contact="partner">Apply →</a>
     </div>
   </div>
   <p style="text-align:center;margin-top:22px;color:var(--dimmer);font-size:.88rem">
     A commercial tier with advanced inference is in development —
-    <a href="mailto:support@dedrift.ai?subject=Advanced%20tier">write to us</a> to hear when it ships.
+    <a href="mailto:support@dedrift.ai?subject=Advanced%20tier" data-contact="pro">write to us</a> to hear when it ships.
   </p>
 </section>
 
@@ -413,14 +444,99 @@ Alerts: 36 (q=0.05, materiality-gated)
         <a href="https://pypi.org/project/dedrift/">PyPI</a>
       </div>
       <div class="col"><b>Contact</b>
-        <a href="mailto:support@dedrift.ai">support@dedrift.ai</a>
+        <a href="mailto:support@dedrift.ai" data-contact="general">support@dedrift.ai</a>
         <a href="https://github.com/dedrift/dedrift/issues">Issues</a>
       </div>
     </div>
   </div>
 </footer>
 
+<dialog id="contact">
+  <div class="dlg" style="position:relative">
+    <button class="close" data-close aria-label="Close">&times;</button>
+    <h3 id="dlg-title">Get in touch</h3>
+    <p id="dlg-lead">Email is the whole process — no forms, no CRM.</p>
+
+    <div class="addr">
+      <code id="dlg-addr">support@dedrift.ai</code>
+      <button type="button" id="dlg-copy">Copy address</button>
+    </div>
+
+    <div class="tips" id="dlg-tips"></div>
+
+    <div class="row">
+      <a class="btn btn-primary" id="dlg-mail" href="mailto:support@dedrift.ai">Open mail app</a>
+      <a class="btn" href="https://github.com/dedrift/dedrift/issues">Open a GitHub issue ↗</a>
+    </div>
+  </div>
+</dialog>
+
 <script>
+/* ---- contact dialog: mailto: silently does nothing when no mail client
+   is registered, which is a lot of people. Show the address instead and
+   keep mailto as one option among several. ---- */
+(function () {
+  const dlg = document.getElementById('contact');
+  if (!dlg || !dlg.showModal) return;   // very old browser: leave mailto as-is
+  const VARIANTS = {
+    partner: {
+      title: 'Apply as a design partner',
+      lead: 'Send us a note — a couple of lines is plenty to start.',
+      tips: 'Useful to include: <b>what your agent does</b>, <b>what stack it runs on</b>, and <b>the drift you actually worry about</b> (silent model updates, prompt edits, RAG refreshes…).',
+      subject: 'Design partner',
+    },
+    pro: {
+      title: 'Advanced tier',
+      lead: "It's in development. Tell us what you'd need from it and we'll write when it ships.",
+      tips: 'Useful to include: <b>your monitoring cadence</b> and <b>what a false alert currently costs you</b>.',
+      subject: 'Advanced tier',
+    },
+    general: {
+      title: 'Get in touch',
+      lead: 'Questions, bug reports, or drift stories — all welcome.',
+      tips: 'For a suspected false alarm or a missed detection, the <b>version, config, seed and a log extract</b> make it reproducible.',
+      subject: 'dedrift',
+    },
+  };
+  const addr = 'support@dedrift.ai';
+
+  document.querySelectorAll('[data-contact]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      const v = VARIANTS[el.dataset.contact] || VARIANTS.general;
+      document.getElementById('dlg-title').textContent = v.title;
+      document.getElementById('dlg-lead').textContent = v.lead;
+      document.getElementById('dlg-tips').innerHTML = v.tips;
+      document.getElementById('dlg-mail').href =
+        'mailto:' + addr + '?subject=' + encodeURIComponent(v.subject);
+      dlg.showModal();
+    });
+  });
+
+  const copyBtn = document.getElementById('dlg-copy');
+  copyBtn.addEventListener('click', async () => {
+    const done = (ok) => {
+      copyBtn.textContent = ok ? 'Copied ✓' : 'Select it above';
+      setTimeout(() => (copyBtn.textContent = 'Copy address'), 2200);
+    };
+    try {
+      await navigator.clipboard.writeText(addr);
+      done(true);
+    } catch (_) {
+      // clipboard blocked (permissions, http, older browser): select instead
+      const r = document.createRange();
+      r.selectNodeContents(document.getElementById('dlg-addr'));
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      done(false);
+    }
+  });
+
+  dlg.querySelector('[data-close]').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+})();
+
 /* terminal typing — the real case-study verdict */
 const LINES = [
   ['p','$ '],['t','dedrift check\n'],
