@@ -419,6 +419,11 @@ Alerts: 36 (q=0.05, materiality-gated)
     <div class="card rv"><span class="ic">power(2pp) ≈ 0.11</span><h3>We publish what we can't detect</h3>
       <p>Small suites have limited power, and the docs show that math instead of hiding it.
       Overclaiming is just drift of another kind.</p></div>
+    <div class="card rv"><span class="ic">P(ever) ≤ α</span><h3>A guarantee that survives use</h3>
+      <p>Per-check error control compounds: ~10 false alerts a month at hourly checks.
+      Anytime-valid mode bounds the whole horizon instead — measured 0 in 500 stable runs
+      of 2000 cycles, against 100% for the per-check path.
+      <a href="/docs/anytime/">The trade-off, quantified</a>.</p></div>
   </div>
   <p style="text-align:center;margin-top:26px;color:var(--dim);font-size:.92rem">
     Don't take our word for any of it — <a href="/docs/statistics/">audit the statistics</a>.

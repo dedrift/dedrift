@@ -83,6 +83,24 @@ semantic history, so dedrift refuses to compare across embedder versions
 rather than produce quietly meaningless numbers. Pick deliberately, then
 leave it.
 
+### `[anytime]` — anytime-valid mode
+
+```toml
+[detection]
+inference = "fixed"        # or "anytime"
+
+[anytime]
+alpha = 0.05               # lifetime, battery-wide false-alert budget
+gamma_total = 0.02         # coverage budget; alpha_prime = alpha - gamma_total
+tilts = [1.5, 2.0, 3.0]    # symmetrised to {psi, 1/psi}
+epoch_allocation = "per_epoch"   # or "geometric"
+```
+
+Switches the inference layer from per-check FDR to e-processes with a
+lifetime guarantee. The trade — validity over an unbounded horizon, paid for
+in detection power — is quantified in
+[anytime-valid mode](anytime.md). Default stays `fixed`.
+
 ## Exit codes
 
 | Command | Exit | Meaning |

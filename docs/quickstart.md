@@ -97,6 +97,19 @@ failure mode, not a configuration choice.
 - **DEGRADED DATA** means too many current-cycle errors for any drift
   conclusion.
 
+### Two inference modes
+
+`dedrift check` controls false alarms *per check*. Because monitoring runs
+forever, that rate compounds — about ten false alerts a month at hourly
+checks. `--inference anytime` swaps in a lifetime guarantee instead
+(measured: 0 in 500 stable runs of 2000 cycles), at a real cost in detection
+power. Read [anytime-valid mode](anytime.md) before switching; `fixed`
+remains the default deliberately.
+
+```bash
+dedrift check --inference anytime     # lifetime guarantee, slower to detect
+```
+
 Defaults are documented in the [configuration reference](configuration.md);
 what the suite should contain is in [writing canary suites](canaries.md);
 the math behind the verdicts is in [the statistics](statistics.md).

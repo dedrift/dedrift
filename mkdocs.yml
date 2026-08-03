@@ -46,7 +46,9 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Case study: case-study.md
-  - Statistics: statistics.md
+  - Statistics:
+      - The statistics: statistics.md
+      - Anytime-valid mode: anytime.md
   - Guide:
       - How it works: how-it-works.md
       - Writing canary suites: canaries.md

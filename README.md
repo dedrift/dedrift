@@ -21,6 +21,13 @@ dedrift's differentiation is statistical correctness:
 - LLM outputs are stochastic: canaries run N times per cycle and we compare distributions, never single outputs.
 - Dual baselines: every check runs against a rolling recent window (sudden breaks) and a frozen golden baseline (boiling-frog drift).
 - Honest about power: small N means low detection power, and the docs show you the math instead of hiding it.
+- **Anytime-valid mode** (`--inference anytime`): swaps per-check FDR for a
+  *lifetime* guarantee — over an unbounded horizon, P(ever falsely alerting on
+  a stable agent) ≤ α, per epoch. Measured 0 false alerts across 500
+  stable-agent runs of 2000 cycles each (flat in the horizon), against 100%
+  for the per-check path on identical histories. It costs detection power —
+  a +2 pp shift becomes undetectable — so it is opt-in and both numbers are
+  published.
 
 ## Status
 

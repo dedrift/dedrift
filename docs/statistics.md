@@ -95,7 +95,7 @@ family or raise N.
   is **suppressed and reported as COMPOSITION MISMATCH** instead of drift.
   Power against shifts confined to a few canaries remains lower than for
   family-wide shifts.
-- **The guarantee is per check, not per lifetime — and this matters.**
+- **The guarantee on this page is per check, not per lifetime.**
   Everything above bounds the probability that *one* check on a stable
   agent raises an alert. Monitoring runs continuously, and expected
   counts add regardless of how checks depend on each other (linearity of
@@ -104,12 +104,19 @@ family or raise N.
   accrues roughly **0.3 false alerts per day, ~10 per month** (720 ×
   0.014). Benjamini–Hochberg controls the false discovery rate *within* a
   check; nothing in the batch machinery controls accumulation *across* a
-  sequence of them. Until sequential control ships, the honest operating
-  advice is: treat one alert as evidence to investigate rather than an
-  incident, require persistence across consecutive cycles before paging
-  anyone, and choose your check frequency knowing the arithmetic above.
-  Sequential (anytime-valid) control of this accumulation is the
-  principled fix and is not yet implemented.
+  sequence of them.
+
+    **Sequential control now exists**: [anytime-valid mode](anytime.md)
+    replaces the per-check statement with a lifetime one — measured 0 false
+    alerts in 500 stable-agent runs of 2000 cycles each, flat in the
+    horizon, against 100% for this path on identical histories. It is not
+    the default, because it buys that guarantee with detection power: a
+    +2 pp shift becomes undetectable and +10 pp takes a median of 53
+    cycles. Both figures are on that page. If you stay on the fixed-sample
+    path, the honest operating advice is unchanged — treat one alert as
+    evidence to investigate rather than an incident, require persistence
+    across consecutive cycles before paging anyone, and choose your check
+    frequency knowing the arithmetic above.
 - **Where the KS gate binds.** The two-sample critical value at raw
   α = 0.05 is D_crit ≈ 1.36·√((n+m)/(n·m)). For equal arms the default
   gate (D ≥ 0.15) sits below D_crit until n ≳ 165 per arm — and BH only
