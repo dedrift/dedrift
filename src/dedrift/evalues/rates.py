@@ -63,6 +63,7 @@ before we trust it on anything real.
 from __future__ import annotations
 
 import numpy as np
+from scipy.special import logsumexp
 from scipy.stats import beta, hypergeom
 
 from dedrift.evalues.base import LOG_FLOOR, EValueOutcome, PriorState
@@ -165,6 +166,48 @@ def worst_case_log_evalue(
         lo, hi = hi, lo
     ps = np.linspace(lo, hi, n_grid)
     return float(min(_log_mixture_evalue(successes, trials, float(p), grid) for p in ps))
+
+
+def worst_case_log_evalue_table(
+    trials: int,
+    interval: tuple[float, float],
+    grid: tuple[float, ...],
+    n_grid: int = 129,
+) -> np.ndarray:
+    """``log E`` for every possible success count, computed at once.
+
+    Predictability has a useful computational consequence: the nuisance
+    interval and the tilt grid are fixed before the cycle is observed, so
+    the e-value is a *function of the success count alone*. Tabulating it
+    over ``0..trials`` is therefore exact — not an approximation — and it
+    turns long-horizon simulation studies from intractable into instant,
+    which is what makes the anytime-valid null rate measurable at honest
+    scale. Also the natural form for the pipeline: one table per
+    (process, epoch) instead of a minimisation per cycle.
+
+    Args:
+        trials: Current-cycle trials ``n``.
+        interval: Nuisance interval for ``p``.
+        grid: Symmetric tilt grid.
+        n_grid: Points in the ``p`` minimisation.
+
+    Returns:
+        Array of shape ``(trials + 1,)`` with ``log E`` per success count.
+    """
+    lo, hi = interval
+    lo = float(np.clip(lo, 1e-9, 1 - 1e-9))
+    hi = float(np.clip(hi, 1e-9, 1 - 1e-9))
+    if hi < lo:
+        lo, hi = hi, lo
+    ps = np.linspace(lo, hi, n_grid)[:, None]  # (P, 1)
+    psis = np.asarray(grid, dtype=float)[None, :]  # (1, T)
+    s = np.arange(trials + 1)[:, None, None]  # (S, 1, 1)
+
+    # log E(s, p, psi) = s*log(psi) - n*log(1 - p + psi*p)
+    normaliser = trials * np.log1p(-ps + psis * ps)  # (P, T)
+    logs = s * np.log(psis)[None, :, :] - normaliser[None, :, :]  # (S, P, T)
+    mixture = logsumexp(logs, axis=2) - np.log(psis.size)  # (S, P)
+    return np.asarray(np.min(mixture, axis=1))
 
 
 def rate_evalue(

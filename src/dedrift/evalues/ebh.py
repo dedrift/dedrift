@@ -113,6 +113,47 @@ def ebh(evalues: list[float], alpha: float = 0.05) -> EBHResult:
     return EBHResult(rejected.tolist(), k, threshold, adjusted.tolist())
 
 
+def ebh_from_logs(log_evalues: list[float], alpha: float = 0.05) -> EBHResult:
+    """e-BH on ``log E`` — the form to use on real e-processes.
+
+    A wealth process that has been accumulating for a few hundred cycles
+    overflows float64 long before it stops being interesting
+    (``exp(710) = inf``), at which point :func:`ebh` compares infinities and
+    the rejection set becomes arbitrary. The decision rule is
+    scale-monotone, so we can apply it entirely in logs: sorting by
+    ``log E`` is sorting by ``E``, and ``E_(k) >= m/(alpha k)`` is
+    ``log E_(k) >= log m - log alpha - log k``.
+
+    Args:
+        log_evalues: ``log E`` per hypothesis; ``-inf`` allowed.
+        alpha: FDR level.
+
+    Returns:
+        The rejection set. ``e_adjusted`` is left as ones here — adjusted
+        levels are for reports, and reports render finite e-values; use
+        :func:`ebh` when they are needed.
+    """
+    if not log_evalues:
+        return EBHResult([], 0, float("inf"), [])
+    le = np.asarray(log_evalues, dtype=float)
+    le = np.where(np.isnan(le), -np.inf, le)
+    m = len(le)
+
+    order = np.argsort(-le)
+    sorted_le = le[order]
+    ks = np.arange(1, m + 1)
+    need = np.log(m) - np.log(alpha) - np.log(ks)
+    meets = sorted_le >= need
+    k = int(ks[meets].max()) if bool(meets.any()) else 0
+
+    rejected = np.zeros(m, dtype=bool)
+    threshold = float("inf")
+    if k > 0:
+        rejected[order[:k]] = True
+        threshold = float(np.exp(min(need[k - 1], 700.0)))
+    return EBHResult(rejected.tolist(), k, threshold, [1.0] * m)
+
+
 def _rejects(e: np.ndarray, index: int, alpha: float) -> bool:
     """Would e-BH at ``alpha`` reject hypothesis ``index``?"""
     m = len(e)
