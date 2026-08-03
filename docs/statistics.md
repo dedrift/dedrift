@@ -95,6 +95,21 @@ family or raise N.
   is **suppressed and reported as COMPOSITION MISMATCH** instead of drift.
   Power against shifts confined to a few canaries remains lower than for
   family-wide shifts.
+- **The guarantee is per check, not per lifetime — and this matters.**
+  Everything above bounds the probability that *one* check on a stable
+  agent raises an alert. Monitoring runs continuously, and expected
+  counts add regardless of how checks depend on each other (linearity of
+  expectation; only the "at least one" probability needs independence).
+  At the measured 1.4% per-check rate, a stable agent checked hourly
+  accrues roughly **0.3 false alerts per day, ~10 per month** (720 ×
+  0.014). Benjamini–Hochberg controls the false discovery rate *within* a
+  check; nothing in the batch machinery controls accumulation *across* a
+  sequence of them. Until sequential control ships, the honest operating
+  advice is: treat one alert as evidence to investigate rather than an
+  incident, require persistence across consecutive cycles before paging
+  anyone, and choose your check frequency knowing the arithmetic above.
+  Sequential (anytime-valid) control of this accumulation is the
+  principled fix and is not yet implemented.
 - **Where the KS gate binds.** The two-sample critical value at raw
   α = 0.05 is D_crit ≈ 1.36·√((n+m)/(n·m)). For equal arms the default
   gate (D ≥ 0.15) sits below D_crit until n ≳ 165 per arm — and BH only

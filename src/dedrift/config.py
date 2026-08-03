@@ -74,7 +74,7 @@ class ProjectConfig:
         canary_repetitions: N repeated runs per canary per cycle.
         rolling_window_cycles: K cycles in the rolling reference.
         fdr_q: Benjamini-Hochberg FDR level.
-        permutations: Permutation/bootstrap resamples for resampling tests.
+        permutations: Number of label permutations for permutation tests.
         seed: Global seed recorded in every report.
         ph_lambda: Page-Hinkley alarm threshold (standardized units).
         ph_delta: Page-Hinkley dead-zone (standardized units).

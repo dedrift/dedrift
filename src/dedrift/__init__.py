@@ -4,4 +4,4 @@ Agents don't throw errors when they degrade — they keep confidently producing
 worse outputs. dedrift catches it.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
