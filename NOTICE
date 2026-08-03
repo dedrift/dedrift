@@ -1,0 +1,17 @@
+dedrift — statistically calibrated behavioral drift detection for AI agents
+Copyright (c) 2026 Ali Mahmoudi
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License, version 3 only,
+as published by the Free Software Foundation. See the LICENSE file for
+the full text.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License for more details.
+
+Contributions are accepted under the Contributor License Agreement in
+CLA.md, which grants the copyright holder the right to license
+contributed material under other terms, including commercial terms.
+Copyright in each contribution remains with its author.
