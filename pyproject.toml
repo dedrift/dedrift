@@ -71,7 +71,8 @@ ignore = ["D203", "D213", "D107", "UP017", "UP042"]
 pydocstyle.convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D"]
+# Report assertions quote the template verbatim, notation included.
+"tests/**" = ["D", "RUF001"]
 # The markdown report templates contain table rows that cannot wrap, and
 # mathematical notation (alpha, gamma, prime) that ruff reads as ambiguous
 # Unicode. Both are correct for a human-facing report; mangling them to
