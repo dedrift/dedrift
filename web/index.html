@@ -7,25 +7,42 @@
 <meta name="description" content="Agents don't throw errors when they degrade. dedrift catches silent behavioral drift with calibrated false-alarm rates, FDR-controlled alerts, and config-change attribution. Every statistical claim is enforced in CI.">
 <meta property="og:title" content="dedrift — catch silent behavioral drift in AI agents">
 <meta property="og:description" content="Calibrated, FDR-controlled drift detection for LLM agents. Proven on a real silent model swap.">
-<meta property="og:url" content="https://dedrift.ai">
-<meta property="og:image" content="https://dedrift.ai/docs/assets/fig1_the_catch.png">
+<meta property="og:url" content="https://dedrift.ai/">
+<meta property="og:image" content="https://dedrift.ai/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://dedrift.ai/og-card.png">
+<link rel="canonical" href="https://dedrift.ai/">
 <link rel="icon" href="/docs/assets/logo.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "dedrift",
+  "description": "Statistically calibrated behavioral drift detection for AI agents: frozen canary suites, FDR-controlled alerting with materiality gates, config-change attribution. Every statistical claim enforced by simulation tests in CI.",
+  "url": "https://dedrift.ai/",
+  "downloadUrl": "https://pypi.org/project/dedrift/",
+  "softwareVersion": "0.2.0",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux, Windows",
+  "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+  "sameAs": ["https://github.com/dedrift/dedrift", "https://pypi.org/project/dedrift/"]
+}
+</script>
 <style>
 :root{
   --bg:#070a12; --bg2:#0b1020; --ink:#e8ecf5; --dim:#9aa5bd; --dimmer:#5d6780;
   --amber:#f5b301; --violet:#8b7cf7; --teal:#4fd1c5; --green:#7ee0a3; --red:#ff6b6b;
   --card:rgba(255,255,255,.035); --line:rgba(255,255,255,.09);
-  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --mono:ui-monospace,'SF Mono','Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{
   background:var(--bg); color:var(--ink);
-  font-family:Inter,system-ui,sans-serif; line-height:1.6;
-  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  /* system stack: zero external requests (performance + GDPR) */
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI Variable','Segoe UI',Inter,Roboto,'Helvetica Neue',Arial,sans-serif;
+  line-height:1.6; -webkit-font-smoothing:antialiased; overflow-x:hidden;
 }
 body::before{ /* dot grid */
   content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
@@ -111,7 +128,7 @@ h1 .grad{
 .term-body .cur{display:inline-block;width:8px;height:15px;background:var(--amber);vertical-align:-2px;animation:pulse 1s infinite}
 
 /* ---------- stat strip ---------- */
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin:64px 0 8px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:64px 0 8px}
 .stat{
   background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 22px;text-align:center;
 }
@@ -162,14 +179,9 @@ h2{font-size:clamp(1.6rem,3.4vw,2.3rem);font-weight:800;letter-spacing:-.02em;te
 .split li::before{content:"→";position:absolute;left:0;color:var(--amber);font-family:var(--mono)}
 
 /* pricing */
-.tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch}
+.tiers{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;align-items:stretch;max-width:820px;margin:0 auto}
 .tier{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:30px 26px;display:flex;flex-direction:column}
-.tier.hot{border-color:rgba(245,179,1,.55);background:linear-gradient(180deg,rgba(245,179,1,.06),var(--card));position:relative}
-.tier.hot::before{
-  content:"LIMITED SLOTS";position:absolute;top:-11px;left:50%;transform:translateX(-50%);
-  font-family:var(--mono);font-size:.64rem;letter-spacing:.12em;color:#141414;background:var(--amber);
-  padding:3px 12px;border-radius:99px;font-weight:700;
-}
+.tier.hot{border-color:rgba(245,179,1,.55);background:linear-gradient(180deg,rgba(245,179,1,.06),var(--card))}
 .tier h3{font-size:1.05rem}
 .tier .price{font-size:1.9rem;font-weight:800;margin:10px 0 2px}
 .tier .per{color:var(--dimmer,#5d6780);font-size:.8rem;margin-bottom:18px}
@@ -205,9 +217,13 @@ footer{margin-top:96px;border-top:1px solid var(--line);padding:44px 0 56px}
   .logo .pulse,.term-body .cur{animation:none}
 }
 @media (max-width:900px){
-  .stats,.cards3,.steps,.tiers{grid-template-columns:1fr}
+  .cards3,.steps,.tiers{grid-template-columns:1fr}
+  .stats{grid-template-columns:1fr 1fr}
   .split{grid-template-columns:1fr}
   .nav-links a:not(.btn){display:none}
+}
+@media (max-width:560px){
+  .stats{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -236,19 +252,29 @@ footer{margin-top:96px;border-top:1px solid var(--line);padding:44px 0 56px}
     and points at the config change that did it.
   </p>
   <div class="cta-row">
-    <a class="btn btn-primary" href="/docs/quickstart/">Get started in 2 minutes</a>
+    <a class="btn btn-primary" href="/docs/quickstart/">Get started in minutes</a>
     <a class="btn" href="#case-study">Watch a real catch</a>
   </div>
   <div class="pip"><span class="d">$</span> <b>pip install dedrift</b></div>
 
   <div class="term rv" id="term">
     <div class="term-bar"><i></i><i></i><i></i><span>dedrift check — production agent, 18 canaries × 4 reps</span></div>
-    <div class="term-body" id="termbody"></div>
+    <div class="term-body" id="termbody"><span class="p">$ </span>dedrift check
+Current cycle: cycle-20260802T121457Z
+Sudden (vs rolling 2 cycles): <span class="a">DRIFT DETECTED</span>
+Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span>
+Alerts: 36 (q=0.05, materiality-gated)
+  [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.972</span>, p_adj=1.5e-08
+  [golden] adversarial/tokens_out ks: effect=<span class="a">+0.806</span>, p_adj=6.6e-05
+  [golden] edge_case/latency_ms levene: effect=<span class="a">+4.734</span>, p_adj=0.015
+<span class="dim"># attribution: model fingerprint change, 0.11 h before onset</span>
+<span class="dim"># consistent with the swap. nobody told it anything.</span></div>
   </div>
 
   <div class="stats">
     <div class="stat rv"><div class="n"><em>1.4%</em></div><div class="l">measured null alert rate — 7 of 500 stable-agent checks, Wilson-bounded &lt; 5% in CI</div></div>
     <div class="stat rv"><div class="n"><em>1 cycle</em></div><div class="l">to catch a real silent model swap, on both baselines, correctly attributed</div></div>
+    <div class="stat rv"><div class="n"><em>100%</em></div><div class="l">of stable checks falsely flagged by the industry-standard PSI at canary scale — measured; dedrift refuses to compute it there</div></div>
     <div class="stat rv"><div class="n"><em>every</em></div><div class="l">p-valued detector calibration-tested against a documented band, on every commit</div></div>
   </div>
 </header>
@@ -340,20 +366,13 @@ footer{margin-top:96px;border-top:1px solid var(--line);padding:44px 0 56px}
         <li>A statistician reading your drift reports</li>
         <li>Priority input on the roadmap</li>
       </ul>
-      <a class="btn btn-primary" href="mailto:support@dedrift.ai?subject=Design%20partner">Apply →</a>
-    </div>
-    <div class="tier rv">
-      <h3>Pro</h3>
-      <div class="price">Waitlist</div><div class="per">in development</div>
-      <ul>
-        <li>Anytime-valid sequential inference (e-processes)</li>
-        <li>Conditional production-traffic drift</li>
-        <li>Importance weighting</li>
-        <li class="no">Ships when it passes its own calibration bar</li>
-      </ul>
-      <a class="btn" href="mailto:support@dedrift.ai?subject=Pro%20waitlist">Join the waitlist</a>
+      <a class="btn btn-primary" href="mailto:support@dedrift.ai?subject=Design%20partner%20%E2%80%94%20%5Byour%20team%5D&body=What%20we%20run%3A%20%0AWhat%20drift%20we%20worry%20about%3A%20">Apply →</a>
     </div>
   </div>
+  <p style="text-align:center;margin-top:22px;color:var(--dimmer);font-size:.88rem">
+    A commercial tier with advanced inference is in development —
+    <a href="mailto:support@dedrift.ai?subject=Advanced%20tier">write to us</a> to hear when it ships.
+  </p>
 </section>
 
 <section class="wrap">
@@ -418,10 +437,8 @@ const LINES = [
 const body = document.getElementById('termbody');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 function render(instant){
-  if (instant){
-    body.innerHTML = LINES.map(([c,t])=>`<span class="${c==='t'?'':c}">${t}</span>`).join('');
-    return;
-  }
+  if (instant) return; // static markup already present for crawlers/no-JS/reduced-motion
+  body.textContent = '';
   let li=0, ci=0; const cur=document.createElement('span'); cur.className='cur';
   body.appendChild(cur);
   (function tick(){

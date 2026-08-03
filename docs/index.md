@@ -181,6 +181,6 @@ simulation can give — real drift, in the wild.
 
 ## dedrift Pro
 
-Anytime-valid sequential inference (e-processes), conditional
-production-traffic drift, and importance weighting are part of a separate
-commercial tier — contact [support@dedrift.ai](mailto:support@dedrift.ai).
+A commercial tier with advanced inference is in development and lives outside
+this repository — contact [support@dedrift.ai](mailto:support@dedrift.ai) to
+hear when it ships.

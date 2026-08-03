@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dedrift.ai/sitemap.xml
+Sitemap: https://dedrift.ai/docs/sitemap.xml

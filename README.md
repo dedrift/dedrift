@@ -88,7 +88,9 @@ comes from samples, not from wishful thresholds.
 
 ## dedrift Pro
 
-Anytime-valid sequential inference (e-processes), conditional production-traffic drift, and importance weighting are part of a separate commercial tier and are not in this repository.
+A commercial tier with advanced inference is in development and lives outside
+this repository. Email [support@dedrift.ai](mailto:support@dedrift.ai) to hear
+when it ships.
 
 ## Contact
 
