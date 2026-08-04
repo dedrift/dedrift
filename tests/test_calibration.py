@@ -415,3 +415,91 @@ class TestCycleEffectRobustness:
             "at sigma=0.25 the tool should not yet be alerting on literally "
             f"every stable history; got {rates[0.25]}"
         )
+
+
+@pytest.mark.calibration
+class TestPSINullBehaviour:
+    """PSI under the null, measured with the shipped implementation.
+
+    The paper and docs previously quoted the asymptotic null expectation
+    ``E[PSI] ~ (B-1)(1/n + 1/m)``, which gives 1.2 at (m, n) = (30, 10).
+    That formula rests on a scaled-chi-squared approximation which is void
+    at ten observations in ten deciles: most bins are empty, and our
+    implementation floors cell fractions at 1e-4 and renormalises, so the
+    quantity actually computed is not the asymptotic variable at all.
+
+    Measured here instead, 4000 draws per configuration, both windows
+    standard normal (i.e. no change whatsoever). The measured value is
+    *larger* than the asymptotic one -- 3.11 against 1.2 -- so the previous
+    number understated the problem it was cited to demonstrate. Quoting an
+    extrapolation as an arithmetic fact is the error, independent of which
+    direction it happened to fall.
+    """
+
+    def test_psi_null_expectation_is_measured_not_extrapolated(self) -> None:
+        from dedrift.detectors.heuristic import psi, psi_null_expectation
+
+        rng = np.random.default_rng(7)
+        measured = {}
+        for m_ref, n_cur in ((30, 10), (105, 21), (300, 100)):
+            vals = np.array(
+                [psi(rng.normal(size=m_ref), rng.normal(size=n_cur)).value for _ in range(1500)]
+            )
+            measured[(m_ref, n_cur)] = (float(vals.mean()), float((vals > 0.25).mean()))
+            print(
+                f"\nPSI null (ref={m_ref}, cur={n_cur}): E[PSI]={vals.mean():.3f}, "
+                f"P(>0.25 'major')={float((vals > 0.25).mean()):.3f}, "
+                f"asymptotic={psi_null_expectation(m_ref, n_cur):.3f}"
+            )
+
+        small_mean, small_major = measured[(30, 10)]
+        assert small_mean > 2.0, (
+            f"expected the small-sample null PSI to be far above its folk "
+            f"'major' threshold, measured {small_mean:.3f}"
+        )
+        assert small_major > 0.99, (
+            f"PSI should call unchanged data a 'major shift' essentially always "
+            f"at this scale; measured {small_major:.3f}"
+        )
+        assert small_mean > psi_null_expectation(30, 10), (
+            "the asymptotic formula is expected to UNDERSTATE the finite-sample "
+            "null at this scale; if that reverses, the docs' framing needs revisiting"
+        )
+
+        big_mean, big_major = measured[(300, 100)]
+        assert big_major < 0.10, (
+            f"at 300 vs 100 the index should mostly behave; measured {big_major:.3f}"
+        )
+        assert big_mean < small_mean, "null PSI must fall as sample size grows"
+
+    def test_guard_suppresses_psi_at_every_canary_scale(self) -> None:
+        """The consequence of the guard, stated rather than discovered later.
+
+        The validity guard refuses PSI whenever its finite-sample null
+        expectation exceeds half the "moderate" threshold. Solving
+        ``(B-1)(1/n + 1/m) <= 0.05`` at ``B = 10`` needs roughly 360
+        observations per window. Canary suites do not have that: the default
+        is 21 records per family per cycle.
+
+        So PSI is **never computed at any scale this tool realistically
+        runs at**. That is the correct behaviour -- the measurements above
+        show the index calling unchanged data a major shift essentially
+        always at small n -- but it should be said out loud rather than left
+        for a user to infer from an empty section of the report. It also
+        means PSI's presence in the battery is a courtesy to operators
+        running far larger windows, not a working part of the default path.
+        """
+        from dedrift.detectors.heuristic import PSI_MODERATE, psi_null_expectation
+
+        guard = PSI_MODERATE / 2
+        canary_scales = [(30, 10), (60, 20), (105, 21), (150, 50), (300, 100)]
+        for m_ref, n_cur in canary_scales:
+            assert psi_null_expectation(m_ref, n_cur) > guard, (
+                f"PSI would now be computed at (ref={m_ref}, cur={n_cur}); the "
+                "measurements in this class say it should not be, so either the "
+                "guard or the docs have drifted"
+            )
+
+        # And it does become computable eventually, so the guard is a scale
+        # condition rather than a permanent refusal dressed up as one.
+        assert psi_null_expectation(2000, 2000) <= guard

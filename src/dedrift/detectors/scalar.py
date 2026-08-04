@@ -120,11 +120,15 @@ def ad_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestO
         warnings.filterwarnings("ignore", message=".*p-value floored.*")
         warnings.filterwarnings("ignore", message=".*midrank.*")  # SciPy 1.19 rename
         res = stats.anderson_ksamp([ref, cur])
+    # Effect on the scale of the test, as everywhere else: AD is a
+    # distributional statistic, so a standardized MEAN difference beside it
+    # invites exactly the misreading the KS gate was fixed to prevent (a
+    # pure shape change has d ~ 0). Cohen's d lives on the Welch row only.
     return TestOutcome(
         test="ad",
         statistic=float(res.statistic),
         p_value=float(res.pvalue),
-        effect_size=_cohens_d(ref, cur),
+        effect_size=float(res.statistic),
         effect_raw=float(np.mean(cur) - np.mean(ref)),
         n_ref=len(ref),
         n_cur=len(cur),
@@ -158,8 +162,20 @@ def welch_t_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> 
 def levene_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestOutcome:
     """Levene test for variance shift (median-centered / Brown-Forsythe).
 
-    Effect size is the variance ratio ``var(cur)/var(ref)`` (1 = no change);
-    ``effect_raw`` is the variance difference.
+    Effect is reported and gated on the scale the test is computed on.
+    Brown--Forsythe forms an F statistic on absolute deviations from the
+    median precisely to avoid the sample variance, which is unstable under
+    the heavy tails this test exists to survive. Reporting (and gating on)
+    ``var(cur)/var(ref)`` would therefore choose a robust test and then
+    hand the decision back to the non-robust quantity it was chosen to
+    avoid -- the same mistake as gating KS on Cohen's d, one channel over.
+
+    ``effect_size`` is the **robust dispersion ratio**: the ratio of mean
+    absolute deviations from each window's median, which is the quantity
+    the F statistic is built from. ``effect_raw`` is the difference of
+    those mean absolute deviations, in the signature's own units. The raw
+    The sample-variance ratio is deliberately not reported here: two
+    dispersion numbers on one row is how the wrong one gets quoted.
 
     Args:
         ref: Reference-window values.
@@ -171,15 +187,15 @@ def levene_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> T
     if _degenerate(ref, cur):
         return TestOutcome("levene", float("nan"), float("nan"), 1.0, 0.0, len(ref), len(cur))
     res = stats.levene(ref, cur, center="median")
-    v_ref = float(np.var(ref, ddof=1))
-    v_cur = float(np.var(cur, ddof=1))
-    ratio = v_cur / v_ref if v_ref > 0 else float("inf")
+    z_ref = float(np.mean(np.abs(ref - np.median(ref))))
+    z_cur = float(np.mean(np.abs(cur - np.median(cur))))
+    ratio = z_cur / z_ref if z_ref > 0 else float("inf")
     return TestOutcome(
         test="levene",
         statistic=float(res.statistic),
         p_value=float(res.pvalue),
         effect_size=ratio,
-        effect_raw=v_cur - v_ref,
+        effect_raw=z_cur - z_ref,
         n_ref=len(ref),
         n_cur=len(cur),
     )

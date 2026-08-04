@@ -82,16 +82,49 @@ def page_hinkley(
     if n <= min_baseline:
         return PageHinkleyResult(False, "", None, 0.0, lambda_, delta)
     base = values[:min_baseline]
-    # Scale from the median absolute successive difference over the whole
-    # stream: successive differences are level-shift robust (only the single
-    # difference straddling a change point is contaminated, and the median
-    # ignores it), and using the full stream gives a far stabler estimate
-    # than the tiny baseline window would.
-    diffs = np.diff(values)
-    scale = float(np.median(np.abs(diffs - np.median(diffs)))) * 1.4826 / np.sqrt(2)
-    if scale == 0:
-        scale = float(np.std(values, ddof=1)) or 1.0
-    z = (values - float(np.mean(base))) / scale
+
+    # Scale from successive differences within the BASELINE WINDOW ONLY.
+    #
+    # An earlier version took the median absolute successive difference over
+    # the whole stream, including cycles after the alarm. That is a larger
+    # and stabler sample, and it is not available at decision time: a
+    # procedure sold as sequential, and used to localise onsets, must not be
+    # standardised with data from the future of the point it is judging.
+    # It also biases in the direction that flatters the detector -- a
+    # post-change stream inflates the scale, so pre-change excursions look
+    # smaller than they are.
+    #
+    # Successive differences remain the right robust base (a level shift
+    # contaminates exactly one difference, which the median ignores); the
+    # sqrt(2) converts a difference scale to a level scale under
+    # independence, which is itself an assumption: under positive
+    # autocorrelation it understates the level scale and makes the detector
+    # more trigger-happy. That is one contributor to the gap between the
+    # idealised crossing rate and the measured flag rate, and it is why this
+    # channel is labelled a diagnostic and never alerts.
+    # A baseline-window-only estimate is causal but far too noisy at
+    # ``min_baseline`` points: measured, it took the null alarm rate from
+    # 0.7% to 19%, because an underestimated scale inflates every
+    # standardized deviation. The fix is not to reach forward for more data
+    # but to let the estimate GROW causally -- at step t, standardize with
+    # everything observed strictly before t. Early steps are noisy and no
+    # alarm may fire before ``min_baseline`` anyway; by the time alarms are
+    # possible the estimate has as much data as causality allows.
+    def _scale_from(window: npt.NDArray[np.float64]) -> float:
+        if len(window) > 1:
+            d = np.diff(window)
+            s = float(np.median(np.abs(d - np.median(d))) * 1.4826 / np.sqrt(2.0))
+            if s > 0:
+                return s
+            s = float(np.std(window, ddof=1))
+            if s > 0:
+                return s
+        return 1.0
+
+    z = np.empty(n, dtype=float)
+    for t_idx in range(n):
+        window = values[: max(t_idx, min_baseline)] if t_idx else base
+        z[t_idx] = (values[t_idx] - float(np.mean(window))) / _scale_from(window)
 
     # Accumulators for upward and downward shifts.
     running_mean = 0.0

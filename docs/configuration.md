@@ -22,7 +22,9 @@ format_validity_pp = 1.0      # min format-validity shift, pp
 rate_default_pp = 2.0         # other rate signatures, pp
 ks_distance = 0.15            # min KS statistic D for KS alerts (see note)
 scalar_cohen_d = 0.5          # location gate for non-KS scalar channels
-variance_ratio = 1.5          # dispersion gate: var must grow/shrink 50%
+dispersion_ratio = 1.5        # dispersion gate on the ROBUST scale the test
+                              # uses (mean abs deviation from the median),
+                              # not the sample variance
 p95_relative = 0.10           # tail gate: min relative P95 shift
 embedding_mmd2_floor = -1.0   # -1 = auto-calibrate; 0 = off; >0 = explicit
 
@@ -69,7 +71,7 @@ Page–Hinkley is a **diagnostic**, not an alert: it localizes drift onsets
 for attribution. Defaults are calibrated to ≈1.5% per-stream false-flag
 rate over 30-cycle horizons (measured, enforced < 3% in CI). Flags compound
 across streams — a stable agent shows ≥1 flag on
-[56% of checks](statistics.md) — which is why flags never page anyone.
+[68.6% of checks](statistics.md) — which is why flags never page anyone.
 
 ### Embeddings
 

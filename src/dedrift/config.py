@@ -38,8 +38,15 @@ class Materiality:
             (tens of samples per window) significance is the stricter
             filter and this gate cannot be the one that fires; it exists to
             stop trivially significant D at large n from alerting.
-        variance_ratio: Minimum variance ratio (or its inverse) for
-            dispersion alerts; 1.5 means var must grow or shrink by 50%.
+        dispersion_ratio: Minimum robust dispersion ratio (or its inverse)
+            for dispersion alerts; 1.5 means the mean absolute deviation
+            from the median must grow or shrink by 50%. Gated on the same
+            robust scale Brown--Forsythe tests on, not on the sample
+            variance -- the variance ratio is unstable under heavy tails
+            and gating on it would undo the reason for choosing a robust
+            test. (Renamed from ``variance_ratio`` in v0.3.0, when the
+            quantity it names actually changed; the old name would now be
+            a lie about what is measured.)
         p95_relative: Minimum relative P95 shift.
         embedding_mmd2_floor: MMD^2 materiality floor. Negative (default)
             means auto-calibrate from reference-cycle pairs at check time
@@ -52,7 +59,7 @@ class Materiality:
     rate_default_pp: float = 2.0
     scalar_cohen_d: float = 0.5
     ks_distance: float = 0.15
-    variance_ratio: float = 1.5
+    dispersion_ratio: float = 1.5
     p95_relative: float = 0.10
     embedding_mmd2_floor: float = -1.0
 
@@ -180,7 +187,9 @@ class ProjectConfig:
             rate_default_pp=float(materiality_raw.get("rate_default_pp", 2.0)),
             scalar_cohen_d=float(materiality_raw.get("scalar_cohen_d", 0.5)),
             ks_distance=float(materiality_raw.get("ks_distance", 0.15)),
-            variance_ratio=float(materiality_raw.get("variance_ratio", 1.5)),
+            dispersion_ratio=float(
+                materiality_raw.get("dispersion_ratio", materiality_raw.get("variance_ratio", 1.5))
+            ),
             p95_relative=float(materiality_raw.get("p95_relative", 0.10)),
             embedding_mmd2_floor=float(materiality_raw.get("embedding_mmd2_floor", -1.0)),
         )

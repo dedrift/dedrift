@@ -51,7 +51,7 @@ scalar_cohen_d = 0.5        # |Cohen's d| floor for location tests (Welch)
 ks_distance = 0.15          # KS statistic D floor (sup-norm CDF distance):
                             # KS catches shape changes with equal means,
                             # which Cohen's d would wrongly gate out
-variance_ratio = 1.5        # variance must grow/shrink by this factor
+dispersion_ratio = 1.5      # robust dispersion (MAD) must grow/shrink by this
 p95_relative = 0.10         # relative P95 shift floor
 
 [embeddings]

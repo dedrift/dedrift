@@ -91,7 +91,7 @@ failure mode, not a configuration choice.
 - **"Significant, below materiality"** — real but small; watch it.
 - **Flags** (PSI, Page–Hinkley) are uncalibrated diagnostics that localize
   onsets for attribution. A stable agent shows occasional flags —
-  [measured: 56% of stable checks](statistics.md) — so never page on flags.
+  [measured: 68.6% of stable checks](statistics.md) — so never page on flags.
 - **COMPOSITION MISMATCH** means a canary's records went missing and the
   comparison was suppressed: fix collection, don't chase drift.
 - **DEGRADED DATA** means too many current-cycle errors for any drift

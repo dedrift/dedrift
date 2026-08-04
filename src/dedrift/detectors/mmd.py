@@ -119,6 +119,13 @@ def mmd_rbf_test(
     )
 
 
+#: Minimum reference cycles before a noise floor is estimated at all.
+#: Five cycles give ten pairs; below that the quantile is the maximum of a
+#: handful of draws and pretending otherwise would be the kind of thing this
+#: project exists to avoid.
+MIN_FLOOR_CYCLES = 5
+
+
 def calibrate_mmd_floor(
     cycle_embeddings: list[npt.NDArray[np.float64]],
     sigma: float,
@@ -132,8 +139,23 @@ def calibrate_mmd_floor(
     ``sigma`` as the observed statistic, so the floor and the observation are
     commensurable numbers under one kernel. An observed MMD^2 below the floor
     is within the project's own cycle-to-cycle noise and is never material,
-    whatever its p-value. Requires >= 3 cycles (>= 3 pairs); returns 0.0
-    otherwise (floor disabled, and the report should say so).
+    whatever its p-value.
+
+    This is a crude empirical noise floor, not a calibrated threshold, and
+    the docstring says so because the number of pairs is small. Requires
+    >= 5 cycles (>= 10 pairs); returns 0.0 otherwise, floor disabled, and
+    the report says so. The previous minimum of 3 cycles gave 3 pairs, at
+    which the 0.95 quantile is indistinguishable from the maximum of three
+    draws -- a statistic with no useful sampling properties dressed as a
+    percentile.
+
+    A second caveat the caller must know: ``sigma`` is computed by the check
+    pipeline on the pooled reference-plus-current sample, so the floor moves
+    with the data under test. That is required for commensurability with the
+    observed statistic (and the permutation p-value stays valid, since
+    sigma is permutation-invariant on the pooled sample), but it does mean
+    the floor is not a constant fixed in advance. It is a materiality gate,
+    not part of any error guarantee.
 
     Args:
         cycle_embeddings: One (n_i, d) embedding array per reference cycle.
@@ -144,7 +166,7 @@ def calibrate_mmd_floor(
         The calibrated floor (0.0 when not enough cycles to calibrate).
     """
     k = len(cycle_embeddings)
-    if k < 3:
+    if k < MIN_FLOOR_CYCLES:
         return 0.0
     values: list[float] = []
     for i in range(k):

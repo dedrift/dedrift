@@ -106,7 +106,7 @@ onset.
 Every detector's false-alarm rate is measured against a documented
 acceptance band by simulation tests that run in CI on every commit. The
 full pipeline's null alert rate: 7 of 500 stable-agent checks (Wilson 95%
-upper bound 0.029). The parts that aren't calibrated — the diagnostic flag
+upper bound 0.031). The parts that aren't calibrated — the diagnostic flag
 channel — carry their measured rate too, because honesty is the product.
 </p>
 

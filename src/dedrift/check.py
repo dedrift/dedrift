@@ -25,6 +25,7 @@ reports both verdicts (principle 6).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -233,11 +234,37 @@ def _ordered_cycles(frame: pd.DataFrame) -> list[str]:
     return seen
 
 
+def _test_seed(base_seed: int, *parts: str) -> int:
+    """Deterministic per-test seed derived from the project seed and identity.
+
+    Every permutation test in a check used to receive ``cfg.seed`` verbatim,
+    so the ~170 permutation nulls in one BH pool were coupled by common
+    random numbers. Each p-value was individually exact, but their joint
+    behaviour carried a dependence that came from our seeding rather than
+    from the data -- an avoidable contribution to exactly the multiplicity
+    question the paper is careful about elsewhere.
+
+    Deriving the seed from ``(project seed, baseline, family, signature,
+    test)`` keeps the run bit-for-bit reproducible while decoupling the
+    nulls. BLAKE2b is used rather than :func:`hash` because the latter is
+    salted per process and would break reproducibility.
+
+    Args:
+        base_seed: The project-level seed.
+        *parts: Identity of the test (baseline, family, signature, name).
+
+    Returns:
+        A seed in ``[0, 2**31)``.
+    """
+    key = "|".join((str(base_seed), *parts)).encode()
+    return int.from_bytes(hashlib.blake2b(key, digest_size=4).digest(), "big") % (2**31)
+
+
 def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
     m = cfg.materiality
     if test.test == "levene":
         r = test.effect_size
-        return bool(r >= m.variance_ratio or (r > 0 and r <= 1 / m.variance_ratio))
+        return bool(r >= m.dispersion_ratio or (r > 0 and r <= 1 / m.dispersion_ratio))
     if test.test == "p95_perm":
         return bool(abs(test.effect_size) >= m.p95_relative)
     if test.test == "ks":
@@ -404,7 +431,7 @@ def _mmd_battery(
             ref_emb,
             cur_emb,
             n_permutations=max(cfg.permutations, 500),
-            seed=cfg.seed,
+            seed=_test_seed(cfg.seed, baseline_name, family, "embedding", "mmd"),
             sigma=sigma,
         )
         if cfg.materiality.embedding_mmd2_floor >= 0:
@@ -492,7 +519,10 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
                         family,
                         sig,
                         p95_permutation_test(
-                            ref, cur, n_permutations=cfg.permutations, seed=cfg.seed
+                            ref,
+                            cur,
+                            n_permutations=cfg.permutations,
+                            seed=_test_seed(cfg.seed, baseline_name, family, sig, "p95_perm"),
                         ),
                     )
                 )
@@ -714,7 +744,7 @@ def _persist(store: Store, result: CheckResult) -> None:
     # Effect units match the scale each test is gated AND reported on.
     effect_units = {
         "ks": "ks_D",
-        "levene": "variance_ratio",
+        "levene": "mad_ratio",
         "p95_perm": "relative_p95_shift",
         "two_proportion_z": "rate_diff",
         "mmd": "mmd2",

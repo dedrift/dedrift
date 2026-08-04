@@ -45,11 +45,20 @@ class TestScalarTests:
         assert np.isnan(welch_t_test(ref, cur).p_value)
 
     def test_levene_detects_variance_shift(self) -> None:
+        """Effect is the ROBUST dispersion ratio, on the scale the test uses.
+
+        Brown-Forsythe works on absolute deviations from the median, so the
+        reported effect is the ratio of mean absolute deviations, not the
+        variance ratio. For N(0,1) against N(0,3) that is the SD ratio 3,
+        not its square 9. Gating on the variance ratio would have handed a
+        robust test's decision back to the non-robust quantity it exists to
+        avoid -- the same error as gating KS on Cohen's d.
+        """
         ref = RNG.normal(0, 1, 300)
         cur = RNG.normal(0, 3, 300)
         out = levene_test(ref, cur)
         assert out.p_value < 1e-6
-        assert out.effect_size == pytest.approx(9.0, rel=0.5)
+        assert out.effect_size == pytest.approx(3.0, rel=0.2)
 
     def test_p95_perm_seeded_reproducible(self) -> None:
         ref = RNG.normal(0, 1, 150)
@@ -112,12 +121,32 @@ class TestPageHinkley:
         assert not page_hinkley(values).alarm
 
     def test_null_false_alarm_rate_below_documented_bound(self) -> None:
-        """Documented bound: ~2*exp(-2*delta*lambda) ~= 0.5% per stream at
-        defaults. Accept < 3% measured over 300 stationary streams (the
-        early-window scale estimate adds noise beyond the idealized bound)."""
+        """The causal estimator's honest null rate, which is worse than the
+        number this test used to assert.
+
+        The idealized bound is ~2*exp(-2*delta*lambda) ~= 0.5% per stream.
+        The old measured figure (0.7%) was obtained with a scale estimated
+        from the WHOLE stream, including cycles after the alarm -- i.e. by
+        peeking at the future of the point being judged. Standardizing
+        causally (expanding window, data strictly before each step) costs
+        exactly what one would expect: measured 5.0% at 30 points and 12%
+        at 60, since a noisier early scale inflates deviations and longer
+        streams give more chances to cross.
+
+        We keep the causal estimator and raise the documented number rather
+        than keep the flattering one. This is also why Page-Hinkley is a
+        labeled diagnostic that can never alert: at these rates it localises
+        onsets for attribution and nothing more.
+        """
         rng = np.random.default_rng(99)
         alarms = sum(page_hinkley(rng.normal(0, 1, 30)).alarm for _ in range(300))
-        assert alarms / 300 < 0.03, f"PH null alarm rate {alarms / 300:.3f}"
+        rate = alarms / 300
+        assert rate < 0.10, f"PH null alarm rate {rate:.3f} (documented ~0.05 at n=30)"
+        assert rate > 0.005, (
+            f"PH null rate {rate:.3f} looks too good; if it has returned to the "
+            "sub-1% region, check that the scale estimate has not silently become "
+            "non-causal again"
+        )
 
     def test_alarm_and_changepoint_on_step(self) -> None:
         values = np.concatenate([RNG.normal(10, 1, 15), RNG.normal(16, 1, 15)])

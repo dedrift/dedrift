@@ -92,7 +92,7 @@ class TestMMD:
         # (commensurability, per owner review finding #4).
         from dedrift.detectors.mmd import median_heuristic_bandwidth
 
-        cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(4)]
+        cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(5)]
         shifted = RNG.normal(1.5, 1, size=(40, 6))
         sigma = median_heuristic_bandwidth(np.vstack([cycles[0], shifted]))
         floor = calibrate_mmd_floor(cycles, sigma=sigma)
@@ -100,9 +100,16 @@ class TestMMD:
         assert floor > 0
         assert observed > floor
 
-    def test_floor_uncalibratable_below_three_cycles(self) -> None:
-        cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(2)]
-        assert calibrate_mmd_floor(cycles, sigma=1.0) == 0.0
+    def test_floor_uncalibratable_below_five_cycles(self) -> None:
+        """Four cycles give six pairs; the 0.95 quantile of six draws is the
+        maximum in all but name. The minimum was raised from three cycles to
+        five (ten pairs) rather than keep calling that a calibrated
+        threshold."""
+        for k in (2, 3, 4):
+            cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(k)]
+            assert calibrate_mmd_floor(cycles, sigma=1.0) == 0.0, f"{k} cycles"
+        cycles = [RNG.normal(0, 1, size=(40, 6)) for _ in range(5)]
+        assert calibrate_mmd_floor(cycles, sigma=1.0) > 0.0
 
 
 @pytest.mark.calibration

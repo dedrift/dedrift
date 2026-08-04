@@ -100,7 +100,7 @@ family or raise N.
   | 0.10 | 23/100 | 0.322 |
   | 0.25 | 68/100 | 0.763 |
 
-  A ~10% inter-cycle swing takes the alert rate from 2% to 23%. The 7/500
+  A ~10% inter-cycle swing takes the alert rate from 2% to 23%. The 8/500
   headline is measured at σ = 0 and describes that regime only. If your
   provider is noisy between cycles, prefer `--inference anytime`, which is
   much less affected (0/100 up to σ = 0.20 at matched scope), and read
@@ -149,13 +149,13 @@ family or raise N.
   multiplicity control — treat flags as diagnostics, never as alerts.**
   PH runs on every (family, signature) stream (~48 at default scale), so
   per-stream rates compound: measured on the same 500 null runs as the
-  headline bound, **56% of stable checks showed at least one flag**. That
+  headline bound, **68.6% of stable checks showed at least one flag** (up from 56% once Page-Hinkley stopped standardising itself with data from after the point it was judging). That
   number is printed here deliberately — flags never alert, they exist to
   localize onsets for attribution, and the report labels them as such.
   Cross-stream correction for the flag channel is on the roadmap.
 - **PSI is refused where it cannot mean anything.** PSI between two finite
   samples of the *same* distribution is not zero — to first order
-  E[PSI] ≈ (B−1)·(1/n_ref + 1/n_cur), which at canary scale (10 bins,
+  E[PSI] ≈ (B−1)·(1/n_ref + 1/n_cur) — and that asymptotic figure is itself optimistic: simulating the shipped implementation at (30, 10) gives a measured E[PSI] of **3.10**, with PSI calling unchanged data a "major shift" **100%** of the time. At canary scale (10 bins,
   tens of records) exceeds the 0.25 "major" folk threshold from sampling
   noise alone; before this guard, PSI flagged **100% of stable checks**.
   The pipeline therefore emits PSI only when its null expectation is below
