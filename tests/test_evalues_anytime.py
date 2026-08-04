@@ -97,6 +97,7 @@ def _draw_successes(
     *,
     sigma_cycle: float = 0.0,
     rho_within: float = RHO_WITHIN,
+    phi_cycle: float = 0.0,
 ) -> np.ndarray:
     """Per-cycle success counts with the battery's real dependence.
 
@@ -110,13 +111,22 @@ def _draw_successes(
         rates: Marginal success probabilities. Either ``(K,)`` for a
             constant regime or ``(cycles, K)`` to script a change part-way
             through a history.
-        sigma_cycle: Standard deviation of a cycle-level logit offset shared
-            by *every* stream. Zero keeps the distributional null exactly
-            true (the case for calibration); positive values model
-            provider-side state that moves all channels together while the
-            configured stack is unchanged.
+        sigma_cycle: Marginal standard deviation of a cycle-level offset,
+            applied to the probit threshold and shared by *every* stream.
+            Zero keeps the distributional null exactly true (the case for
+            calibration); positive values model provider-side state that
+            moves all channels together while the configured stack is
+            unchanged.
         rho_within: Correlation of the record-level latent across signatures
-            of the same family.
+            of the same family. This is *cross-sectional* dependence, within
+            a cycle -- which is the kind e-BH already tolerates.
+        phi_cycle: AR(1) coefficient of the cycle offset. This is the one
+            that matters for the stopped-e-BH causal condition: that
+            condition excludes unobserved confounding **from the past**, so
+            an i.i.d. per-cycle offset does not probe it at all, however
+            large. With ``phi_cycle > 0`` the offset persists, one stream's
+            history carries information about another stream's future, and
+            the condition is genuinely in question.
 
     Returns:
         Integer array of shape ``(cycles, K)``.
@@ -124,7 +134,19 @@ def _draw_successes(
     rate_mat = np.broadcast_to(np.asarray(rates, dtype=float), (cycles, K))
     thresholds = norm.ppf(rate_mat)  # (cycles, K)
     out = np.empty((cycles, K), dtype=int)
-    u = rng.normal(0.0, sigma_cycle, size=(cycles, 1)) if sigma_cycle > 0 else np.zeros((cycles, 1))
+    if sigma_cycle > 0:
+        if phi_cycle > 0:
+            # AR(1) with stationary marginal variance sigma_cycle**2.
+            innov = rng.normal(0.0, sigma_cycle * np.sqrt(1 - phi_cycle**2), size=cycles)
+            series = np.empty(cycles)
+            series[0] = rng.normal(0.0, sigma_cycle)
+            for i in range(1, cycles):
+                series[i] = phi_cycle * series[i - 1] + innov[i]
+            u = series[:, None]
+        else:
+            u = rng.normal(0.0, sigma_cycle, size=(cycles, 1))
+    else:
+        u = np.zeros((cycles, 1))
     shared = {f: rng.normal(size=(cycles, N_CUR)) for f in range(N_FAMILIES)}
     w_mix = np.sqrt(max(1.0 - rho_within**2, 0.0))
     for k in range(K):
@@ -160,7 +182,7 @@ def _tables(refs: np.ndarray, grid: tuple[float, ...], gamma_i: float) -> np.nda
 
 
 def _run_null(
-    n_runs: int, cycles: int, seed: int, *, sigma_cycle: float = 0.0
+    n_runs: int, cycles: int, seed: int, *, sigma_cycle: float = 0.0, phi_cycle: float = 0.0
 ) -> dict[str, object]:
     """Stable agents: measure ever-alert for both inference paths."""
     grid = symmetric_grid(_CFG.tilts)
@@ -173,7 +195,7 @@ def _run_null(
     for _ in range(n_runs):
         refs = rng.binomial(N_REF, BASE_RATES)
         tbl = _tables(refs, grid, GAMMA_I)
-        s = _draw_successes(rng, cycles, BASE_RATES, sigma_cycle=sigma_cycle)
+        s = _draw_successes(rng, cycles, BASE_RATES, sigma_cycle=sigma_cycle, phi_cycle=phi_cycle)
 
         wealth = np.cumsum(np.stack([tbl[k][s[:, k]] for k in range(K)], axis=1), axis=0)
         rej_e = _ebh_any_rejection(wealth, ALPHA_PRIME)
@@ -295,6 +317,30 @@ class TestCycleLevelRandomEffect:
         hits = int(res["anytime"][200])  # type: ignore[index]
         bound = wilson_upper(hits, 60)
         assert bound < 0.20, f"anytime path degraded at sigma=0.05: {hits}/60 (Wilson {bound:.3f})"
+
+    def test_persistent_confounding_is_the_case_that_actually_matters(self) -> None:
+        """An i.i.d. cycle offset does not probe the stopped-e-BH condition.
+
+        That condition excludes unobserved confounding **from the past**. An
+        offset redrawn independently every cycle has no memory, so however
+        large it is it cannot violate the condition -- measuring it and
+        calling the result reassurance would be measuring the wrong thing,
+        which is the mistake this suite already made once with independent
+        streams.
+
+        Here the offset is AR(1), so provider-side state persists and one
+        stream's history genuinely carries information about another's
+        future. Measured at 120 runs x 500 cycles: 0/120 at phi = 0.7 and
+        phi = 0.95 for sigma = 0.10, and 0/120 and 1/120 at sigma = 0.25.
+        The condition remains unproven for our streams; what changed is that
+        the measurement now bears on it.
+        """
+        res = _run_null(n_runs=60, cycles=300, seed=808, sigma_cycle=0.25, phi_cycle=0.9)
+        hits = int(res["anytime"][300])  # type: ignore[index]
+        bound = wilson_upper(hits, 60)
+        assert bound < 0.20, (
+            f"anytime path degraded under persistent confounding: {hits}/60 (Wilson {bound:.3f})"
+        )
 
     def test_large_cycle_effect_is_recorded_not_hidden(self) -> None:
         """A large cycle effect *should* alert — and the tool cannot tell why.

@@ -208,3 +208,35 @@ Log-wealth is accumulated evidence since the epoch began.
   looks actively fine", only "not significant".
 - **Crossing log(1/α′)** — the process alone would reject; whether it alerts
   is decided by e-BH across the battery.
+
+## Robustness to provider-side wobble
+
+Both inference paths were run on identical draws while a shared per-cycle
+offset was injected — the configured stack unchanged, but the per-record law
+drifting between cycles, which is what a hosted endpoint does on its own.
+`phi` is the AR(1) coefficient of that offset: `phi = 0` is memoryless,
+`phi > 0` makes it persist.
+
+| σ | φ | anytime: ever alerted | fixed-sample: per-check rate |
+|---|---|---|---|
+| 0.00 | — | 0/500 | 0.028 |
+| 0.10 | 0 | 0/100 | 0.036 |
+| 0.20 | 0 | 0/100 | 0.069 |
+| 0.40 | 0 | 1/100 | 0.217 |
+| 0.10 | 0.90 | 0/100 | 0.035 |
+| 0.25 | 0.90 | 1/100 | 0.093 |
+| 0.25 | 0.95 | 2/100 | 0.094 |
+
+The fixed-sample per-check rate roughly doubles by σ = 0.2 and is eightfold
+by σ = 0.4. The anytime path stays low throughout — but read the last two
+rows honestly: they are the only configurations in the study where it alerts
+on a stable agent more than once in a hundred runs, and the highest is the
+most persistent. Persistence is exactly what the stopped-e-BH causal
+condition excludes, so the elevation appears where the assumption is
+weakest. At n = 100 the difference is not significant and we claim nothing
+from it; it is recorded because a reader is entitled to know.
+
+Why persistence and not just magnitude: an offset redrawn independently each
+cycle has no past, so however large it is it cannot violate a condition
+about confounding *from the past*. Measuring that and calling it reassurance
+would be measuring the wrong thing.

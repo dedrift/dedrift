@@ -17,7 +17,7 @@ guarantee to be engineered around: a guarantee spanning a hypothesis change
 would be meaningless, not stronger. Operators who want a genuine
 unbounded-horizon bound across arbitrarily many epochs can opt into a
 summable allocation (:func:`geometric_allocation`), which spends
-``alpha * 2**-e`` on epoch ``e`` so the total is at most ``alpha`` however
+``alpha * 2**-(e+1)`` on epoch ``e`` so the total is at most ``alpha`` however
 many epochs occur.
 
 Skipped cycles contribute ``E_t = 1`` (log-wealth unchanged). That is the

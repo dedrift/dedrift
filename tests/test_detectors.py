@@ -115,37 +115,52 @@ class TestBH:
         assert all(np.diff(adj_sorted) >= -1e-12)
 
 
+def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval, so null-rate tests bound rather than point-estimate."""
+    p = k / n
+    d = 1 + z * z / n
+    c = p + z * z / (2 * n)
+    m = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return float((c - m) / d), float((c + m) / d)
+
+
 class TestPageHinkley:
     def test_no_alarm_on_stationary(self) -> None:
         values = RNG.normal(10, 1, 30)
         assert not page_hinkley(values).alarm
 
-    def test_null_false_alarm_rate_below_documented_bound(self) -> None:
-        """The causal estimator's honest null rate, which is worse than the
-        number this test used to assert.
+    def test_null_false_alarm_rate_matches_the_documented_band(self) -> None:
+        """The causal estimator's honest null rate, bounded rather than
+        point-estimated on a lucky seed.
 
-        The idealized bound is ~2*exp(-2*delta*lambda) ~= 0.5% per stream.
-        The old measured figure (0.7%) was obtained with a scale estimated
-        from the WHOLE stream, including cycles after the alarm -- i.e. by
-        peeking at the future of the point being judged. Standardizing
-        causally (expanding window, data strictly before each step) costs
-        exactly what one would expect: measured 5.0% at 30 points and 12%
-        at 60, since a noisier early scale inflates deviations and longer
-        streams give more chances to cross.
+        History, because it is the point of the test. The idealized bound is
+        ~2*exp(-2*delta*lambda) ~= 0.5% per stream. An earlier version
+        measured 0.7% -- with a scale estimated from the WHOLE stream,
+        including cycles after the alarm, i.e. by reading the future of the
+        point being judged. Standardizing causally costs what it should.
 
-        We keep the causal estimator and raise the documented number rather
-        than keep the flattering one. This is also why Page-Hinkley is a
-        labeled diagnostic that can never alert: at these rates it localises
-        onsets for attribution and nothing more.
+        Measured over 8000 draws: **8.5% at 30 points, 11.3% at 60**. An
+        earlier version of this test asserted ``< 0.10`` on 300 draws at one
+        seed, which reported 5.0%; across twelve seeds at 500 draws the same
+        quantity ranges 5.4%-11.2%, so that gate was a coin flip and the
+        quoted figure was 40% of the truth. A calibration test that passes
+        on the seed it was written with is the failure mode this whole suite
+        exists to prevent.
+
+        This version uses 2000 draws and asserts the Wilson interval lies
+        inside a documented band, so it is robust to reseeding and it fails
+        if the estimator silently becomes non-causal again (which would send
+        the rate back toward 1%).
         """
         rng = np.random.default_rng(99)
-        alarms = sum(page_hinkley(rng.normal(0, 1, 30)).alarm for _ in range(300))
-        rate = alarms / 300
-        assert rate < 0.10, f"PH null alarm rate {rate:.3f} (documented ~0.05 at n=30)"
-        assert rate > 0.005, (
-            f"PH null rate {rate:.3f} looks too good; if it has returned to the "
-            "sub-1% region, check that the scale estimate has not silently become "
-            "non-causal again"
+        n_draws = 2000
+        alarms = sum(page_hinkley(rng.normal(0, 1, 30)).alarm for _ in range(n_draws))
+        rate = alarms / n_draws
+        lo, hi = _wilson(alarms, n_draws)
+        assert lo >= 0.06 and hi <= 0.12, (
+            f"PH null alarm rate {rate:.3f} (Wilson [{lo:.3f}, {hi:.3f}]) outside the "
+            "documented band [0.06, 0.12] for 30-point streams. If it has dropped "
+            "below 0.06, check that the scale estimate has not become non-causal."
         )
 
     def test_alarm_and_changepoint_on_step(self) -> None:

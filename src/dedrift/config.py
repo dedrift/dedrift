@@ -92,7 +92,7 @@ class AnytimeConfig:
             default 0.02 was chosen from a sweep over allocations whose
             battery-wide claim is actually 0.05 (per-process split
             included). Within that valid region the trade is one-sided —
-            detection at +10pp rises 13% -> 47% as gamma_total goes
+            detection at +10pp rises 24% -> 90% as gamma_total goes
             0.005 -> 0.03 with the measured null rate 0 throughout — so the
             choice is made on power alone, since validity does not
             discriminate. We stop at 0.02 rather than 0.03 because

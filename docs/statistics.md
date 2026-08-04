@@ -178,9 +178,16 @@ family or raise N.
   for the default path; Benjamini–Yekutieli is on the roadmap for users who
   want a theorem, and `--inference anytime` uses e-BH, which holds under
   arbitrary dependence.
-- **Page–Hinkley** (λ = 12, δ = 0.3 in reference-SD units, scale from the
-  median absolute successive difference): the idealized null crossing bound
-  is ~0.15% per stream, but because centering and scale are estimated, the
+- **Page–Hinkley** (λ = 12, δ = 0.3 in robust-scale units, centre and scale
+  estimated **causally** from an expanding window of data strictly before
+  each step): the idealized null crossing bound is ~0.15% per stream, but
+  because centre and scale are estimated from few observations the measured
+  rate is **8.5% per stream on 30-cycle histories and 11.3% on 60-cycle
+  ones** (8000 draws). An earlier version of this page said 1.5%; that came
+  from an estimator that used the whole stream, including cycles *after* the
+  alarm — a sequential detector reading its own future. Removing the
+  look-ahead raised the honest rate sixfold. This is why PH is a labelled
+  diagnostic that can never alert. The
   **measured** rate is ~1.5% per stream over 30-cycle horizons — the
   calibration test enforces < 3%. PH alarms localize onsets for attribution;
   they only alert through the same materiality gating as batch tests.

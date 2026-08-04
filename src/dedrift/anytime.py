@@ -67,6 +67,7 @@ from dedrift.evalues import (
     EProcessState,
     PriorState,
     epoch_fingerprint,
+    geometric_allocation,
     rate_evalue,
     symmetric_grid,
     update_process,
@@ -410,7 +411,25 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
         log_evalues.append(upd.state.log_wealth)
         rows.append({"key": key, "state": upd.state, "detail": outcome.detail})
 
-    decision = ebh_from_logs(log_evalues, alpha=ac.alpha_prime)
+    # Epoch allocation. "per_epoch" spends alpha' afresh in every epoch --
+    # the honest default, since a fingerprint change makes it a different
+    # null. "geometric" is for operators who want a bound over an unbounded
+    # number of epochs: alpha'_e = alpha' * 2^-(e+1), which is summable.
+    # Validated rather than silently ignored: this key was parsed and never
+    # read for a release, so setting it did nothing.
+    epoch_now = max((s.epoch for s in updated), default=0)
+    if ac.epoch_allocation == "geometric":
+        effective_alpha_prime = geometric_allocation(ac.alpha_prime, epoch_now)
+    elif ac.epoch_allocation == "per_epoch":
+        effective_alpha_prime = ac.alpha_prime
+    else:
+        msg = (
+            f"unknown anytime.epoch_allocation {ac.epoch_allocation!r}; "
+            "expected 'per_epoch' or 'geometric'"
+        )
+        raise ValueError(msg)
+
+    decision = ebh_from_logs(log_evalues, alpha=effective_alpha_prime)
     processes = [
         ProcessReport(
             key=r["key"],
@@ -441,7 +460,7 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
         current_cycle=current,
         fingerprint=fingerprint,
         alpha=ac.alpha,
-        alpha_prime=ac.alpha_prime,
+        alpha_prime=effective_alpha_prime,
         gamma_total=ac.gamma_total,
         gamma_per_process=gamma_i,
         n_processes=len(processes),
