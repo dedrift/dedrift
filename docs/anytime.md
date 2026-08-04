@@ -80,7 +80,8 @@ it remains the default.
 
 The mechanism behind the cost is visible in the construction: handling the
 unknown baseline rate requires worst-casing over a coverage interval, which
-makes each bet conservative (measured: E[E_t] ≈ 0.73–0.91 per step under the
+makes each bet conservative (measured at the shipped per-process budget:
+E[E_t] in [0.46, 0.94] per step under the
 null). Log-wealth therefore drifts *down* on a stable agent, and small
 effects never accumulate enough to cross.
 
@@ -198,9 +199,13 @@ Two further limitations, stated rather than discovered:
   contributing exactly `E_t = 1`. This is a consequence of predictability,
   not an oversight: membership decided from the current cycle would make the
   bet depend on the data it is betting on.
-- **A suppressed cycle contributes `E_t = 1` exactly** — not a skipped
-  update, and not a stale value carried forward. That is what preserves the
-  supermartingale.
+- **A suppressed cycle contributes `E_t = 1`** — not a skipped
+  update, and not a stale value carried forward. That preserves the
+  supermartingale *under a non-informative-dropout condition*: suppression is
+  decided after the cycle is observed, so `E[E_t | past] <= 1` requires that
+  whether a cycle was suppressed carries no information about its outcome.
+  For `had_error` those are nearly the same event — a real caveat, not a
+  formality.
 
 ## Reading a wealth trajectory
 
@@ -247,3 +252,19 @@ Why persistence and not just magnitude: an offset redrawn independently each
 cycle has no past, so however large it is it cannot violate a condition
 about confounding *from the past*. Measuring that and calling it reassurance
 would be measuring the wrong thing.
+
+## The assumption behind the coverage budget
+
+γ buys a Clopper–Pearson interval that covers the true reference rate, and
+the whole lifetime guarantee holds *on that coverage event*. Clopper–Pearson
+coverage assumes the reference is a binomial sample from the rate you are
+trying to bound. A golden baseline is a set of cycles **you declared
+known-good** — a selected sample. Selecting toward quiet cycles biases the
+interval away from the truth in exactly the direction that breaks coverage.
+
+Practical consequence: freeze the baseline on the *first* cycles you
+collected rather than the ones that looked best. `dedrift baseline set
+--first 3` exists for that. A hand-picked baseline weakens γ by an amount
+nobody can quantify, and the 0/500 measurement above says nothing about it —
+that study draws its reference as a clean binomial sample, so coverage holds
+there by construction.

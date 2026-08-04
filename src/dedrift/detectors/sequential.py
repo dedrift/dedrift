@@ -25,8 +25,8 @@ Interpretation of the parameters (documented per SPEC):
   the threshold within a few cycles.
 
 Page-Hinkley is a sequential procedure and yields no batch p-value. Its alarm
-enters the gating pipeline as a FLAG (SPEC §6): it must still pass the
-materiality gate to alert, and it primarily serves attribution by providing a
+enters the gating pipeline as a FLAG (SPEC §6): it can never alert -- only
+primary p-valued tests can -- and it serves attribution by providing a
 change-point estimate (the cycle where the accumulated statistic was last at
 its extremum before the alarm).
 """

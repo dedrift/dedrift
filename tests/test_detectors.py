@@ -134,8 +134,8 @@ class TestPageHinkley:
         point-estimated on a lucky seed.
 
         History, because it is the point of the test. The idealized bound is
-        ~2*exp(-2*delta*lambda) ~= 0.5% per stream. An earlier version
-        measured 0.7% -- with a scale estimated from the WHOLE stream,
+        ~2*exp(-2*delta*lambda) ~= 0.15% per stream. An earlier version
+        measured ~1.5% -- with a scale estimated from the WHOLE stream,
         including cycles after the alarm, i.e. by reading the future of the
         point being judged. Standardizing causally costs what it should.
 
@@ -211,3 +211,39 @@ class TestPSI:
         first = psi(golden, current)
         second = psi(golden, current, bins=first.bins)
         assert second.value == pytest.approx(first.value)
+
+
+@pytest.mark.calibration
+class TestFlagChannelCompounding:
+    """The per-stream rate the pipeline flag rate is explained by.
+
+    The paper explains a 68.6% any-flag rate on stable agents as compounding:
+    ``1 - (1 - p)**42`` over the 42 (family, signature) Page-Hinkley streams
+    a check runs. That argument needs ``p`` measured at the length of history
+    the pipeline actually uses -- six cycles -- and until this test existed
+    the 3.4% figure appeared in the paper with no artifact behind it, which is
+    precisely the kind of unsourced number the paper criticises.
+
+    Measured here, so the arithmetic in the paper has something to point at.
+    """
+
+    def test_per_stream_rate_on_six_cycle_histories(self) -> None:
+        rng = np.random.default_rng(4242)
+        n_draws = 8000
+        alarms = sum(page_hinkley(rng.normal(0, 1, 6)).alarm for _ in range(n_draws))
+        p = alarms / n_draws
+        lo, hi = _wilson(alarms, n_draws)
+        compounded = 1 - (1 - p) ** 42
+        print(
+            f"\nPH per-stream on 6-cycle histories: {p:.4f} "
+            f"(Wilson [{lo:.4f}, {hi:.4f}]); 1-(1-p)^42 = {compounded:.3f} "
+            "against a measured pipeline any-flag rate of 0.686"
+        )
+        assert lo >= 0.025 and hi <= 0.045, (
+            f"per-stream rate {p:.4f} outside the documented band; the paper's "
+            "compounding argument quotes 3.4% at this scale"
+        )
+        assert 0.70 <= compounded <= 0.82, (
+            f"independent compounding gives {compounded:.3f}; the paper quotes 0.76 "
+            "against an observed 0.686, attributing the gap to shared records"
+        )

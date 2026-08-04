@@ -85,6 +85,20 @@ family or raise N.
 
 ## Fine print, stated plainly
 
+- **The 500-run pipeline bound covers the structural channels only.**
+  Embeddings are excluded from those runs for runtime, so the semantic
+  channel (family MMD and semantic displacement) has per-detector
+  calibration but **no pipeline-level measurement** — and that is the
+  channel carrying the largest effect in the [case study](case-study.md).
+  The gap is material and stated here rather than left to be inferred from
+  m = 300 versus m = 348.
+- **A fully suppressed check still reports `OK`.** If the composition guard
+  suppresses *every* family comparison, the verdict line reads `OK` with the
+  composition issues listed alongside. An operator who reads only the verdict
+  could mistake "nothing could be compared" for "nothing changed". A distinct
+  `NO VALID COMPARISON` verdict is open work; until then, read the
+  composition section.
+
 - **Balance is checked; exchangeability is measured, not assumed.**
   Balanced windows give equal *composition*. Exchangeability needs more:
   the per-record law must be constant across cycles, which is strictly
@@ -121,7 +135,7 @@ family or raise N.
   expectation; only the "at least one" probability needs independence).
   At the measured 1.6% per-check rate, a stable agent checked hourly
   accrues roughly **0.3 false alerts per day, ~10 per month** (720 ×
-  0.014). Benjamini–Hochberg controls the false discovery rate *within* a
+  0.016). Benjamini–Hochberg controls the false discovery rate *within* a
   check; nothing in the batch machinery controls accumulation *across* a
   sequence of them.
 
@@ -130,7 +144,7 @@ family or raise N.
     alerts in 500 stable-agent runs of 2000 cycles each, flat in the
     horizon, against 100% for this path on identical histories. It is not
     the default, because it buys that guarantee with detection power: a
-    +2 pp shift becomes undetectable and +10 pp takes a median of 53
+    +2 pp shift becomes undetectable and +10 pp takes a median of 57
     cycles. Both figures are on that page. If you stay on the fixed-sample
     path, the honest operating advice is unchanged — treat one alert as
     evidence to investigate rather than an incident, require persistence
@@ -187,9 +201,9 @@ family or raise N.
   from an estimator that used the whole stream, including cycles *after* the
   alarm — a sequential detector reading its own future. Removing the
   look-ahead raised the honest rate sixfold. This is why PH is a labelled
-  diagnostic that can never alert. The
+  diagnostic that can never alert.
 PH alarms localize onsets for attribution;
-  they only alert through the same materiality gating as batch tests.
+  they never alert: only primary tests can.
 - **MMD² materiality floor** is auto-calibrated per (baseline, family) as the
   95th percentile of MMD² between pairs of the baseline's own cycles — an
   empirical null from known-same-distribution data. With fewer than three

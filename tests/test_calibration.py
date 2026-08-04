@@ -428,9 +428,9 @@ class TestPSINullBehaviour:
     implementation floors cell fractions at 1e-4 and renormalises, so the
     quantity actually computed is not the asymptotic variable at all.
 
-    Measured here instead, 4000 draws per configuration, both windows
+    Measured here instead, 1500 draws per configuration, both windows
     standard normal (i.e. no change whatsoever). The measured value is
-    *larger* than the asymptotic one -- 3.11 against 1.2 -- so the previous
+    *larger* than the asymptotic one -- 3.10 against 1.2 -- so the previous
     number understated the problem it was cited to demonstrate. Quoting an
     extrapolation as an arithmetic fact is the error, independent of which
     direction it happened to fall.

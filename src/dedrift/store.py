@@ -38,7 +38,7 @@ permutations = 500          # permutation-test resamples (seeded)
 seed = 1729                 # global seed recorded in every report
 ph_lambda = 12.0            # Page-Hinkley alarm threshold (reference-SD units).
 ph_delta = 0.3              # Idealized null crossing bound 2*exp(-2*delta*lambda)
-                            # ~= 0.15%; measured ~1.5%/stream (estimated centering
+                            # ~= 0.15% idealized; measured ~8.5%/stream (estimated centering
                             # and scale) - see the PH calibration test.
 
 # Materiality (effect-size) gates, per signature channel. Alerts require BOTH

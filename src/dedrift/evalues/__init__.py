@@ -2,7 +2,7 @@
 
 Fixes a defect in the fixed-sample path rather than adding a feature. The
 p-value pipeline controls the false-alarm rate *per check*; operators run
-checks forever, so at the measured 1.4% per-check rate an unchanged agent
+checks forever, so at the measured 1.6% per-check rate an unchanged agent
 accrues roughly ten false alerts a month. A monitoring tool whose error
 guarantee decays with use has the wrong guarantee.
 
