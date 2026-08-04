@@ -126,8 +126,10 @@ class FlagRecord:
 class CompositionIssue:
     """A violated balanced-design assumption for one (baseline, family).
 
-    The two-sample tests assume both windows contain the SAME canaries at
-    uniform repetition counts (exchangeability under the strong null). If a
+    The two-sample tests require both windows to contain the SAME canaries
+    at uniform repetition counts. That is necessary for the comparison to
+    mean anything; it is not sufficient for exchangeability (see
+    :mod:`dedrift.detectors.scalar`). If a
     canary's records vanish from one window — a timeout, a partial run, a
     suite edit — the family's mixture shifts and KS would fire on a
     missing-data artifact, not drift. The check therefore SUPPRESSES the

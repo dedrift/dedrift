@@ -13,10 +13,10 @@ distinct questions rather than three answers to the same one.
 | Channel | Primary test | Materiality gate | Corroboration |
 |---|---|---|---|
 | Location / shape | Two-sample Kolmogorov–Smirnov | KS statistic D ≥ 0.15 (sup-norm CDF distance — catches shape changes with equal means, where Cohen's d ≈ 0). **D is also the reported effect** for this channel, so what gates is what you read; Cohen's d appears on the Welch corroboration row as a location diagnostic | Anderson–Darling, Welch's t (raw p shown, never alert) |
-| Dispersion | Levene (median-centered) | Variance ratio ≥ 1.5× either way | — |
+| Dispersion | Brown–Forsythe (Levene, median-centered) | Robust dispersion ratio (mean abs deviation from the median) ≥ 1.5× either way | — |
 | Tail | P95 permutation test (pooled labels, seeded, add-one p) | Relative P95 shift ≥ 10% | — |
 | Rates | Two-proportion z, continuity-corrected | Percentage-point thresholds (refusal ≥ 2 pp, …) | — |
-| Semantic | MMD² (RBF), seeded permutation null ≥ 500 perms, **pooled** median-heuristic bandwidth (permutation-invariant, so the p-value is exact-level) | Auto-calibrated MMD² floor, same bandwidth as the observation | — |
+| Semantic | MMD² (RBF), seeded permutation null ≥ 500 perms, **pooled** median-heuristic bandwidth (permutation-invariant, so the kernel is fixed across relabellings) | Auto-calibrated MMD² floor, same bandwidth as the observation | — |
 | Sequential per-cycle means | Page–Hinkley | Flag + onset localizer, not a p-value | — |
 | Industry heuristic | PSI, 10 bins frozen from golden | Labeled heuristic (0.1 / 0.25); **never** a test; emitted only above its validity scale (see fine print) | — |
 
@@ -119,7 +119,7 @@ family or raise N.
   agent raises an alert. Monitoring runs continuously, and expected
   counts add regardless of how checks depend on each other (linearity of
   expectation; only the "at least one" probability needs independence).
-  At the measured 1.4% per-check rate, a stable agent checked hourly
+  At the measured 1.6% per-check rate, a stable agent checked hourly
   accrues roughly **0.3 false alerts per day, ~10 per month** (720 ×
   0.014). Benjamini–Hochberg controls the false discovery rate *within* a
   check; nothing in the batch machinery controls accumulation *across* a
@@ -147,7 +147,7 @@ family or raise N.
   that breaks this description fails CI.
 - **The flag channel (Page–Hinkley, PSI) is uncalibrated and carries no
   multiplicity control — treat flags as diagnostics, never as alerts.**
-  PH runs on every (family, signature) stream (~48 at default scale), so
+  PH runs on every (family, signature) stream (42 at the measured scale: 7 scalar signatures x 6 families), so
   per-stream rates compound: measured on the same 500 null runs as the
   headline bound, **68.6% of stable checks showed at least one flag** (up from 56% once Page-Hinkley stopped standardising itself with data from after the point it was judging). That
   number is printed here deliberately — flags never alert, they exist to
@@ -188,8 +188,7 @@ family or raise N.
   alarm — a sequential detector reading its own future. Removing the
   look-ahead raised the honest rate sixfold. This is why PH is a labelled
   diagnostic that can never alert. The
-  **measured** rate is ~1.5% per stream over 30-cycle horizons — the
-  calibration test enforces < 3%. PH alarms localize onsets for attribution;
+PH alarms localize onsets for attribution;
   they only alert through the same materiality gating as batch tests.
 - **MMD² materiality floor** is auto-calibrated per (baseline, family) as the
   95th percentile of MMD² between pairs of the baseline's own cycles — an

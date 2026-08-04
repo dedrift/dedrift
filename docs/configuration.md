@@ -68,8 +68,12 @@ Needs ≥ 3 reference cycles; below that the floor is 0 and the report says
 ### `ph_lambda`, `ph_delta`
 
 Page–Hinkley is a **diagnostic**, not an alert: it localizes drift onsets
-for attribution. Defaults are calibrated to ≈1.5% per-stream false-flag
-rate over 30-cycle horizons (measured, enforced < 3% in CI). Flags compound
+for attribution. The measured per-stream false-flag rate at the defaults is
+**8.5%** on 30-cycle histories and 11.3% on 60-cycle ones (8000 draws); CI
+asserts a Wilson interval inside [0.06, 0.12]. An earlier version of this
+page said ≈1.5% enforced under 3% — that came from an estimator which
+standardised using cycles *after* the alarm, and removing the look-ahead
+raised the honest rate roughly sixfold. Flags compound
 across streams — a stable agent shows ≥1 flag on
 [68.6% of checks](statistics.md) — which is why flags never page anyone.
 

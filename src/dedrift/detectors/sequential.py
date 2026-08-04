@@ -11,10 +11,15 @@ Interpretation of the parameters (documented per SPEC):
   excursion is a random walk with drift ``-delta`` and the crossing
   probability is bounded by ``exp(-2 * delta * lambda_)`` per direction
   (~0.15% two-sided at the defaults ``lambda_=12``, ``delta=0.3``). Because
-  centering and scale are estimated from the stream itself, the MEASURED
-  null alarm rate is higher: ~1.5% per stream over 30-cycle horizons (see
-  the calibration test, which enforces < 3%). We state this honestly rather
-  than pretending the idealized bound applies. Note the stream is per-cycle
+  centre and scale are estimated causally from few observations, the
+  MEASURED null alarm rate is much higher: 8.5% per stream on 30-cycle
+  histories and 11.3% on 60-cycle ones, over 8000 draws. (An earlier note
+  here said ~1.5% with a gate at < 3%; that came from an estimator that
+  standardised using the whole stream, including cycles AFTER the alarm.
+  Removing the look-ahead raised the honest rate roughly sixfold. The
+  calibration test now asserts a Wilson interval inside [0.06, 0.12] at
+  2000 draws rather than a point estimate on one seed.) This is why the
+  channel is a labelled diagnostic that can never alert. Note the stream is per-cycle
   MEANS: a per-record shift of d standard deviations is
   ``d * sqrt(n_records_per_cycle)`` in stream units, so material shifts cross
   the threshold within a few cycles.

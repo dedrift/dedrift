@@ -31,12 +31,14 @@ supermartingale *there*; Ville bounds the trajectory at ``alpha'`` and a
 union bound pays ``gamma`` for coverage. Total budget
 ``alpha = alpha' + gamma``.
 
-``gamma`` is load-bearing, not a formality. Measured at our operating
-scale with a Clopper-Pearson interval at ``gamma = 0.01``: the supremum of
-``E[E_t]`` over ``p`` *inside* the interval is 0.73-0.91 (valid, and the
-shortfall from 1 is the price of worst-casing), while over *all* ``p`` it
-reaches 10**6. The guarantee holds on the coverage event and nowhere else,
-which is why the interval is reported alongside the wealth.
+``gamma`` is load-bearing, not a formality. Measured at the SHIPPED
+per-process budget (``gamma_i = gamma_total / K = 0.02/24 = 8.3e-4``) over
+the shipped three-tilt grid, by exact binomial enumeration: ``E_p[E_t]``
+for ``p`` *inside* the interval lies in 0.46-0.94 across representative
+streams (valid, and the shortfall from 1 is the price of worst-casing),
+while over *all* ``p`` it reaches 5.4e6 as p -> 1. The guarantee holds on
+the coverage event and nowhere else, which is why the interval is reported
+alongside the wealth.
 
 Two regimes, deliberately different
 -----------------------------------
@@ -345,7 +347,8 @@ def frozen_reference_hypergeometric_INVALID(  # noqa: N802 - the name is the war
     Retained on purpose. Conditioning on the total is a bijection with the
     current count once the reference is known, so the hypergeometric is no
     longer the conditional law and the nuisance parameter returns:
-    ``sup_p E[E] = 2132`` at ``m=105, r=5, n=21, psi=2.5``. The test suite
+    ``E_p[E] = 2132`` at ``p=0.5`` for ``m=105, r=5, n=21, psi=2.5``, rising
+    to ~1.1e6 as ``p -> 1``. The test suite
     feeds this to the martingale harness and asserts the harness *rejects*
     it, which is the only way to know a pass on a real construction means
     anything.

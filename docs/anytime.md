@@ -2,7 +2,7 @@
 
 Every calibration number elsewhere in these docs is **per check**. Monitoring
 runs forever, so per-check control is the wrong guarantee: at the measured
-1.4% per-check rate, an unchanged agent checked hourly accrues roughly ten
+1.6% per-check rate, an unchanged agent checked hourly accrues roughly ten
 false alerts a month, and nothing in the fixed-sample theory bounds that
 accumulation.
 
@@ -36,11 +36,14 @@ nothing about ours.
 | | ever raised a false alert |
 |---|---|
 | **anytime-valid** (e-processes + e-BH) | **0/500** — Wilson upper bound 0.0076 |
-| fixed-sample (BH per check) | **500/500 (100%)**, already by cycle 100 |
+| fixed-sample (BH per check) | **419/500 (84%)** by cycle 100; **500/500** by cycle 1000 |
 
-The anytime rate is flat at 100, 500, 1000 and 2000 cycles. That flatness is
-the whole point: a fixed-sample guarantee decays with use, an anytime-valid
-one does not.
+The anytime rate is 0 at 100, 500, 1000 and 2000 cycles. Read that as a
+bound rather than as measured flatness: with no events at any horizon the
+Wilson upper bound is 0.008 at all four, which is consistent with a flat
+rate and also with one creeping from 0.001 to 0.007. What the contrast does
+establish is the difference in kind — a fixed-sample guarantee decays with
+use, and this one has not been observed to.
 
 And the cost, on the same machinery — cycles from shift onset to alert:
 
@@ -104,7 +107,7 @@ changing your suite cannot silently stale the arithmetic.
 
 The default γ_total = 0.02 came from sweeping allocations whose claim is
 actually 0.05. Within that valid region the trade is one-sided — detection at
-+10 pp rises from 13% to 47% as γ_total goes 0.005 → 0.03, with the measured
++10 pp rises from 24% to 90% as γ_total goes 0.005 → 0.03, with the measured
 null rate 0 throughout — so the choice was made on power alone, since
 validity does not discriminate. We stop at 0.02 rather than 0.03 because α′
 *is* the battery's FDR level, and spending most of the lifetime budget
@@ -132,8 +135,9 @@ not evidence about the new one, so a guarantee spanning that change would be
 α per month — and you should know that rather than assume otherwise.
 
 For a genuine unbounded-epoch bound, `epoch_allocation = "geometric"` spends
-α·2⁻ᵉ on epoch *e*, so the total across arbitrarily many epochs stays ≤ α. It
-costs power, and it is off by default because per-epoch is the honest reading.
+α·2⁻⁽ᵉ⁺¹⁾ on epoch *e* (zero-indexed), so the total across arbitrarily many
+epochs is exactly α. It costs power, and it is off by default because
+per-epoch is the honest reading.
 
 ## What is proven and what is measured
 
@@ -171,10 +175,12 @@ epoch_allocation = "per_epoch"   # or "geometric"
 ```
 
 The tilt grid is symmetrised so drift in either direction is covered, and its
-support is derived from your materiality bands — which means the bets are
-aimed at effects you have declared you care about, and predictability is
-structural (a bet can never depend on the cycle it is betting on, because it
-comes from configuration).
+support is a **fixed configured constant**. Predictability is therefore
+structural — a bet can never depend on the cycle it is betting on, because it
+comes from configuration. A helper (`tilt_from_materiality`) exists to derive
+a tilt from a materiality band, which would aim the bets at effects you have
+declared you care about, but the shipped default does not call it. The grid
+is a constant, not an aimed one.
 
 ## Current scope
 
@@ -222,19 +228,20 @@ drifting between cycles, which is what a hosted endpoint does on its own.
 | 0.00 | — | 0/500 | 0.028 |
 | 0.10 | 0 | 0/100 | 0.036 |
 | 0.20 | 0 | 0/100 | 0.069 |
+| 0.25 | 0 | 0/100 | 0.097 |
 | 0.40 | 0 | 1/100 | 0.217 |
 | 0.10 | 0.90 | 0/100 | 0.035 |
 | 0.25 | 0.90 | 1/100 | 0.093 |
 | 0.25 | 0.95 | 2/100 | 0.094 |
 
 The fixed-sample per-check rate roughly doubles by σ = 0.2 and is eightfold
-by σ = 0.4. The anytime path stays low throughout — but read the last two
-rows honestly: they are the only configurations in the study where it alerts
-on a stable agent more than once in a hundred runs, and the highest is the
-most persistent. Persistence is exactly what the stopped-e-BH causal
-condition excludes, so the elevation appears where the assumption is
-weakest. At n = 100 the difference is not significant and we claim nothing
-from it; it is recorded because a reader is entitled to know.
+by σ = 0.4. The anytime path stays low throughout — but read the persistent
+rows against their matched control. At σ = 0.25 the rate goes 0/100 (φ=0) →
+1/100 (φ=0.90) → 2/100 (φ=0.95): monotone in persistence at fixed
+magnitude, which is what the theory predicts if the causal condition is what
+binds. At n = 100 none of those differences is significant and we claim
+nothing from them; they are recorded because a reader is entitled to know
+that the elevation appears where the assumption is weakest.
 
 Why persistence and not just magnitude: an offset redrawn independently each
 cycle has no past, so however large it is it cannot violate a condition

@@ -1,13 +1,19 @@
 """Batch two-sample tests for scalar and rate signatures (SPEC.md §6).
 
 Each test returns a :class:`TestOutcome` carrying the statistic, the p-value,
-and effect sizes in both standardized and original units. Validity note: the
-canary design is balanced by construction (both windows contain the same
-canaries with the same repetition count), so under the strong null hypothesis
-of "no change anywhere in the stack" the pooled per-family samples are
-exchangeable across windows and the two-sample tests below apply. Detection
-power for shifts confined to a few canaries is correspondingly lower than for
-family-wide shifts; the docs state this rather than hiding it.
+and effect sizes in both standardized and original units.
+
+Validity note, and it is a caveat rather than a reassurance. The canary
+design is balanced by construction (both windows contain the same canaries
+at the same repetition count), which buys equal *composition*. It does NOT
+buy exchangeability: that additionally requires the per-record law to be
+constant across cycles, which is strictly stronger than "no change anywhere
+in the configured stack" and is false whenever a hosted model varies within
+a version. The hypothesis these tests actually address is the distributional
+one; what a violation costs is measured, not assumed -- see
+``TestCycleEffectRobustness`` in tests/test_calibration.py and the
+statistics page in the docs. Detection power for shifts confined to a few
+canaries is also lower than for family-wide shifts.
 """
 
 from __future__ import annotations
@@ -211,11 +217,20 @@ def p95_permutation_test(
 
     Pools both windows, permutes the window labels, and recomputes the P95
     difference; the two-sided p-value uses the add-one convention
-    ``(b+1)/(B+1)``, which is exact-level under exchangeability of the pooled
-    sample. This replaces an earlier centered percentile bootstrap: bootstrap
+    ``(b+1)/(B+1)``, which is valid at every level under exchangeability of
+    the pooled sample -- and conservative rather than exact, for three
+    reasons worth naming: Monte Carlo sampling of the permutation set, the
+    add-one convention itself, and ties counted as exceedances below. A
+    further conservatism applies when canaries within a family have
+    different laws: the pooled vector is then exchangeable only under
+    canary-preserving permutations, and we permute unrestrictedly, which
+    widens the permutation null relative to the truth. Stratifying by canary
+    would remove that and is not yet done.
+
+    This replaces an earlier centered percentile bootstrap: bootstrap
     approximations of extreme-quantile nulls are unreliable at these sample
-    sizes (the P95 rests on a handful of order statistics), while the
-    permutation null is exact. Effect size is the relative P95 shift.
+    sizes (the P95 rests on a handful of order statistics). Effect size is
+    the relative P95 shift.
 
     Args:
         ref: Reference-window values.

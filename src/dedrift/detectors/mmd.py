@@ -2,14 +2,17 @@
 
 Implementation notes:
 
-- RBF kernel with the POOLED median heuristic for bandwidth. The pooled
-  median is a permutation-invariant function of the combined sample, which
-  is what makes the permutation p-value exact-level under exchangeability:
-  a reference-only bandwidth would make the kernel depend on the original
-  labelling and the permutation distribution would no longer be the exact
-  null. (The median heuristic is not a tuned parameter, so pooling is not
-  "peeking" at the alternative — this deviates deliberately from an earlier
-  reading of the spec, with the owner's sign-off.)
+- RBF kernel with the POOLED median heuristic for bandwidth. Be precise
+  about what this buys: permutation validity needs the pooled sample to be
+  exchangeable under H0 and the statistic to be recomputed identically under
+  each relabelling. A reference-only bandwidth recomputed inside each
+  permutation would ALSO be valid. What pooling buys is that the kernel is
+  held fixed across permutations (so the statistic compares like with like)
+  and lower variance -- not validity, and an earlier version of this note
+  claimed otherwise. Pooling does read the current cycle, which is a
+  deliberate deviation from the spec's no-peeking rule with the owner's
+  sign-off; the median heuristic is not a tuned parameter, so it does not
+  aim the test at the alternative.
 - Permutation test with >= 500 permutations, seeded; the p-value uses the
   add-one convention (b+1)/(B+1).
 - Reports the biased (V-statistic) MMD^2 both as statistic and effect size;
@@ -84,7 +87,7 @@ def mmd_rbf_test(
         n_permutations: Permutation count (SPEC minimum 500).
         seed: RNG seed, recorded in the report.
         sigma: Kernel bandwidth; defaults to the pooled median heuristic
-            (permutation-invariant, keeping the p-value exact-level).
+            (permutation-invariant, so the kernel is fixed across relabellings).
 
     Returns:
         Outcome with ``statistic = effect_size = effect_raw = MMD^2`` and the
