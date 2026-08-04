@@ -264,7 +264,12 @@ def _effect_str(t: object) -> str:
     if o.test == "two_proportion_z":
         return f"{o.effect_raw * 100:+.2f} pp"
     if o.test == "levene":
-        return f"var ratio {o.effect_size:.2f}"
+        # NOT the variance ratio: Brown-Forsythe is computed on absolute
+        # deviations from the median, and the effect is reported and gated on
+        # that same robust scale (see detectors/scalar.py). Printing "var
+        # ratio" here mislabelled the number by a squaring, which is exactly
+        # the confusion the robust gate exists to prevent.
+        return f"dispersion ratio (MAD) {o.effect_size:.2f}"
     if o.test == "p95_perm":
         return f"P95 {o.effect_raw:+.4g} ({o.effect_size * 100:+.1f}%)"
     if o.test == "ks":

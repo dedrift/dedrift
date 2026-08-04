@@ -32,19 +32,36 @@ $ dedrift check
 Current cycle: cycle-20260802T121457Z-ca7752c8
 Sudden (vs rolling 2 cycles): DRIFT DETECTED
 Cumulative (vs golden 3 cycles): DRIFT DETECTED
-Alerts: 36 (q=0.05, materiality-gated)
-  [golden] adversarial/semantic_displacement ks: effect=+0.972, p_adj=1.5e-08
+Alerts: 32 (q=0.05, materiality-gated)
+  [golden] adversarial/semantic_displacement ks: effect=+0.917, p_adj=4.8e-07
   [golden] adversarial/tokens_out ks: effect=+0.806, p_adj=6.6e-05
-  [golden] edge_case/latency_ms levene: effect=+4.734, p_adj=0.015
-  [golden] adversarial/embedding mmd: effect=+0.192, p_adj=0.015
+  [golden] edge_case/latency_ms levene: effect=+2.439, p_adj=0.018
+  [golden] adversarial/embedding mmd: effect=+0.192, p_adj=0.018
   ...
 ```
 
 Both baselines fired on the first post-swap check. The effects are reported
 on the scales they were gated on: the semantic-displacement KS statistic
-D = 0.97 (the output distributions barely overlap), output tokens D = 0.81
+D = 0.92 (the output distributions barely overlap), output tokens D = 0.81
 — the new model answers the same prompts in roughly **40% of the tokens** —
-and latency *dispersion* up 4.7× while latency medians barely moved.
+and latency *dispersion* up 2.4× on the robust (mean-absolute-deviation)
+scale, while latency medians barely moved.
+
+!!! note "These numbers were re-derived after the detectors changed"
+    The same 432 stored records, re-analysed with the current code, give 32
+    alerts rather than 36. Two of the changes are in *how* the effect is
+    measured rather than in what happened: semantic displacement fell from
+    D = 0.97 to 0.92 once reference records stopped being scored against a
+    centroid they helped define, and latency dispersion reads 2.44 rather
+    than 4.73 because 4.73 was a **variance** ratio and the gate now uses
+    the robust scale the test is actually computed on.
+
+    One consequence cuts against this page: the demo froze a *three*-cycle
+    golden baseline, and the MMD noise floor now requires five. The floor is
+    therefore disabled here, so the two MMD alerts passed on significance
+    alone with no materiality gate behind them. That is the guard working
+    correctly — three pairwise values are not a calibration — but it makes
+    the MMD rows weaker evidence than the KS rows. Use five golden cycles.
 
 ![Per-record distributions by cycle: output tokens collapse after the swap; latency medians hold while the tail thickens](assets/fig1_the_catch.png)
 

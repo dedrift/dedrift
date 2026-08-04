@@ -294,10 +294,10 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 Current cycle: cycle-20260802T121457Z
 Sudden (vs rolling 2 cycles): <span class="a">DRIFT DETECTED</span>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span>
-Alerts: 36 (q=0.05, materiality-gated)
-  [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.972</span>, p_adj=1.5e-08
+Alerts: 32 (q=0.05, materiality-gated)
+  [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.917</span>, p_adj=4.8e-07
   [golden] adversarial/tokens_out ks: effect=<span class="a">+0.806</span>, p_adj=6.6e-05
-  [golden] edge_case/latency_ms levene: effect=<span class="a">+4.734</span>, p_adj=0.015
+  [golden] edge_case/latency_ms levene: effect=<span class="a">+2.439</span>, p_adj=0.018
 <span class="dim"># attribution: model fingerprint change, 0.11 h before onset</span>
 <span class="dim"># consistent with the swap. nobody told it anything.</span></div>
   </div>
@@ -344,7 +344,7 @@ Alerts: 36 (q=0.05, materiality-gated)
       <p class="lead">Four cycles on one production model, then a silent switch to another — same prompt, same canaries.</p>
       <ul>
         <li>First post-swap check: <b style="color:var(--amber)">DRIFT DETECTED</b> on both baselines</li>
-        <li>36 gated alerts; output tokens D = 0.81, semantic shift D = 0.97</li>
+        <li>32 gated alerts; output tokens D = 0.81, semantic shift D = 0.92</li>
         <li>All alerts attributed to the fingerprint change, 0.11 h before onset</li>
       </ul>
       <a class="btn btn-primary" href="/docs/case-study/">Read the case study</a>
@@ -548,10 +548,10 @@ const LINES = [
   ['t','Current cycle: cycle-20260802T121457Z\n'],
   ['t','Sudden (vs rolling 2 cycles): '],['a','DRIFT DETECTED\n'],
   ['t','Cumulative (vs golden 3 cycles): '],['a','DRIFT DETECTED\n'],
-  ['t','Alerts: 36 (q=0.05, materiality-gated)\n'],
-  ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.972'],['t',', p_adj=1.5e-08\n'],
+  ['t','Alerts: 32 (q=0.05, materiality-gated)\n'],
+  ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.917'],['t',', p_adj=4.8e-07\n'],
   ['t','  [golden] adversarial/tokens_out ks: effect='],['a','+0.806'],['t',', p_adj=6.6e-05\n'],
-  ['t','  [golden] edge_case/latency_ms levene: effect='],['a','+4.734'],['t',', p_adj=0.015\n'],
+  ['t','  [golden] edge_case/latency_ms levene: effect='],['a','+2.439'],['t',', p_adj=0.018\n'],
   ['dim','# attribution: model fingerprint change, 0.11 h before onset\n'],
   ['dim','# consistent with the swap. nobody told it anything.\n'],
 ];
