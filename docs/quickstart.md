@@ -46,8 +46,23 @@ anything):
 ```bash
 dedrift canary run --suite canaries.yaml --agent myagent:agent_fn \
     --model 'anthropic/claude-sonnet-5@2026-05-01'
-dedrift check     # exit 0 = OK, exit 2 = drift: wire it to your alerting
+dedrift check     # exit 0 = OK, 2 = drift, 3 = inconclusive, 1 = operational error
 ```
+
+**Cycle lifecycle (v0.3.1+).** Checks consume only *finalized* cycles, so a
+partially-written cycle can never be mistaken for a complete one. `dedrift sim`
+and `dedrift canary run` finalize as they go; `dedrift log` deliberately leaves
+imported cycles **open** unless you pass `--finalize-cycles`, so import then
+finalize explicitly:
+
+```bash
+dedrift log records.jsonl --finalize-cycles
+# or, per cycle, with an exact expected count:
+dedrift cycle finalize cycle-0007 --expected-records 126
+```
+
+Histories created before 0.3.1 migrate as open and must be finalized once before
+they will check.
 
 The `--model` string feeds the config fingerprint — record it accurately,
 because it is what attribution correlates behavioral onsets against.
