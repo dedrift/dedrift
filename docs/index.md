@@ -135,7 +135,7 @@ dedrift check
 Current cycle: cycle-0007<br>
 Sudden (vs rolling 4 cycles): <span class="a">DRIFT DETECTED</span><br>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span><br>
-Alerts: 168 (q=0.05, materiality-gated)<br>
+Alerts: 168 (BH-adjusted equality tests q=0.05, observed-effect gated)<br>
 &nbsp;&nbsp;[golden] adversarial/refusal two_proportion_z: effect=<span class="a">+21.0 pp</span>, p_adj=0.0009<br>
 &nbsp;&nbsp;[golden] adversarial/format_valid two_proportion_z: effect=<span class="a">-21.9 pp</span>, p_adj=0.0023<br>
 &nbsp;&nbsp;[golden] edge_case/output_words ks: effect=<span class="a">D=0.71</span>, p_adj=1.4e-20<br>

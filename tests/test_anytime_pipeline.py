@@ -349,7 +349,7 @@ class TestCli:
         store.close()
         out = runner.invoke(app, ["check", "--project", str(tmp_path)])
         assert out.exit_code in (0, 2), out.output
-        assert "materiality-gated" in out.output  # the p-value path's wording
+        assert "observed-effect gated" in out.output  # the fixed path's wording
 
     def test_unknown_mode_is_rejected(self, tmp_path: Path) -> None:
         store = project(tmp_path)
