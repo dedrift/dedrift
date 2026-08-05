@@ -275,7 +275,7 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 </nav>
 
 <header class="hero wrap">
-  <div class="chip"><b>●</b> v0.2.0 on PyPI · AGPL-3.0 · zero ML dependencies</div>
+  <div class="chip"><b>●</b> v0.3.0 on PyPI · AGPL-3.0 · zero ML dependencies</div>
   <h1>Your agent didn't crash.<br>It just quietly got <span class="grad">worse</span>.</h1>
   <p class="sub">
     Model updates, prompt edits, silent provider changes — none of them throw errors.
@@ -303,7 +303,7 @@ Alerts: 32 (q=0.05, materiality-gated)
   </div>
 
   <div class="stats">
-    <div class="stat rv"><div class="n"><em>1.4%</em></div><div class="l">measured null alert rate — 7 of 500 stable-agent checks, Wilson-bounded &lt; 5% in CI</div></div>
+    <div class="stat rv"><div class="n"><em>1.6%</em></div><div class="l">measured null alert rate — 8 of 500 stable-agent checks, Wilson-bounded &lt; 5% in CI</div></div>
     <div class="stat rv"><div class="n"><em>1 cycle</em></div><div class="l">to catch a real silent model swap, on both baselines, correctly attributed</div></div>
     <div class="stat rv"><div class="n"><em>100%</em></div><div class="l">of stable checks falsely flagged by the industry-standard PSI at canary scale — measured; dedrift refuses to compute it there</div></div>
     <div class="stat rv"><div class="n"><em>every</em></div><div class="l">p-valued detector calibration-tested against a documented band, on every commit</div></div>
@@ -361,7 +361,8 @@ Alerts: 32 (q=0.05, materiality-gated)
       <p class="lead">Monitoring tools love p-values and hate publishing their false-alarm rates. We enforce ours in CI — a release cannot ship if the statistics fail their own audit.</p>
       <ul>
         <li>Every detector's null rate measured against a documented band</li>
-        <li>Pipeline-level: 7/500 stable checks alerted — Wilson bound &lt; 5%</li>
+        <li>Pipeline-level: 8/500 stable checks alerted — Wilson bound &lt; 5%</li>
+        <li>Anytime-valid mode: P(ever falsely alerting) ≤ α — 0/500 stable runs over 2000 cycles, and the power cost published beside it</li>
         <li>Limitations measured too: power tables, flag rates, all published</li>
       </ul>
       <a class="btn btn-primary" href="/docs/statistics/">Read the statistics</a>
@@ -382,6 +383,7 @@ Alerts: 32 (q=0.05, materiality-gated)
       <div class="price">$0</div><div class="per">AGPL-3.0, forever</div>
       <ul>
         <li>Full detector battery, FDR + materiality gating</li>
+        <li><b>Anytime-valid mode</b> — the lifetime guarantee, free</li>
         <li>Dual baselines, attribution, reports</li>
         <li>Calibration suite — audit us</li>
         <li>Runs on a laptop: JSONL + SQLite</li>
@@ -401,8 +403,9 @@ Alerts: 32 (q=0.05, materiality-gated)
     </div>
   </div>
   <p style="text-align:center;margin-top:22px;color:var(--dimmer);font-size:.88rem">
-    A commercial tier with advanced inference is in development —
-    <a href="mailto:support@dedrift.ai?subject=Advanced%20tier" data-contact="pro">write to us</a> to hear when it ships.
+    Every statistical guarantee — including anytime-valid mode — is in the open core, forever.
+    A commercial tier (hosted monitoring, production-traffic drift) is in development —
+    <a href="mailto:support@dedrift.ai?subject=Commercial%20tier" data-contact="pro">write to us</a> to hear when it ships.
   </p>
 </section>
 
@@ -491,10 +494,10 @@ Alerts: 32 (q=0.05, materiality-gated)
       subject: 'Design partner',
     },
     pro: {
-      title: 'Advanced tier',
-      lead: "It's in development. Tell us what you'd need from it and we'll write when it ships.",
+      title: 'Commercial tier',
+      lead: "It's in development — hosted monitoring and production-traffic drift. The statistics stay free. Tell us what you'd need and we'll write when it ships.",
       tips: 'Useful to include: <b>your monitoring cadence</b> and <b>what a false alert currently costs you</b>.',
-      subject: 'Advanced tier',
+      subject: 'Commercial tier',
     },
     general: {
       title: 'Get in touch',
