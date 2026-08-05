@@ -25,7 +25,7 @@ distinct questions rather than three answers to the same one.
 1. Run all tests; collect p-values. PSI and Page–Hinkley produce flags, not
    p-values, and never enter step 2. Corroboration tests never enter it
    either.
-2. **Benjamini–Hochberg FDR at q = 0.05** across the primary tests in the
+2. **Benjamini–Hochberg adjustment at q = 0.05** across the primary tests in the
    check — one multiplicity family spanning both baselines.
 3. Survivors pass a **materiality gate** (per-channel thresholds in the
    table above) — all configurable. Corroboration tests carry no
@@ -38,6 +38,13 @@ distinct questions rather than three answers to the same one.
    significant", or "corroboration".
 
 Alert fatigue kills monitoring tools; the double gate is deliberate.
+
+This is a prioritization policy, not a formal practical-null FDR procedure.
+Ordinary BH needs independence or PRDS, which is not established for this
+dependent battery. Filtering equality-null rejections by an observed effect
+does not inherit FDR control for “effect is inside the materiality band.” The
+default simulation below is the evidence offered here; near-threshold alerts
+need confirmation and production suites need their own calibration.
 
 ## Calibration is enforced, not asserted
 
@@ -92,12 +99,9 @@ family or raise N.
   channel carrying the largest effect in the [case study](case-study.md).
   The gap is material and stated here rather than left to be inferred from
   m = 300 versus m = 348.
-- **A fully suppressed check still reports `OK`.** If the composition guard
-  suppresses *every* family comparison, the verdict line reads `OK` with the
-  composition issues listed alongside. An operator who reads only the verdict
-  could mistake "nothing could be compared" for "nothing changed". A distinct
-  `NO VALID COMPARISON` verdict is open work; until then, read the
-  composition section.
+- **Suppressed evidence fails closed.** A fully suppressed check reports
+  `NO VALID COMPARISON`; partial suppression reports `PARTIAL COVERAGE`.
+  Both return CLI exit 3, never the green exit 0.
 
 - **Balance is checked; exchangeability is measured, not assumed.**
   Balanced windows give equal *composition*. Exchangeability needs more:
@@ -111,10 +115,10 @@ family or raise N.
   | shared per-cycle offset σ | runs alerting | Wilson 95% upper |
   |---|---|---|
   | 0.00 | 2/100 | 0.070 |
-  | 0.10 | 23/100 | 0.322 |
-  | 0.25 | 68/100 | 0.763 |
+  | 0.10 | 32/100 | 0.417 |
+  | 0.25 | 74/100 | 0.819 |
 
-  A ~10% inter-cycle swing takes the alert rate from 2% to 23%. The 8/500
+  A ~10% inter-cycle swing takes the alert rate from 2% to 32%. The 10/500
   headline is measured at σ = 0 and describes that regime only. If your
   provider is noisy between cycles, prefer `--inference anytime`, which is
   much less affected (0/100 up to σ = 0.20 at matched scope), and read
@@ -133,10 +137,10 @@ family or raise N.
   agent raises an alert. Monitoring runs continuously, and expected
   counts add regardless of how checks depend on each other (linearity of
   expectation; only the "at least one" probability needs independence).
-  At the measured 1.6% per-check rate, a stable agent checked hourly
-  accrues roughly **0.3 false alerts per day, ~10 per month** (720 ×
-  0.016). Benjamini–Hochberg controls the false discovery rate *within* a
-  check; nothing in the batch machinery controls accumulation *across* a
+  At the measured 2.0% per-check rate, a stable agent checked hourly
+  accrues roughly **0.5 false alerts per day, ~14 per month** (720 ×
+  0.020). BH adjusts multiplicity *within* a check under its assumptions;
+  nothing in the batch machinery controls accumulation *across*
   sequence of them.
 
     **Sequential control now exists**: [anytime-valid mode](anytime.md)
@@ -206,9 +210,14 @@ PH alarms localize onsets for attribution;
   they never alert: only primary tests can.
 - **MMD² materiality floor** is auto-calibrated per (baseline, family) as the
   95th percentile of MMD² between pairs of the baseline's own cycles — an
-  empirical null from known-same-distribution data. With fewer than three
-  reference cycles the floor is uncalibratable (0), and the config accepts an
-  explicit override.
+  empirical null from known-same-distribution data. With fewer than five
+  reference cycles the auto-floor is `UNCALIBRATED`; MMD remains visible but
+  cannot alert. The config accepts an explicit non-negative override.
+- **Permutation resolution is sized for the BH family.** Add-one Monte Carlo
+  p-values have minimum `1/(B+1)`. A configured `B=500` cannot reach the
+  rank-one BH cutoff in a 300-test family, so the checker automatically raises
+  `B` to at least `ceil(m_upper/q)-1` and records both configured and effective
+  counts. P95 permutations are streamed in bounded-memory chunks.
 - **Reproducibility.** All randomness is seeded; permutation seeds are
   recorded in the report. Same logs + same config ⇒ the same report up to
   the recorded check timestamp: every statistic, p-value, effect, flag,

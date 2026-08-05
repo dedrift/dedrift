@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
 from dedrift.attribution import attribute
+from dedrift.canary import Canary, CanaryRunner, CanarySuite
 from dedrift.check import get_golden_baseline, run_check, set_golden_baseline
 from dedrift.config import ProjectConfig
 from dedrift.report import render_report
+from dedrift.schema import Source
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
 from dedrift.store import Store
+from tests.test_schema import make_config
 
 
 def seeded_project(
@@ -38,6 +44,9 @@ def seeded_project(
 class TestBaseline:
     def test_set_and_get(self, tmp_path: Path) -> None:
         with Store.init_project(tmp_path) as store:
+            store.append_many(
+                SimAgent(SimConfig(n_canaries=6, repetitions=2, seed=2)).run_cycles(2)
+            )
             set_golden_baseline(store, ["cycle-0001", "cycle-0000"])
             assert get_golden_baseline(store) == ["cycle-0000", "cycle-0001"]
 
@@ -75,6 +84,50 @@ class TestCheckDrift:
         assert result.n_alerts > 0
         signatures = {t.signature for t in result.alerts()}
         assert "output_words" in signatures
+        store.close()
+
+    def test_expected_contract_detects_correct_to_wrong_answers(self, tmp_path: Path) -> None:
+        suite = CanarySuite(
+            version="correctness-v1",
+            canaries=[
+                Canary(
+                    id=f"answer-{i}",
+                    family="happy_path",
+                    input={"text": f"question {i}"},
+                    expected={"answer": "42"},
+                    rubric_id="answer-quality-v1",
+                )
+                for i in range(2)
+            ],
+        )
+        answer = {"value": "42"}
+
+        def agent(_: dict[str, object]) -> dict[str, object]:
+            return {
+                "text": "stable presentation",
+                "structured": {"answer": answer["value"], "extra": "allowed"},
+            }
+
+        store = Store.init_project(tmp_path)
+        runner = CanaryRunner(suite, agent, make_config(), repetitions=30)
+        for index in range(4):
+            runner.run_cycle(store=store, cycle_id=f"cycle-{index:04d}")
+        set_golden_baseline(store, ["cycle-0000", "cycle-0001"])
+        answer["value"] = "wrong"
+        runner.run_cycle(store=store, cycle_id="cycle-0004")
+
+        result = run_check(store)
+        exact_tests = [t for t in result.tests if t.signature == "exact_match"]
+        assert exact_tests
+        assert {t.baseline for t in exact_tests} == {"rolling", "golden"}
+        assert all(t.outcome.effect_raw == -1.0 for t in exact_tests)
+        assert {t.baseline for t in result.alerts() if t.signature == "exact_match"} == {
+            "rolling",
+            "golden",
+        }
+        md = render_report(store, result)
+        assert "structured_expected_subset.v1" in md
+        assert "does not execute rubric/LLM judges" in md
         store.close()
 
     def test_alerts_persisted(self, tmp_path: Path) -> None:
@@ -117,7 +170,7 @@ class TestMaterialityGate:
                 format_validity_pp=100.0,
                 rate_default_pp=100.0,
                 scalar_cohen_d=99.0,
-                ks_distance=1.01,  # D is bounded by 1: unattainable
+                ks_distance=1.0,  # maximum possible D; unattained in this stable fixture
                 dispersion_ratio=99.0,
                 p95_relative=99.0,
             ),
@@ -178,11 +231,8 @@ class TestCompositionGuard:
                 dropped += 1
                 continue
             kept.append(r)
-        store.append_many(kept)
-        set_golden_baseline(store, cycles[:3])
-        result = run_check(store)
-        assert any(i.unbalanced for i in result.composition_issues)
-        assert result.n_alerts == 0
+        with pytest.raises(ValueError, match="different repetition sets"):
+            store.append_many(kept)
         store.close()
 
     def test_balanced_project_has_no_issues(self, tmp_path: Path) -> None:
@@ -197,6 +247,110 @@ class TestCompositionGuard:
         md = render_report(store, result)
         assert "COMPOSITION MISMATCH" in md
         assert "suppressed" in md
+        store.close()
+
+    def test_fully_suppressed_is_machine_readable_and_not_ok(self, tmp_path: Path) -> None:
+        suite = CanarySuite(
+            version="1",
+            canaries=[
+                Canary(
+                    id=f"only-{i}",
+                    family="happy_path",
+                    input={"text": f"question {i}"},
+                    expected={"answer": "42"},
+                )
+                for i in range(2)
+            ],
+        )
+
+        def agent(_: dict[str, object]) -> dict[str, object]:
+            return {"text": "same", "structured": {"answer": "42"}}
+
+        store = Store.init_project(tmp_path)
+        runner = CanaryRunner(suite, agent, make_config(), repetitions=5)
+        for index in range(3):
+            runner.run_cycle(store=store, cycle_id=f"cycle-000{index}")
+        set_golden_baseline(store, ["cycle-0000", "cycle-0001"])
+        partial = runner.run_cycle(cycle_id="cycle-0003")
+        store.append_many([r for r in partial if r.canary_id == "only-0"])
+
+        result = run_check(store)
+        assert result.tests == []
+        assert result.verdict_sudden == "NO VALID COMPARISON"
+        assert result.verdict_cumulative == "NO VALID COMPARISON"
+        assert result.overall_verdict == "NO VALID COMPARISON"
+        assert {a.coverage_status for a in result.assessments} == {"NONE"}
+        assert {a.power_status for a in result.assessments} == {"NOT ASSESSED"}
+        assert all(a.n_valid_primary_tests == 0 for a in result.assessments)
+
+        params_raw, persisted_verdict = (
+            store.connect()
+            .execute("SELECT params_json, verdict FROM checks ORDER BY id DESC LIMIT 1")
+            .fetchone()
+        )
+        params = json.loads(params_raw)
+        assert params["overall_verdict"] == "NO VALID COMPARISON"
+        assert all(a["coverage_status"] == "NONE" for a in params["assessments"])
+        assert "overall=NO VALID COMPARISON" in persisted_verdict
+
+        md = render_report(store, result)
+        assert "# dedrift report — NO VALID COMPARISON" in md
+        assert "not a green result" in md
+        store.close()
+
+    def test_suite_version_change_is_an_experiment_boundary(self, tmp_path: Path) -> None:
+        base_suite = CanarySuite(
+            version="1",
+            canaries=[
+                Canary(
+                    id="only",
+                    family="happy_path",
+                    input={"text": "question"},
+                    expected={"answer": "42"},
+                )
+            ],
+        )
+
+        def agent(_: dict[str, object]) -> dict[str, object]:
+            return {"text": "same", "structured": {"answer": "42"}}
+
+        store = Store.init_project(tmp_path)
+        runner = CanaryRunner(base_suite, agent, make_config(), repetitions=5)
+        for index in range(3):
+            runner.run_cycle(store=store, cycle_id=f"cycle-000{index}")
+        set_golden_baseline(store, ["cycle-0000", "cycle-0001"])
+        changed_suite = CanarySuite(version="2", canaries=base_suite.canaries)
+        CanaryRunner(changed_suite, agent, make_config(), repetitions=5).run_cycle(
+            store=store, cycle_id="cycle-0003"
+        )
+
+        result = run_check(store)
+        assert result.overall_verdict == "NO VALID COMPARISON"
+        assert result.tests == []
+        assert all(i.changed_canaries == ("only",) for i in result.composition_issues)
+        store.close()
+
+
+class TestSourceIsolation:
+    def test_production_record_with_cycle_id_cannot_enter_canary_check(
+        self, tmp_path: Path
+    ) -> None:
+        store = seeded_project(tmp_path, change_cycle=None)
+        canary_result = run_check(store)
+        last = store.read_records()[-1]
+        production = last.model_copy(
+            update={
+                "id": "production-contamination",
+                "source": Source.PRODUCTION,
+                "cycle_id": "cycle-9999",
+            }
+        )
+        store.append(production)
+
+        isolated_result = run_check(store)
+        assert isolated_result.current_cycle == canary_result.current_cycle
+        assert isolated_result.verdict_sudden == canary_result.verdict_sudden
+        assert isolated_result.verdict_cumulative == canary_result.verdict_cumulative
         store.close()
 
 

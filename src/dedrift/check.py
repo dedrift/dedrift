@@ -4,7 +4,7 @@ Gating order (SPEC.md §6 — order matters):
 
 1. Run all tests, collect p-values (PSI and Page-Hinkley produce flags,
    never p-values).
-2. Benjamini-Hochberg FDR at ``q`` across the PRIMARY tests in the check
+2. Benjamini-Hochberg adjustment at ``q`` across the PRIMARY tests in the check
    (both baselines together — one multiplicity family per check). One
    primary per channel: KS for location/shape, Levene for dispersion, the
    P95 permutation test for tails, two-proportion z for rates, MMD for
@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+import math
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,11 +55,12 @@ from dedrift.detectors import (
     welch_t_test,
 )
 from dedrift.detectors.heuristic import PSI_MODERATE
+from dedrift.detectors.mmd import MIN_FLOOR_CYCLES
 from dedrift.embeddings import embed_records, get_pinned_embedder
 from dedrift.schema import InteractionRecord
 from dedrift.signatures import signatures_frame
 from dedrift.signatures.structural import RATE_SIGNATURES, SCALAR_SIGNATURES
-from dedrift.store import Store
+from dedrift.store import Store, _atomic_private_writer, _harden_permissions
 
 BASELINE_FILE = "baseline.json"
 
@@ -142,6 +144,8 @@ class CompositionIssue:
         extra_canaries: In the current cycle but not the reference window.
         unbalanced: True if repetition counts differ across canaries within
             a window (mixture weights shifted even with identical sets).
+        changed_canaries: Canary IDs whose input, expectation, predicate, or
+            rubric identity differs between the reference and current window.
         detail: Human-readable explanation for the report.
     """
 
@@ -151,6 +155,45 @@ class CompositionIssue:
     extra_canaries: tuple[str, ...]
     unbalanced: bool
     detail: str
+    changed_canaries: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ComparisonAssessment:
+    """Machine-readable evidence coverage for one baseline comparison.
+
+    ``power_status`` is intentionally ``NOT ASSESSED``. A finite p-value
+    establishes that a test was defined; it does not establish useful power,
+    and the current configuration does not declare the alternative and target
+    power needed to make that claim.
+    """
+
+    baseline: str
+    coverage_status: str
+    power_status: str
+    n_families_total: int
+    n_families_tested: int
+    n_primary_tests: int
+    n_valid_primary_tests: int
+    n_undefined_primary_tests: int
+    suppressed_families: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MmdFloorAssessment:
+    """Materiality-floor provenance for one semantic comparison.
+
+    ``value`` is ``None`` when auto-calibration had too few known-good
+    cycles.  In that state the semantic test remains visible as diagnostic
+    evidence but cannot alert: silently substituting a zero floor would turn
+    "uncalibrated" into "every significant effect is material".
+    """
+
+    baseline: str
+    family: str
+    value: float | None
+    status: str
+    n_reference_cycles: int
 
 
 @dataclass(frozen=True)
@@ -164,7 +207,14 @@ class CheckResult:
         golden_cycles: Cycle IDs in the golden baseline.
         fdr_q: FDR level used.
         seed: Seed used for all resampling.
-        verdict_sudden: ``OK`` / ``DRIFT DETECTED`` / ``NO REFERENCE``.
+        permutations_requested: Configured Monte Carlo permutation count.
+        permutations_effective: Count actually used, automatically raised
+            when needed so an isolated permutation test can reach the first
+            BH threshold.
+        primary_family_upper_bound: Conservative size used for that
+            permutation-resolution calculation.
+        verdict_sudden: ``OK`` / ``DRIFT DETECTED`` / ``NO REFERENCE`` /
+            ``NO VALID COMPARISON`` / ``PARTIAL COVERAGE``.
         verdict_cumulative: Same, against the golden baseline.
         degraded: True if the current cycle's error fraction was too high
             for drift interpretation (overall verdict DEGRADED DATA).
@@ -172,6 +222,9 @@ class CheckResult:
         flags: PSI / Page-Hinkley indicators.
         composition_issues: Suppressed (baseline, family) comparisons whose
             windows were not composition-comparable.
+        assessments: Machine-readable coverage and power status per baseline.
+        mmd_floors: Semantic materiality-floor values and calibration status.
+        overall_verdict: Conservative aggregate status for CLI/report use.
         n_alerts: Convenience count of alerting tests.
     """
 
@@ -181,12 +234,19 @@ class CheckResult:
     golden_cycles: list[str]
     fdr_q: float
     seed: int
+    permutations_requested: int
+    permutations_effective: int
+    primary_family_upper_bound: int
     verdict_sudden: str
     verdict_cumulative: str
     degraded: bool
     tests: list[TestRecord] = field(default_factory=list)
     flags: list[FlagRecord] = field(default_factory=list)
     composition_issues: list[CompositionIssue] = field(default_factory=list)
+    assessments: list[ComparisonAssessment] = field(default_factory=list)
+    mmd_floors: list[MmdFloorAssessment] = field(default_factory=list)
+    snapshot_log_offset: int = 0
+    snapshot_record_ids: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def n_alerts(self) -> int:
@@ -200,6 +260,22 @@ class CheckResult:
             key=lambda t: (t.baseline, t.family, t.signature, t.outcome.test),
         )
 
+    @property
+    def overall_verdict(self) -> str:
+        """Conservative aggregate which never presents missing evidence as OK."""
+        if self.degraded:
+            return "DEGRADED DATA"
+        if self.n_alerts:
+            return "DRIFT DETECTED"
+        verdicts = (self.verdict_sudden, self.verdict_cumulative)
+        if "NO VALID COMPARISON" in verdicts:
+            return "NO VALID COMPARISON"
+        if "PARTIAL COVERAGE" in verdicts:
+            return "PARTIAL COVERAGE"
+        if "NO REFERENCE" in verdicts:
+            return "PARTIAL COVERAGE" if "OK" in verdicts else "NO REFERENCE"
+        return "OK"
+
 
 # -- baseline management -------------------------------------------------------
 
@@ -211,8 +287,32 @@ def set_golden_baseline(store: Store, cycle_ids: list[str]) -> None:
         store: The project store.
         cycle_ids: Cycles the owner declares known-good.
     """
-    path = store.project_dir / BASELINE_FILE
-    path.write_text(json.dumps({"golden_cycles": sorted(cycle_ids)}, indent=2), encoding="utf-8")
+    conn = store.connect()
+    if conn.in_transaction:
+        raise RuntimeError("set_golden_baseline requires ownership of the SQLite transaction")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not cycle_ids:
+            raise ValueError("golden baseline requires at least one finalized cycle")
+        if any(not isinstance(cycle_id, str) or not cycle_id for cycle_id in cycle_ids):
+            raise ValueError("golden baseline cycle IDs must be non-empty strings")
+        if len(set(cycle_ids)) != len(cycle_ids):
+            raise ValueError("golden baseline cycle IDs must not contain duplicates")
+        available = set(store.finalized_cycle_ids())
+        missing = sorted(set(cycle_ids) - available)
+        if missing:
+            raise ValueError(
+                "golden baseline contains unknown or open canary cycle(s): " + ", ".join(missing)
+            )
+        path = store.project_dir / BASELINE_FILE
+        payload = json.dumps({"golden_cycles": sorted(cycle_ids)}, indent=2).encode("utf-8")
+        with _atomic_private_writer(path) as stream:
+            stream.write(payload)
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def get_golden_baseline(store: Store) -> list[str]:
@@ -220,8 +320,18 @@ def get_golden_baseline(store: Store) -> list[str]:
     path = store.project_dir / BASELINE_FILE
     if not path.exists():
         return []
+    _harden_permissions(path, 0o600)
     data = json.loads(path.read_text(encoding="utf-8"))
-    return list(data.get("golden_cycles", []))
+    if not isinstance(data, dict) or set(data) != {"golden_cycles"}:
+        raise ValueError("baseline.json must contain only a golden_cycles array")
+    cycles = data["golden_cycles"]
+    if (
+        not isinstance(cycles, list)
+        or any(not isinstance(cycle, str) or not cycle for cycle in cycles)
+        or len(set(cycles)) != len(cycles)
+    ):
+        raise ValueError("baseline.json golden_cycles must be unique non-empty strings")
+    return cycles
 
 
 # -- pipeline ------------------------------------------------------------------
@@ -266,7 +376,7 @@ def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
     m = cfg.materiality
     if test.test == "levene":
         r = test.effect_size
-        return bool(r >= m.dispersion_ratio or (r > 0 and r <= 1 / m.dispersion_ratio))
+        return bool(r >= m.dispersion_ratio or r <= 1 / m.dispersion_ratio)
     if test.test == "p95_perm":
         return bool(abs(test.effect_size) >= m.p95_relative)
     if test.test == "ks":
@@ -360,9 +470,9 @@ def _composition_issue(
     """Check the balanced-design assumption for one (baseline, family).
 
     Returns an issue when the two windows do not contain the same canaries,
-    or when repetition counts are non-uniform across canaries within a
-    window. Either way the family mixture differs between windows, so a
-    two-sample test would measure missing data, not drift.
+    their input/evaluation identities changed, or repetition counts are not
+    uniform across canaries within a window. In each case a two-sample test
+    would mix a collection/suite change into the behavior comparison.
     """
     ref_counts = ref_fam["canary_id"].value_counts()
     cur_counts = cur_fam["canary_id"].value_counts()
@@ -372,7 +482,34 @@ def _composition_issue(
         (len(cur_counts) > 0 and cur_counts.min() != cur_counts.max())
         or (len(ref_counts) > 0 and ref_counts.min() != ref_counts.max())
     )
-    if not missing and not extra and not unbalanced:
+
+    identity_columns = (
+        "suite_fingerprint",
+        "canary_fingerprint",
+        "correctness_predicate_id",
+        "expectation_fingerprint",
+        "rubric_id",
+    )
+
+    def identities(data: pd.DataFrame, canary_id: str) -> set[tuple[str | None, ...]]:
+        rows = data[data["canary_id"] == canary_id]
+        found: set[tuple[str | None, ...]] = set()
+        for values in rows[list(identity_columns)].itertuples(index=False, name=None):
+            found.add(
+                tuple(None if value is None or pd.isna(value) else str(value) for value in values)
+            )
+        return found
+
+    changed = tuple(
+        sorted(
+            canary_id
+            for canary_id in set(ref_counts.index) & set(cur_counts.index)
+            if identities(ref_fam, str(canary_id)) != identities(cur_fam, str(canary_id))
+            or len(identities(ref_fam, str(canary_id))) != 1
+            or len(identities(cur_fam, str(canary_id))) != 1
+        )
+    )
+    if not missing and not extra and not unbalanced and not changed:
         return None
     parts: list[str] = []
     if missing:
@@ -387,6 +524,11 @@ def _composition_issue(
             f"reference min/max {int(ref_counts.min()) if len(ref_counts) else 0}/"
             f"{int(ref_counts.max()) if len(ref_counts) else 0})"
         )
+    if changed:
+        parts.append(
+            "canary input/evaluation identity changed or varied within a window: "
+            + ", ".join(changed)
+        )
     return CompositionIssue(
         baseline=baseline,
         family=family,
@@ -394,6 +536,7 @@ def _composition_issue(
         extra_canaries=extra,
         unbalanced=unbalanced,
         detail="; ".join(parts),
+        changed_canaries=changed,
     )
 
 
@@ -405,14 +548,16 @@ def _mmd_battery(
     embeddings: dict[str, npt.NDArray[np.float64]],
     families: list[str],
     cfg: ProjectConfig,
-    mmd_floors: dict[tuple[str, str], float],
+    n_permutations: int,
+    mmd_floors: dict[tuple[str, str], MmdFloorAssessment],
 ) -> list[TestRecord]:
     """Run MMD per family against one baseline; record calibrated floors.
 
     The materiality floor per (baseline, family) is the config override when
     non-negative, else the 95th percentile of MMD^2 between pairs of the
-    baseline's own cycles (known-same distribution). With fewer than three
-    reference cycles the floor is 0.0 (uncalibratable; reported as such).
+    baseline's own cycles (known-same distribution). With fewer than five
+    reference cycles the floor is unavailable and MMD cannot alert unless an
+    explicit non-negative floor was configured.
     """
     out: list[TestRecord] = []
     for family in families:
@@ -432,29 +577,71 @@ def _mmd_battery(
         outcome = mmd_rbf_test(
             ref_emb,
             cur_emb,
-            n_permutations=max(cfg.permutations, 500),
+            n_permutations=n_permutations,
             seed=_test_seed(cfg.seed, baseline_name, family, "embedding", "mmd"),
             sigma=sigma,
         )
+        usable_cycles = 0
         if cfg.materiality.embedding_mmd2_floor >= 0:
-            floor = cfg.materiality.embedding_mmd2_floor
+            floor: float | None = cfg.materiality.embedding_mmd2_floor
+            status = "CONFIGURED"
         else:
             per_cycle = [
                 np.stack([embeddings[i] for i in fam[fam["cycle_id"] == cycle]["record_id"]])
                 for cycle in ref_cycles
             ]
-            floor = calibrate_mmd_floor([p for p in per_cycle if len(p) >= 2], sigma=sigma)
-        mmd_floors[(baseline_name, family)] = floor
-        out.append(TestRecord(baseline_name, family, "embedding", outcome))
+            usable = [p for p in per_cycle if len(p) >= 2]
+            usable_cycles = len(usable)
+            if usable_cycles < MIN_FLOOR_CYCLES:
+                floor = None
+                status = "UNCALIBRATED"
+            else:
+                floor = calibrate_mmd_floor(usable, sigma=sigma)
+                status = "AUTO-CALIBRATED"
+        mmd_floors[(baseline_name, family)] = MmdFloorAssessment(
+            baseline=baseline_name,
+            family=family,
+            value=floor,
+            status=status,
+            n_reference_cycles=usable_cycles if status != "CONFIGURED" else len(ref_cycles),
+        )
+        out.append(
+            TestRecord(
+                baseline_name,
+                family,
+                "embedding",
+                outcome,
+                primary=floor is not None,
+            )
+        )
     return out
 
 
 def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
+    """Run one fixed-horizon check against finalized, immutable cycles.
+
+    The indexed record IDs and committed log offset are captured in a brief
+    WAL read transaction. Expensive embeddings and resampling then run with
+    no writer lock; finalization makes the selected cycle contents immutable.
+    """
+    cfg = config or ProjectConfig.load(store.project_dir)
+    records, snapshot_offset = store.read_finalized_canary_snapshot()
+    return _run_check_snapshot(store, cfg, records, snapshot_offset)
+
+
+def _run_check_snapshot(
+    store: Store,
+    cfg: ProjectConfig,
+    records: list[InteractionRecord],
+    snapshot_offset: int,
+) -> CheckResult:
     """Run the full gated drift check for the latest cycle.
 
     Args:
-        store: The project store (must contain canary records with cycles).
-        config: Project configuration; loaded from the store when omitted.
+        store: The project store (must contain finalized canary cycles).
+        cfg: Validated project configuration.
+        records: Immutable finalized-record snapshot.
+        snapshot_offset: Committed JSONL offset recorded with the check.
 
     Returns:
         The complete check result. Also persisted to the ``checks`` and
@@ -463,10 +650,8 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
     Raises:
         ValueError: If no canary cycles exist.
     """
-    cfg = config or ProjectConfig.load(store.project_dir)
-    records = [r for r in store.read_records() if r.cycle_id is not None]
     if not records:
-        msg = "no canary records with cycle IDs; run canaries first"
+        msg = "no finalized canary cycles; finish and finalize a canary cycle first"
         raise ValueError(msg)
     frame = signatures_frame(records)
     cycles = _ordered_cycles(frame)
@@ -495,8 +680,25 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
     tests: list[TestRecord] = []
     flags: list[FlagRecord] = []
     issues: list[CompositionIssue] = []
-    mmd_floors: dict[tuple[str, str], float] = {}
+    mmd_floors: dict[tuple[str, str], MmdFloorAssessment] = {}
     families = sorted(frame["family"].unique())
+    n_reference_baselines = int(bool(rolling)) + int(bool(golden))
+    primary_family_upper_bound = (
+        n_reference_baselines
+        * len(families)
+        * (3 * len(scalar_signatures) + len(RATE_SIGNATURES) + (1 if embeddings is not None else 0))
+    )
+    resolution_floor = (
+        math.ceil(primary_family_upper_bound / cfg.fdr_q)
+        if primary_family_upper_bound
+        else cfg.permutations
+    )
+    if resolution_floor > 250_000:
+        raise ValueError(
+            "detection.fdr_q would require more than 250,000 permutations per test "
+            "at this battery size; raise fdr_q or reduce the declared test family"
+        )
+    effective_permutations = max(cfg.permutations, resolution_floor)
 
     def battery(
         baseline_name: str, ref_frame: pd.DataFrame, skip: frozenset[str]
@@ -523,7 +725,7 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
                         p95_permutation_test(
                             ref,
                             cur,
-                            n_permutations=cfg.permutations,
+                            n_permutations=effective_permutations,
                             seed=_test_seed(cfg.seed, baseline_name, family, sig, "p95_perm"),
                         ),
                     )
@@ -583,6 +785,19 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
                 )
                 skip.add(family)
                 continue
+            if ref_fam.empty and not cur_fam.empty:
+                issues.append(
+                    CompositionIssue(
+                        baseline=name,
+                        family=family,
+                        missing_canaries=(),
+                        extra_canaries=tuple(sorted(cur_fam["canary_id"].dropna().unique())),
+                        unbalanced=False,
+                        detail="family absent from the reference window",
+                    )
+                )
+                skip.add(family)
+                continue
             if ref_fam.empty or cur_fam.empty:
                 continue
             issue = _composition_issue(name, family, ref_fam, cur_fam)
@@ -594,7 +809,15 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
             ok_families = [f for f in families if f not in skip]
             tests.extend(
                 _mmd_battery(
-                    name, ref_cycles, current, frame, embeddings, ok_families, cfg, mmd_floors
+                    name,
+                    ref_cycles,
+                    current,
+                    frame,
+                    embeddings,
+                    ok_families,
+                    cfg,
+                    effective_permutations,
+                    mmd_floors,
                 )
             )
         verdicts[name] = "pending"
@@ -620,7 +843,12 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
         if not t.primary:
             material = None
         elif t.outcome.test == "mmd":
-            material = bool(t.outcome.effect_size >= mmd_floors.get((t.baseline, t.family), 0.0))
+            floor = mmd_floors.get((t.baseline, t.family))
+            material = bool(
+                floor is not None
+                and floor.value is not None
+                and t.outcome.effect_size >= floor.value
+            )
         elif t.signature in RATE_SIGNATURES:
             material = bool(
                 abs(t.outcome.effect_raw) >= cfg.materiality.rate_threshold(t.signature)
@@ -695,10 +923,43 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
                     )
                 )
 
-    for name in ("rolling", "golden"):
-        if verdicts.get(name) == "pending":
-            any_alert = any(t.alert for t in gated if t.baseline == name)
-            verdicts[name] = "DRIFT DETECTED" if any_alert else "OK"
+    assessments: list[ComparisonAssessment] = []
+    for name, ref_cycles in (("rolling", rolling), ("golden", golden)):
+        primary = [t for t in gated if t.baseline == name and t.primary]
+        valid = [t for t in primary if np.isfinite(t.outcome.p_value)]
+        tested_families = {t.family for t in valid}
+        suppressed = tuple(sorted({i.family for i in issues if i.baseline == name}))
+        if not ref_cycles:
+            coverage = "NO REFERENCE"
+        elif not valid:
+            coverage = "NONE"
+        elif suppressed or len(tested_families) < len(families):
+            coverage = "PARTIAL"
+        else:
+            coverage = "FULL"
+        assessments.append(
+            ComparisonAssessment(
+                baseline=name,
+                coverage_status=coverage,
+                power_status="NOT ASSESSED",
+                n_families_total=len(families),
+                n_families_tested=len(tested_families),
+                n_primary_tests=len(primary),
+                n_valid_primary_tests=len(valid),
+                n_undefined_primary_tests=len(primary) - len(valid),
+                suppressed_families=suppressed,
+            )
+        )
+        if verdicts.get(name) != "pending":
+            continue
+        if not valid:
+            verdicts[name] = "NO VALID COMPARISON"
+        elif any(t.alert for t in gated if t.baseline == name):
+            verdicts[name] = "DRIFT DETECTED"
+        elif coverage == "PARTIAL":
+            verdicts[name] = "PARTIAL COVERAGE"
+        else:
+            verdicts[name] = "OK"
 
     result = CheckResult(
         ts=datetime.now(timezone.utc).isoformat(),
@@ -707,12 +968,19 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
         golden_cycles=golden,
         fdr_q=cfg.fdr_q,
         seed=cfg.seed,
+        permutations_requested=cfg.permutations,
+        permutations_effective=effective_permutations,
+        primary_family_upper_bound=primary_family_upper_bound,
         verdict_sudden=verdicts["rolling"],
         verdict_cumulative=verdicts["golden"],
         degraded=degraded,
         tests=gated,
         flags=sorted(flags, key=lambda f: (f.kind, f.family, f.signature)),
         composition_issues=sorted(issues, key=lambda i: (i.baseline, i.family)),
+        assessments=assessments,
+        mmd_floors=sorted(mmd_floors.values(), key=lambda item: (item.baseline, item.family)),
+        snapshot_log_offset=snapshot_offset,
+        snapshot_record_ids=tuple(record.id for record in records),
     )
     _persist(store, result)
     return result
@@ -720,61 +988,91 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
 
 def _persist(store: Store, result: CheckResult) -> None:
     conn = store.connect()
-    cursor = conn.execute(
-        "INSERT INTO checks (ts, baseline_kind, params_json, verdict) VALUES (?, ?, ?, ?)",
-        (
-            result.ts,
-            "dual",
-            json.dumps(
-                {
-                    "current_cycle": result.current_cycle,
-                    "rolling": result.rolling_cycles,
-                    "golden": result.golden_cycles,
-                    "fdr_q": result.fdr_q,
-                    "seed": result.seed,
-                    "composition_issues": [
-                        {"baseline": i.baseline, "family": i.family, "detail": i.detail}
-                        for i in result.composition_issues
-                    ],
-                }
-            ),
-            f"sudden={result.verdict_sudden};cumulative={result.verdict_cumulative}"
-            + (";DEGRADED" if result.degraded else ""),
-        ),
-    )
-    check_id = cursor.lastrowid
-    # Effect units match the scale each test is gated AND reported on.
-    effect_units = {
-        "ks": "ks_D",
-        "levene": "mad_ratio",
-        "p95_perm": "relative_p95_shift",
-        "two_proportion_z": "rate_diff",
-        "mmd": "mmd2",
-    }
-    for t in result.alerts():
-        conn.execute(
-            "INSERT INTO alerts (check_id, signature, family, test, p_adjusted,"
-            " effect_size, effect_units, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    if conn.in_transaction:
+        raise RuntimeError("check persistence requires ownership of the SQLite transaction")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = conn.execute(
+            "INSERT INTO checks "
+            "(ts, baseline_kind, params_json, verdict, snapshot_offset, "
+            "snapshot_record_ids_json) VALUES (?, ?, ?, ?, ?, ?)",
             (
-                check_id,
-                t.signature,
-                t.family,
-                t.outcome.test,
-                t.p_adjusted,
-                t.outcome.effect_size,
-                effect_units.get(t.outcome.test, "cohen_d"),
+                result.ts,
+                "dual",
                 json.dumps(
                     {
-                        "baseline": t.baseline,
-                        "statistic": t.outcome.statistic,
-                        "effect_raw": t.outcome.effect_raw,
-                        "n_ref": t.outcome.n_ref,
-                        "n_cur": t.outcome.n_cur,
+                        "current_cycle": result.current_cycle,
+                        "rolling": result.rolling_cycles,
+                        "golden": result.golden_cycles,
+                        "fdr_q": result.fdr_q,
+                        "seed": result.seed,
+                        "permutations_requested": result.permutations_requested,
+                        "permutations_effective": result.permutations_effective,
+                        "primary_family_upper_bound": result.primary_family_upper_bound,
+                        "overall_verdict": result.overall_verdict,
+                        "assessments": [asdict(a) for a in result.assessments],
+                        "mmd_floors": [asdict(item) for item in result.mmd_floors],
+                        "composition_issues": [
+                            {
+                                "baseline": i.baseline,
+                                "family": i.family,
+                                "detail": i.detail,
+                                "missing_canaries": i.missing_canaries,
+                                "extra_canaries": i.extra_canaries,
+                                "changed_canaries": i.changed_canaries,
+                                "unbalanced": i.unbalanced,
+                            }
+                            for i in result.composition_issues
+                        ],
+                        "snapshot_log_offset": result.snapshot_log_offset,
+                        "snapshot_record_ids": result.snapshot_record_ids,
                     }
                 ),
+                f"sudden={result.verdict_sudden};cumulative={result.verdict_cumulative}"
+                + f";overall={result.overall_verdict}"
+                + (";DEGRADED" if result.degraded else ""),
+                result.snapshot_log_offset,
+                json.dumps(result.snapshot_record_ids),
             ),
         )
-    conn.commit()
+        check_id = cursor.lastrowid
+        # Effect units match the scale each test is gated AND reported on.
+        effect_units = {
+            "ks": "ks_D",
+            "levene": "mad_ratio",
+            "p95_perm": "relative_p95_shift",
+            "two_proportion_z": "rate_diff",
+            "mmd": "mmd2",
+        }
+        for t in result.alerts():
+            conn.execute(
+                "INSERT INTO alerts (check_id, signature, family, test, p_adjusted,"
+                " effect_size, effect_units, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    check_id,
+                    t.signature,
+                    t.family,
+                    t.outcome.test,
+                    t.p_adjusted,
+                    t.outcome.effect_size,
+                    effect_units.get(t.outcome.test, "cohen_d"),
+                    json.dumps(
+                        {
+                            "baseline": t.baseline,
+                            "statistic": t.outcome.statistic,
+                            "effect_raw": t.outcome.effect_raw,
+                            "n_ref": t.outcome.n_ref,
+                            "n_cur": t.outcome.n_cur,
+                        }
+                    ),
+                ),
+            )
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def export_baseline_path(store: Store) -> Path:

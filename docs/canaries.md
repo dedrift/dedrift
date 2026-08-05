@@ -27,7 +27,7 @@ Fields per canary:
 | `family` | yes | One of the six families below |
 | `input` | yes | Mapping passed to your `agent_fn` (usually `{text: ...}`) |
 | `expected` | no | Expected structured keys/values → format-validity and exact-match signatures |
-| `rubric_id` | no | Hook for the optional LLM-judge tier |
+| `rubric_id` | no | Provenance identity only; this release does not execute an LLM judge |
 
 ## The six families
 

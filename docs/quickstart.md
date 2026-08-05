@@ -86,7 +86,7 @@ failure mode, not a configuration choice.
 
 ## 4. Read a check like an operator
 
-- **Alerts** passed BH-FDR at q=0.05 *and* a materiality gate — these are
+- **Alerts** passed BH adjustment at q=0.05 *and* an observed materiality gate — these are
   worth waking up for.
 - **"Significant, below materiality"** — real but small; watch it.
 - **Flags** (PSI, Page–Hinkley) are uncalibrated diagnostics that localize
@@ -101,13 +101,14 @@ failure mode, not a configuration choice.
 
 `dedrift check` controls false alarms *per check*. Because monitoring runs
 forever, that rate compounds — about ten false alerts a month at hourly
-checks. `--inference anytime` swaps in a lifetime guarantee instead
+checks. `--inference anytime` uses lifetime-oriented rate e-processes instead
 (measured: 0 in 500 stable runs of 2000 cycles), at a real cost in detection
-power. Read [anytime-valid mode](anytime.md) before switching; `fixed`
-remains the default deliberately.
+power. Per-process and per-check results are proven; the repeated dependent
+battery relies on a documented causal assumption. Read
+[anytime-valid mode](anytime.md) before switching; `fixed` remains the default.
 
 ```bash
-dedrift check --inference anytime     # lifetime guarantee, slower to detect
+dedrift check --inference anytime     # lifetime-oriented rate monitoring
 ```
 
 Defaults are documented in the [configuration reference](configuration.md);

@@ -212,6 +212,7 @@ class TestDisplacementIsLeaveOneOut:
                     output={"text": "y"},
                     canary_id="c1",
                     cycle_id=cycle,
+                    repetition=(i % n_ref) + 1,
                     config=cfg,
                 )
             )

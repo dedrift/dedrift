@@ -364,15 +364,15 @@ class TestCycleEffectRobustness:
         sigma      runs alerting      Wilson 95% upper
         =========  =================  =====================
         0.00       2/100              0.070
-        0.10       23/100             0.322
-        0.25       68/100             0.763
+        0.10       32/100             0.417
+        0.25       74/100             0.819
         =========  =================  =====================
 
         That is not graceful degradation and this test does not pretend it
         is. A shared per-cycle offset of sigma = 0.10 -- roughly a 10% swing
         in mean output length and latency between cycles, well inside what a
         hosted endpoint does on its own -- takes the per-check alert rate
-        from 2% to 23%. The pooled-reference-versus-single-current-cycle
+        from 2% to 32%. The pooled-reference-versus-single-current-cycle
         design has no way to separate that from drift, and neither does any
         other two-sample test on these signatures.
 

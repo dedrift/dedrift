@@ -14,7 +14,7 @@ from datetime import datetime
 import pandas as pd
 
 from dedrift.check import CheckResult
-from dedrift.schema import InteractionRecord
+from dedrift.schema import InteractionRecord, Source
 from dedrift.store import Store
 
 
@@ -69,9 +69,25 @@ def attribute(store: Store, result: CheckResult) -> list[Attribution]:
     alerts = result.alerts()
     if not alerts:
         return []
-    records = [r for r in store.read_records() if r.cycle_id is not None]
+    if result.snapshot_record_ids:
+        snapshot = store.read_records_by_ids(result.snapshot_record_ids)
+    else:
+        logged = store.read_records()
+        current_positions = [
+            index
+            for index, record in enumerate(logged)
+            if record.source == Source.CANARY and record.cycle_id == result.current_cycle
+        ]
+        if not current_positions:
+            return []
+        snapshot = logged[: current_positions[-1] + 1]
+    records = [
+        record
+        for record in snapshot
+        if record.source == Source.CANARY and record.cycle_id is not None
+    ]
     starts = _cycle_start_times(records)
-    events = store.config_events()  # (ts, old_fp, new_fp), first event is project start
+    events = store.config_events({record.id for record in snapshot})
     real_events = [e for e in events if e[1] is not None]
 
     # Page-Hinkley onset estimates per (family, signature).

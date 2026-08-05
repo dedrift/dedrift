@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dedrift — silent behavioral drift detection for AI agents</title>
-<meta name="description" content="Agents don't throw errors when they degrade. dedrift catches silent behavioral drift with calibrated false-alarm rates, FDR-controlled alerts, and config-change attribution. Every statistical claim is enforced in CI.">
+<meta name="description" content="Agents don't throw errors when they degrade. dedrift catches silent behavioral drift with measured false-alarm rates, multiplicity-adjusted alerts, and config-change attribution.">
 <meta property="og:title" content="dedrift — catch silent behavioral drift in AI agents">
-<meta property="og:description" content="Calibrated, FDR-controlled drift detection for LLM agents. Proven on a real silent model swap.">
+<meta property="og:description" content="Simulation-calibrated, multiplicity-adjusted drift detection for LLM agents.">
 <meta property="og:url" content="https://dedrift.ai/">
 <meta property="og:image" content="https://dedrift.ai/og-card.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -18,10 +18,10 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "dedrift",
-  "description": "Statistically calibrated behavioral drift detection for AI agents: frozen canary suites, FDR-controlled alerting with materiality gates, config-change attribution. Every statistical claim enforced by simulation tests in CI.",
+  "description": "Simulation-calibrated behavioral drift detection for AI agents: frozen canary suites, multiplicity adjustment, materiality gates, and config-change attribution.",
   "url": "https://dedrift.ai/",
   "downloadUrl": "https://pypi.org/project/dedrift/",
-  "softwareVersion": "0.2.0",
+  "softwareVersion": "0.3.1",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux, Windows",
   "license": "https://www.gnu.org/licenses/agpl-3.0.html",
@@ -275,7 +275,7 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 </nav>
 
 <header class="hero wrap">
-  <div class="chip"><b>●</b> v0.3.0 on PyPI · AGPL-3.0 · zero ML dependencies</div>
+  <div class="chip"><b>●</b> v0.3.1 source · AGPL-3.0 · zero ML dependencies</div>
   <h1>Your agent didn't crash.<br>It just quietly got <span class="grad">worse</span>.</h1>
   <p class="sub">
     Model updates, prompt edits, silent provider changes — none of them throw errors.
@@ -294,7 +294,7 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 Current cycle: cycle-20260802T121457Z
 Sudden (vs rolling 2 cycles): <span class="a">DRIFT DETECTED</span>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span>
-Alerts: 32 (q=0.05, materiality-gated)
+Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
   [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.917</span>, p_adj=4.8e-07
   [golden] adversarial/tokens_out ks: effect=<span class="a">+0.806</span>, p_adj=6.6e-05
   [golden] edge_case/latency_ms levene: effect=<span class="a">+2.439</span>, p_adj=0.018
@@ -303,7 +303,7 @@ Alerts: 32 (q=0.05, materiality-gated)
   </div>
 
   <div class="stats">
-    <div class="stat rv"><div class="n"><em>1.6%</em></div><div class="l">measured null alert rate — 8 of 500 stable-agent checks, Wilson-bounded &lt; 5% in CI</div></div>
+    <div class="stat rv"><div class="n"><em>2.0%</em></div><div class="l">measured null alert rate — 10 of 500 stable-agent checks, Wilson upper 3.64%</div></div>
     <div class="stat rv"><div class="n"><em>1 cycle</em></div><div class="l">to catch a real silent model swap, on both baselines, correctly attributed</div></div>
     <div class="stat rv"><div class="n"><em>100%</em></div><div class="l">of stable checks falsely flagged by the industry-standard PSI at canary scale — measured; dedrift refuses to compute it there</div></div>
     <div class="stat rv"><div class="n"><em>every</em></div><div class="l">p-valued detector calibration-tested against a documented band, on every commit</div></div>
@@ -328,7 +328,7 @@ Alerts: 32 (q=0.05, materiality-gated)
   <div class="steps">
     <div class="step rv"><h3>Freeze canaries</h3><p>A versioned suite across six behavioral families: happy-path to adversarial.</p></div>
     <div class="step rv"><h3>Run N× per cycle</h3><p>Every record carries a config fingerprint of your model, prompt, and tools.</p></div>
-    <div class="step rv"><h3>Detect, gated twice</h3><p>One primary test per channel → BH-FDR → materiality. Fewer, higher-confidence alerts.</p></div>
+    <div class="step rv"><h3>Detect, gated twice</h3><p>One primary test per channel → BH adjustment → observed materiality. Assumptions and calibration are published.</p></div>
     <div class="step rv"><h3>Attribute</h3><p>"Behavior shifted 0.1 h after the model fingerprint change" — consistent with, never caused by.</p></div>
   </div>
 </section>
@@ -361,7 +361,7 @@ Alerts: 32 (q=0.05, materiality-gated)
       <p class="lead">Monitoring tools love p-values and hate publishing their false-alarm rates. We enforce ours in CI — a release cannot ship if the statistics fail their own audit.</p>
       <ul>
         <li>Every detector's null rate measured against a documented band</li>
-        <li>Pipeline-level: 8/500 stable checks alerted — Wilson bound &lt; 5%</li>
+        <li>Pipeline-level: 10/500 stable checks alerted — Wilson upper 3.64%</li>
         <li>Anytime-valid mode: P(ever falsely alerting) ≤ α — 0/500 stable runs over 2000 cycles, and the power cost published beside it</li>
         <li>Limitations measured too: power tables, flag rates, all published</li>
       </ul>
@@ -382,8 +382,8 @@ Alerts: 32 (q=0.05, materiality-gated)
       <h3>Open source</h3>
       <div class="price">$0</div><div class="per">AGPL-3.0, forever</div>
       <ul>
-        <li>Full detector battery, FDR + materiality gating</li>
-        <li><b>Anytime-valid mode</b> — the lifetime guarantee, free</li>
+        <li>Full detector battery, BH adjustment + observed-effect gating</li>
+        <li><b>Anytime mode</b> — lifetime-oriented rate e-processes, with assumptions reported</li>
         <li>Dual baselines, attribution, reports</li>
         <li>Calibration suite — audit us</li>
         <li>Runs on a laptop: JSONL + SQLite</li>
@@ -417,7 +417,7 @@ Alerts: 32 (q=0.05, materiality-gated)
       <p>If a number carries a p-value, the simulation proving its false-alarm rate runs on
       every commit. A release that fails its own audit doesn't ship.</p></div>
     <div class="card rv"><span class="ic">significant ∧ material</span><h3>Alerts must earn it twice</h3>
-      <p>FDR-controlled significance <em>and</em> an effect worth acting on. Statistically
+      <p>Multiplicity-adjusted equality-test evidence <em>and</em> an observed effect worth acting on. Statistically
       real but practically trivial doesn't page you — alert fatigue kills monitoring.</p></div>
     <div class="card rv"><span class="ic">power(2pp) ≈ 0.11</span><h3>We publish what we can't detect</h3>
       <p>Small suites have limited power, and the docs show that math instead of hiding it.
@@ -551,7 +551,7 @@ const LINES = [
   ['t','Current cycle: cycle-20260802T121457Z\n'],
   ['t','Sudden (vs rolling 2 cycles): '],['a','DRIFT DETECTED\n'],
   ['t','Cumulative (vs golden 3 cycles): '],['a','DRIFT DETECTED\n'],
-  ['t','Alerts: 32 (q=0.05, materiality-gated)\n'],
+  ['t','Alerts: 30 (BH-adjusted equality tests, observed-effect gated)\n'],
   ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.917'],['t',', p_adj=4.8e-07\n'],
   ['t','  [golden] adversarial/tokens_out ks: effect='],['a','+0.806'],['t',', p_adj=6.6e-05\n'],
   ['t','  [golden] edge_case/latency_ms levene: effect='],['a','+2.439'],['t',', p_adj=0.018\n'],

@@ -2,16 +2,100 @@
 
 from __future__ import annotations
 
+import math
 import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 if sys.version_info >= (3, 11):  # noqa: UP036 - fallback kept for 3.10 dev sandboxes
     import tomllib
 else:  # pragma: no cover
     import tomli as tomllib
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+
+_TOP_LEVEL_KEYS = frozenset({"project", "detection", "materiality", "embeddings", "anytime"})
+_TABLE_KEYS = {
+    "project": frozenset({"name", "canary_repetitions", "rolling_window_cycles"}),
+    "detection": frozenset({"fdr_q", "permutations", "seed", "ph_lambda", "ph_delta", "inference"}),
+    "materiality": frozenset(
+        {
+            "refusal_rate_pp",
+            "format_validity_pp",
+            "rate_default_pp",
+            "scalar_cohen_d",
+            "ks_distance",
+            "dispersion_ratio",
+            "variance_ratio",  # v0.2 compatibility alias
+            "p95_relative",
+            "embedding_mmd2_floor",
+        }
+    ),
+    "embeddings": frozenset({"model"}),
+    "anytime": frozenset({"alpha", "gamma_total", "tilts", "epoch_allocation"}),
+}
+
+
+def _require_finite(name: str, value: float) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+
+
+def _require_range(
+    name: str,
+    value: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    minimum_inclusive: bool = True,
+    maximum_inclusive: bool = True,
+) -> None:
+    _require_finite(name, value)
+    below = minimum is not None and (value < minimum if minimum_inclusive else value <= minimum)
+    above = maximum is not None and (value > maximum if maximum_inclusive else value >= maximum)
+    if below or above:
+        left = "[" if minimum_inclusive else "("
+        right = "]" if maximum_inclusive else ")"
+        low = "-inf" if minimum is None else str(minimum)
+        high = "inf" if maximum is None else str(maximum)
+        raise ValueError(f"{name} must be in {left}{low}, {high}{right}, got {value!r}")
+
+
+def _require_int(name: str, value: int, *, minimum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}, got {value!r}")
+
+
+def _table(data: dict[str, Any], name: str) -> dict[str, Any]:
+    raw = data.get(name, {})
+    if not isinstance(raw, dict):
+        raise ValueError(f"[{name}] must be a TOML table")
+    unknown = sorted(set(raw) - _TABLE_KEYS[name])
+    if unknown:
+        rendered = ", ".join(f"{name}.{key}" for key in unknown)
+        raise ValueError(f"unknown config field(s): {rendered}")
+    return raw
+
+
+def _toml_string(table: dict[str, Any], key: str, default: str, *, section: str) -> str:
+    value = table.get(key, default)
+    if not isinstance(value, str):
+        raise ValueError(f"{section}.{key} must be a string, got {value!r}")
+    return value
+
+
+def _toml_int(table: dict[str, Any], key: str, default: int, *, section: str) -> int:
+    value = table.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{section}.{key} must be an integer, got {value!r}")
+    return value
+
+
+def _toml_float(table: dict[str, Any], key: str, default: float, *, section: str) -> float:
+    value = table.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{section}.{key} must be a number, got {value!r}")
+    return float(value)
 
 
 @dataclass(frozen=True)
@@ -26,7 +110,8 @@ class Materiality:
         refusal_rate_pp: Minimum refusal-rate shift, percentage points.
         format_validity_pp: Minimum format-validity shift, percentage points.
         rate_default_pp: Minimum shift for other rate signatures, pp.
-        scalar_cohen_d: Minimum |Cohen's d| for location tests (Welch).
+        scalar_cohen_d: Reserved legacy setting. Welch is corroboration-only
+            in v0.3.1, so this value does not gate alerts.
         ks_distance: Minimum KS statistic D (sup-norm CDF distance, in
             [0, 1]) for KS alerts. KS detects any distributional change, so
             gating it on Cohen's d would wrongly discard shape changes with
@@ -62,6 +147,16 @@ class Materiality:
     dispersion_ratio: float = 1.5
     p95_relative: float = 0.10
     embedding_mmd2_floor: float = -1.0
+
+    def __post_init__(self) -> None:
+        """Reject impossible or non-finite effect-size gates."""
+        for name in ("refusal_rate_pp", "format_validity_pp", "rate_default_pp"):
+            _require_range(f"materiality.{name}", getattr(self, name), minimum=0.0, maximum=100.0)
+        _require_range("materiality.scalar_cohen_d", self.scalar_cohen_d, minimum=0.0)
+        _require_range("materiality.ks_distance", self.ks_distance, minimum=0.0, maximum=1.0)
+        _require_range("materiality.dispersion_ratio", self.dispersion_ratio, minimum=1.0)
+        _require_range("materiality.p95_relative", self.p95_relative, minimum=0.0)
+        _require_range("materiality.embedding_mmd2_floor", self.embedding_mmd2_floor, minimum=-1.0)
 
     def rate_threshold(self, signature: str) -> float:
         """Return the pp threshold for a rate signature (in [0,1] units)."""
@@ -112,6 +207,39 @@ class AnytimeConfig:
     tilts: tuple[float, ...] = (1.5, 2.0, 3.0)
     epoch_allocation: str = "per_epoch"
 
+    def __post_init__(self) -> None:
+        """Validate the lifetime error budget and betting-grid domain."""
+        _require_range(
+            "anytime.alpha",
+            self.alpha,
+            minimum=0.0,
+            maximum=1.0,
+            minimum_inclusive=False,
+            maximum_inclusive=False,
+        )
+        _require_range(
+            "anytime.gamma_total",
+            self.gamma_total,
+            minimum=0.0,
+            maximum=self.alpha,
+            minimum_inclusive=False,
+            maximum_inclusive=False,
+        )
+        if not isinstance(self.tilts, tuple) or not self.tilts:
+            raise ValueError("anytime.tilts must be a non-empty array")
+        for index, tilt in enumerate(self.tilts):
+            _require_range(f"anytime.tilts[{index}]", tilt, minimum=1.0, minimum_inclusive=False)
+        if len(set(self.tilts)) != len(self.tilts):
+            raise ValueError("anytime.tilts must not contain duplicates")
+        if not isinstance(self.epoch_allocation, str) or self.epoch_allocation not in {
+            "per_epoch",
+            "geometric",
+        }:
+            raise ValueError(
+                "anytime.epoch_allocation must be 'per_epoch' or 'geometric', "
+                f"got {self.epoch_allocation!r}"
+            )
+
     @property
     def alpha_prime(self) -> float:
         """e-BH level after paying for nuisance coverage."""
@@ -153,12 +281,42 @@ class ProjectConfig:
     anytime: AnytimeConfig = field(default_factory=AnytimeConfig)
     inference: str = "fixed"
 
+    def __post_init__(self) -> None:
+        """Validate project, detector, and inference settings."""
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("project.name must be a non-empty string")
+        _require_int("project.canary_repetitions", self.canary_repetitions, minimum=2)
+        _require_int("project.rolling_window_cycles", self.rolling_window_cycles, minimum=1)
+        _require_range(
+            "detection.fdr_q",
+            self.fdr_q,
+            minimum=0.0,
+            maximum=1.0,
+            minimum_inclusive=False,
+            maximum_inclusive=False,
+        )
+        _require_int("detection.permutations", self.permutations, minimum=100)
+        _require_int("detection.seed", self.seed, minimum=0)
+        _require_range("detection.ph_lambda", self.ph_lambda, minimum=0.0, minimum_inclusive=False)
+        _require_range("detection.ph_delta", self.ph_delta, minimum=0.0)
+        if not isinstance(self.materiality, Materiality):
+            raise ValueError("materiality must be a Materiality configuration")
+        if not isinstance(self.embedder, str):
+            raise ValueError(f"embeddings.model must be a string, got {self.embedder!r}")
+        if not isinstance(self.anytime, AnytimeConfig):
+            raise ValueError("anytime must be an AnytimeConfig configuration")
+        if not isinstance(self.inference, str) or self.inference not in {"fixed", "anytime"}:
+            raise ValueError(
+                f"detection.inference must be 'fixed' or 'anytime', got {self.inference!r}"
+            )
+
     @classmethod
     def load(cls, project_dir: Path) -> ProjectConfig:
         """Load configuration from ``<project_dir>/config.toml``.
 
-        Missing keys fall back to the documented defaults; unknown keys are
-        ignored.
+        Missing keys fall back to the documented defaults. Unknown sections,
+        unknown fields, and values outside their documented domains are
+        rejected so a typo cannot silently weaken monitoring.
 
         Args:
             project_dir: The ``.dedrift`` directory.
@@ -170,40 +328,70 @@ class ProjectConfig:
         if not path.exists():
             return cls()
         data: dict[str, Any] = tomllib.loads(path.read_text(encoding="utf-8"))
-        project = data.get("project", {})
-        detection = data.get("detection", {})
-        materiality_raw = data.get("materiality", {})
-        embeddings = data.get("embeddings", {})
-        anytime_raw = data.get("anytime", {})
+        unknown_sections = sorted(set(data) - _TOP_LEVEL_KEYS)
+        if unknown_sections:
+            raise ValueError(f"unknown config section(s): {', '.join(unknown_sections)}")
+        project = _table(data, "project")
+        detection = _table(data, "detection")
+        materiality_raw = _table(data, "materiality")
+        embeddings = _table(data, "embeddings")
+        anytime_raw = _table(data, "anytime")
+        if "dispersion_ratio" in materiality_raw and "variance_ratio" in materiality_raw:
+            raise ValueError(
+                "materiality.dispersion_ratio and legacy materiality.variance_ratio "
+                "cannot both be set"
+            )
+        tilts_raw = anytime_raw.get("tilts", [1.5, 2.0, 3.0])
+        if not isinstance(tilts_raw, list) or not tilts_raw:
+            raise ValueError("anytime.tilts must be a non-empty array")
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float)) for value in tilts_raw
+        ):
+            raise ValueError("anytime.tilts must contain only numbers")
         anytime = AnytimeConfig(
-            alpha=float(anytime_raw.get("alpha", 0.05)),
-            gamma_total=float(anytime_raw.get("gamma_total", 0.02)),
-            tilts=tuple(float(x) for x in anytime_raw.get("tilts", (1.5, 2.0, 3.0))),
-            epoch_allocation=str(anytime_raw.get("epoch_allocation", "per_epoch")),
+            alpha=_toml_float(anytime_raw, "alpha", 0.05, section="anytime"),
+            gamma_total=_toml_float(anytime_raw, "gamma_total", 0.02, section="anytime"),
+            tilts=tuple(float(x) for x in tilts_raw),
+            epoch_allocation=_toml_string(
+                anytime_raw, "epoch_allocation", "per_epoch", section="anytime"
+            ),
         )
         materiality = Materiality(
-            refusal_rate_pp=float(materiality_raw.get("refusal_rate_pp", 2.0)),
-            format_validity_pp=float(materiality_raw.get("format_validity_pp", 1.0)),
-            rate_default_pp=float(materiality_raw.get("rate_default_pp", 2.0)),
-            scalar_cohen_d=float(materiality_raw.get("scalar_cohen_d", 0.5)),
-            ks_distance=float(materiality_raw.get("ks_distance", 0.15)),
-            dispersion_ratio=float(
-                materiality_raw.get("dispersion_ratio", materiality_raw.get("variance_ratio", 1.5))
+            refusal_rate_pp=_toml_float(
+                materiality_raw, "refusal_rate_pp", 2.0, section="materiality"
             ),
-            p95_relative=float(materiality_raw.get("p95_relative", 0.10)),
-            embedding_mmd2_floor=float(materiality_raw.get("embedding_mmd2_floor", -1.0)),
+            format_validity_pp=_toml_float(
+                materiality_raw, "format_validity_pp", 1.0, section="materiality"
+            ),
+            rate_default_pp=_toml_float(
+                materiality_raw, "rate_default_pp", 2.0, section="materiality"
+            ),
+            scalar_cohen_d=_toml_float(
+                materiality_raw, "scalar_cohen_d", 0.5, section="materiality"
+            ),
+            ks_distance=_toml_float(materiality_raw, "ks_distance", 0.15, section="materiality"),
+            dispersion_ratio=_toml_float(
+                materiality_raw,
+                ("dispersion_ratio" if "dispersion_ratio" in materiality_raw else "variance_ratio"),
+                1.5,
+                section="materiality",
+            ),
+            p95_relative=_toml_float(materiality_raw, "p95_relative", 0.10, section="materiality"),
+            embedding_mmd2_floor=_toml_float(
+                materiality_raw, "embedding_mmd2_floor", -1.0, section="materiality"
+            ),
         )
         return cls(
-            name=str(project.get("name", "default")),
-            canary_repetitions=int(project.get("canary_repetitions", 7)),
-            rolling_window_cycles=int(project.get("rolling_window_cycles", 5)),
-            fdr_q=float(detection.get("fdr_q", 0.05)),
-            permutations=int(detection.get("permutations", 500)),
-            seed=int(detection.get("seed", 1729)),
-            ph_lambda=float(detection.get("ph_lambda", 12.0)),
-            ph_delta=float(detection.get("ph_delta", 0.3)),
+            name=_toml_string(project, "name", "default", section="project"),
+            canary_repetitions=_toml_int(project, "canary_repetitions", 7, section="project"),
+            rolling_window_cycles=_toml_int(project, "rolling_window_cycles", 5, section="project"),
+            fdr_q=_toml_float(detection, "fdr_q", 0.05, section="detection"),
+            permutations=_toml_int(detection, "permutations", 500, section="detection"),
+            seed=_toml_int(detection, "seed", 1729, section="detection"),
+            ph_lambda=_toml_float(detection, "ph_lambda", 12.0, section="detection"),
+            ph_delta=_toml_float(detection, "ph_delta", 0.3, section="detection"),
             materiality=materiality,
-            embedder=str(embeddings.get("model", "")),
+            embedder=_toml_string(embeddings, "model", "", section="embeddings"),
             anytime=anytime,
-            inference=str(detection.get("inference", "fixed")),
+            inference=_toml_string(detection, "inference", "fixed", section="detection"),
         )

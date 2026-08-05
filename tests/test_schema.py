@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from dedrift.schema import (
     AgentConfig,
     InteractionInput,
@@ -25,9 +27,11 @@ def make_config(**overrides: object) -> AgentConfig:
 
 
 def make_record(**overrides: object) -> InteractionRecord:
+    marker = uuid4().hex
     base: dict[str, object] = {
         "source": Source.CANARY,
-        "canary_id": "canary-001",
+        "canary_id": f"canary-{marker}",
+        "cycle_id": "cycle-0001",
         "repetition": 1,
         "input": InteractionInput(text="hello"),
         "output": InteractionOutput(text="world", structured={"answer": "world"}),

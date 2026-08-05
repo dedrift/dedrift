@@ -26,7 +26,7 @@ import numpy as np
 import numpy.typing as npt
 
 from dedrift.schema import InteractionRecord
-from dedrift.store import Store
+from dedrift.store import Store, _atomic_private_writer, _harden_permissions
 
 EMBEDDER_FILE = "embedder.json"
 CACHE_FILE = "embedding_cache.npz"
@@ -129,21 +129,32 @@ def pin_embedder(store: Store, name: str) -> None:
     Raises:
         EmbedderMismatchError: If a different embedder is already pinned.
     """
-    current = get_pinned_embedder(store)
-    if current is not None and current != name:
-        msg = (
-            f"project embedder is pinned to {current!r}; refusing to switch to "
-            f"{name!r} — changing the embedder invalidates all history. "
-            "Start a new project if you truly intend this."
-        )
-        raise EmbedderMismatchError(msg)
-    path = store.project_dir / EMBEDDER_FILE
-    path.write_text(
-        json.dumps(
-            {"embedder": name, "pinned_at": datetime.now(timezone.utc).isoformat()}, indent=2
-        ),
-        encoding="utf-8",
-    )
+    conn = store.connect()
+    if conn.in_transaction:
+        raise RuntimeError("pin_embedder requires ownership of the SQLite transaction")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = get_pinned_embedder(store)
+        if current is not None and current != name:
+            msg = (
+                f"project embedder is pinned to {current!r}; refusing to switch to "
+                f"{name!r} — changing the embedder invalidates all history. "
+                "Start a new project if you truly intend this."
+            )
+            raise EmbedderMismatchError(msg)
+        if current is None:
+            path = store.project_dir / EMBEDDER_FILE
+            payload = json.dumps(
+                {"embedder": name, "pinned_at": datetime.now(timezone.utc).isoformat()},
+                indent=2,
+            ).encode("utf-8")
+            with _atomic_private_writer(path) as stream:
+                stream.write(payload)
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def get_pinned_embedder(store: Store) -> str | None:
@@ -151,6 +162,7 @@ def get_pinned_embedder(store: Store) -> str | None:
     path = store.project_dir / EMBEDDER_FILE
     if not path.exists():
         return None
+    _harden_permissions(path, 0o600)
     data = json.loads(path.read_text(encoding="utf-8"))
     return str(data["embedder"])
 
@@ -193,6 +205,7 @@ def embed_records(
     cache_path = store.project_dir / CACHE_FILE
     cached: dict[str, npt.NDArray[np.float64]] = {}
     if cache_path.exists():
+        _harden_permissions(cache_path, 0o600)
         with np.load(cache_path, allow_pickle=False) as data:
             cache_embedder = str(data["__embedder__"])
             if cache_embedder != name:
@@ -210,5 +223,6 @@ def embed_records(
         for record, vec in zip(missing, vectors, strict=True):
             cached[record.id] = np.asarray(vec, dtype=np.float64)
         payload: dict[str, Any] = {"__embedder__": np.asarray(name), **cached}
-        np.savez_compressed(cache_path, **payload)
+        with _atomic_private_writer(cache_path) as stream:
+            np.savez_compressed(stream, **payload)
     return {r.id: cached[r.id] for r in records}

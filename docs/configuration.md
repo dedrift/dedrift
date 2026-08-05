@@ -1,7 +1,9 @@
 # Configuration reference
 
 Everything lives in `.dedrift/config.toml`, created by `dedrift init`.
-Every key below is optional; omitted keys use the documented default.
+Every key below is optional; omitted keys use the documented default. Configuration is
+fail-closed: unknown sections, misspelled keys, wrong primitive types, non-finite numbers, and
+values outside the domains below stop the command with exit code 1 instead of being ignored.
 
 ```toml
 [project]
@@ -21,7 +23,7 @@ refusal_rate_pp = 2.0         # min refusal-rate shift, percentage points
 format_validity_pp = 1.0      # min format-validity shift, pp
 rate_default_pp = 2.0         # other rate signatures, pp
 ks_distance = 0.15            # min KS statistic D for KS alerts (see note)
-scalar_cohen_d = 0.5          # location gate for non-KS scalar channels
+scalar_cohen_d = 0.5          # reserved compatibility key; not an alert gate in v0.3.1
 dispersion_ratio = 1.5        # dispersion gate on the ROBUST scale the test
                               # uses (mean abs deviation from the median),
                               # not the sample variance
@@ -34,17 +36,40 @@ model = ""                    # set via `dedrift embedder pin`, not by hand
 
 ## Notes that matter
 
+Counts are validated before use: `canary_repetitions >= 2`,
+`rolling_window_cycles >= 1`, `permutations >= 100`, and `seed >= 0`.
+Probability budgets are strict interior probabilities (`0 < fdr_q < 1`,
+`0 < gamma_total < alpha < 1`). Percentage-point materiality gates are in
+`[0, 100]`, `ks_distance` is in `[0, 1]`, dispersion ratios are at least 1,
+and other scalar/tail gates are non-negative. The legacy `variance_ratio`
+name is accepted by itself, but setting it together with `dispersion_ratio`
+is an error.
+
 ### `canary_repetitions` (N)
 
 The single biggest power lever. The
 [power table](statistics.md#detection-power-the-honest-table) shows what
 each N buys; cost grows linearly.
 
+This project value is authoritative for both `dedrift canary run` and
+`dedrift sim`. A legacy `--repetitions N` argument is accepted only when it
+matches the project value; edit `config.toml` to change the experiment design.
+
 ### `fdr_q`
 
 Applied **once per check** across all primary tests (both baselines
 together). Corroboration tests (Anderson–Darling, Welch) never enter the
 pool and never alert.
+
+### `permutations`
+
+This is a requested minimum, not always the effective count. Add-one
+permutation p-values cannot be smaller than `1/(B+1)`, so the checker raises
+`B` to at least `ceil(m_upper/fdr_q)-1`, where `m_upper` conservatively bounds
+the full primary BH family. Both counts are persisted and printed. P95
+permutations run in bounded-memory chunks; semantic MMD still has quadratic
+kernel memory in the number of records and should be load-tested at your
+intended scale.
 
 ### `ks_distance`
 
@@ -62,8 +87,8 @@ Left at `-1`, the MMD² materiality floor is auto-calibrated per
 (baseline, family) as the 95th percentile of MMD² between pairs of the
 baseline's own cycles — an empirical null from known-same-distribution
 data, computed under the same kernel bandwidth as the observed statistic.
-Needs ≥ 3 reference cycles; below that the floor is 0 and the report says
-"uncalibratable".
+Needs ≥ 5 reference cycles. Below that the report says `UNCALIBRATED` and
+the MMD result cannot alert unless you configured an explicit floor.
 
 ### `ph_lambda`, `ph_delta`
 
@@ -102,14 +127,16 @@ tilts = [1.5, 2.0, 3.0]    # symmetrised to {psi, 1/psi}
 epoch_allocation = "per_epoch"   # or "geometric"
 ```
 
-Switches the inference layer from per-check FDR to e-processes with a
-lifetime guarantee. The trade — validity over an unbounded horizon, paid for
-in detection power — is quantified in
+Switches the inference layer from per-check FDR to lifetime-oriented rate
+e-processes. Per-process optional-stopping and per-check e-BH control are
+proven; repeated dependent e-BH has the causal assumption documented on the
+linked page. The power trade is quantified in
 [anytime-valid mode](anytime.md). Default stays `fixed`.
 
 ## Exit codes
 
 | Command | Exit | Meaning |
 |---|---|---|
-| `dedrift check` | 0 | OK (or NO REFERENCE) |
+| `dedrift check` | 0 | OK with valid evidence coverage |
 | `dedrift check` | 2 | DRIFT DETECTED — wire this to alerting |
+| `dedrift check` | 3 | Inconclusive: degraded, missing/invalid reference, or partial coverage |

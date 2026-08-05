@@ -2,16 +2,18 @@
 
 Every calibration number elsewhere in these docs is **per check**. Monitoring
 runs forever, so per-check control is the wrong guarantee: at the measured
-1.6% per-check rate, an unchanged agent checked hourly accrues roughly ten
+2.0% per-check rate, an unchanged agent checked hourly accrues roughly 14
 false alerts a month, and nothing in the fixed-sample theory bounds that
 accumulation.
 
-Anytime-valid mode replaces it with a statement that holds at every stopping
-time:
+Anytime mode replaces it with lifetime-oriented rate e-processes:
 
-!!! success "The guarantee"
-    Over an **unbounded** monitoring horizon, the probability of ever raising
-    a false alert on a stable agent is at most **α = 0.05** — **per epoch**.
+!!! info "The target and its boundary"
+    Per-process optional-stopping control and per-check e-BH control are
+    proven. The full repeated dependent battery targets an unbounded-horizon
+    false-alert budget of **α = 0.05 per epoch**, but that trajectory-wide
+    statement relies on the causal condition described below. It is measured,
+    not presented as an unconditional theorem.
 
 ```bash
 dedrift check --inference anytime
@@ -19,7 +21,7 @@ dedrift report --inference anytime --out report.md
 ```
 
 Default is `--inference fixed`. Read the rest of this page before switching,
-because the guarantee is bought with detection power and the exchange rate at
+because lifetime-oriented control is bought with detection power and the exchange rate at
 canary scale is steep.
 
 ## Measured, both directions
@@ -124,10 +126,13 @@ instrument are fixed. It ends when any of these change:
 - the pinned embedder
 - the golden baseline definition
 - the signature extractor
-- the judge version (if the judged tier contributes)
+- the anytime α/γ allocation, tilt grid, or allocation mode
 
 At an epoch boundary every e-process resets to zero wealth, and the report
-says so prominently.
+says so prominently. Epoch instances are globally monotone: changing A→B→A
+creates three epochs, never reuses A's old pool, ledger, or budget. A changed
+epoch begins *after* the cycle visible when it is declared; historical cycles
+are not replayed under a monitoring configuration chosen later.
 
 This is the correct semantics, not a weakened guarantee. Change the suite and
 you are testing a different null; evidence accumulated under the old one is
@@ -135,10 +140,10 @@ not evidence about the new one, so a guarantee spanning that change would be
 *meaningless* rather than stronger. If you re-baseline monthly, your claim is
 α per month — and you should know that rather than assume otherwise.
 
-For a genuine unbounded-epoch bound, `epoch_allocation = "geometric"` spends
-α·2⁻⁽ᵉ⁺¹⁾ on epoch *e* (zero-indexed), so the total across arbitrarily many
-epochs is exactly α. It costs power, and it is off by default because
-per-epoch is the honest reading.
+For a summable cross-epoch target, `epoch_allocation = "geometric"` allocates
+both α′ and γ_total by `2⁻⁽ᵉ⁺¹⁾` on globally monotone epoch *e*. Allocating
+only α′ while re-spending γ would not be summable. It costs power and is off
+by default.
 
 ## What is proven and what is measured
 
@@ -183,6 +188,12 @@ a tilt from a materiality band, which would aim the bets at effects you have
 declared you care about, but the shipped default does not call it. The grid
 is a constant, not an aimed one.
 
+Anytime mode therefore has **no post-hoc materiality gate in v0.3.1**. Its
+alerts test rate stability with configured bets, while fixed-mode alerts also
+apply observed-effect thresholds. The two modes do not currently represent
+the same practical hypothesis; use anytime for sequential rate surveillance
+and fixed mode for the broader, effect-screened diagnostic battery.
+
 ## Current scope
 
 Only the **rate channel** (refusal, format validity, schema conformance,
@@ -214,9 +225,8 @@ Log-wealth is accumulated evidence since the epoch began.
 - **Rising** — evidence against stability. The cycle where the rise began is
   reported as the onset estimate, and it feeds attribution better than the
   Page–Hinkley change point it replaces.
-- **Negative** — the bets have lost, which is evidence *for* stability.
-  Worth pausing on: the fixed-sample path has no way to express "the agent
-  looks actively fine", only "not significant".
+- **Negative** — the configured bets have lost. This is not affirmative
+  evidence of stability and must not be presented as certification.
 - **Crossing log(1/α′)** — the process alone would reject; whether it alerts
   is decided by e-BH across the battery.
 
@@ -256,7 +266,7 @@ would be measuring the wrong thing.
 ## The assumption behind the coverage budget
 
 γ buys a Clopper–Pearson interval that covers the true reference rate, and
-the whole lifetime guarantee holds *on that coverage event*. Clopper–Pearson
+the per-process construction is valid *on that coverage event*. Clopper–Pearson
 coverage assumes the reference is a binomial sample from the rate you are
 trying to bound. A golden baseline is a set of cycles **you declared
 known-good** — a selected sample. Selecting toward quiet cycles biases the

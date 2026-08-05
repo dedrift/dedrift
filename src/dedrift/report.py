@@ -8,6 +8,7 @@ from jinja2 import Environment
 
 from dedrift.attribution import Attribution, attribute
 from dedrift.check import CheckResult
+from dedrift.schema import Source
 from dedrift.signatures import signatures_frame
 from dedrift.store import Store
 
@@ -17,12 +18,35 @@ _TEMPLATE = """\
 # dedrift report — {{ verdict }}
 
 Generated for cycle `{{ r.current_cycle }}` (check ts {{ r.ts }}; seed {{ r.seed }};
-FDR q = {{ r.fdr_q }}). Same logs + same config reproduce this report exactly.
+BH target q = {{ r.fdr_q }}). Re-rendering this recorded check against the same log
+snapshot reproduces its evidence exactly.
+
+Permutation resamples: {{ r.permutations_effective }} effective
+({{ r.permutations_requested }} configured), sized against a conservative
+primary-family upper bound of {{ r.primary_family_upper_bound }} so an
+isolated permutation result can reach the first BH threshold.
 
 | Comparison | Reference | Verdict |
 |---|---|---|
 | Sudden (rolling window) | {{ r.rolling_cycles | join(', ') or '—' }} | **{{ r.verdict_sudden }}** |
 | Cumulative (golden baseline) | {{ r.golden_cycles | join(', ') or '—' }} | **{{ r.verdict_cumulative }}** |
+
+## Evidence coverage
+
+| Baseline | Coverage | Families tested | Valid primary tests | Undefined primary tests | Power |
+|---|---|---:|---:|---:|---|
+{% for a in r.assessments -%}
+| {{ a.baseline }} | **{{ a.coverage_status }}** | {{ a.n_families_tested }}/{{ a.n_families_total }} | {{ a.n_valid_primary_tests }} | {{ a.n_undefined_primary_tests }} | {{ a.power_status }} |
+{% endfor %}
+
+`OK` is possible only with full family coverage and at least one finite
+primary test. **Power is not assessed:** a defined test is not evidence that
+the configured suite can detect a business-relevant shift. Declare an
+alternative and target power before using this result as a release gate.
+{% if verdict in ('NO VALID COMPARISON', 'PARTIAL COVERAGE', 'NO REFERENCE') %}
+> **INCOMPLETE EVIDENCE:** `{{ verdict }}` is not a green result. Do not treat
+> it as evidence of stability.
+{% endif %}
 {% if r.degraded %}
 > **DEGRADED DATA:** more than {{ degraded_pct }}% of current-cycle records carry
 > errors. Drift conclusions are suppressed; fix data collection first.
@@ -38,11 +62,45 @@ FDR q = {{ r.fdr_q }}). Same logs + same config reproduce this report exactly.
 {% endfor %}
 {% endif %}
 
+## Correctness evaluation
+
+{% if correctness.n_records %}
+`exact_match` evaluated {{ correctness.n_records }} record(s) using
+`structured_expected_subset.v1`: every expected structured key/value must
+match, while additional output fields are allowed. This preserves the
+historical behavior; the name states its narrower meaning honestly.
+{% else %}
+No record carried an executable `expected` contract, so this check makes no
+structured-answer correctness claim.
+{% endif %}
+{% if correctness.rubric_ids %}
+Rubric identities preserved in these logs: {{ correctness.rubric_ids | join(', ') }}.
+The fixed checker **does not execute rubric/LLM judges**; rubric IDs are
+provenance only and do not create a correctness signature.
+{% endif %}
+{% if r.mmd_floors %}
+
+## Semantic materiality floors
+
+| Baseline | Family | MMD² floor | Status | Reference cycles |
+|---|---|---:|---|---:|
+{% for floor in r.mmd_floors -%}
+| {{ floor.baseline }} | {{ floor.family }} | {{ '%.4g' | format(floor.value) if floor.value is not none else '—' }} | **{{ floor.status }}** | {{ floor.n_reference_cycles }} |
+{% endfor %}
+
+An `UNCALIBRATED` auto-floor is fail-closed: its MMD result remains visible,
+but cannot become an alert. Configure an explicit floor or provide at least
+five known-good reference cycles.
+{% endif %}
+
 ## Alerts ({{ alerts | length }})
 
 {% if alerts %}
-Alerts require BOTH Benjamini-Hochberg significance at q = {{ r.fdr_q }} AND a
-material effect (configured per channel). Effects are shown in plain units.
+Alerts require BOTH Benjamini-Hochberg-adjusted equality-test significance at
+q = {{ r.fdr_q }} AND an observed material effect. Ordinary BH needs
+independence/PRDS (not established for this battery), and this post-filter is
+not a formal test of the practical composite null. Effects are shown in plain
+units; confirm near-threshold alerts.
 
 | Baseline | Family | Signature | Test | Effect | p (BH-adjusted) |
 |---|---|---|---|---|---|
@@ -103,7 +161,7 @@ No config events recorded.
 
 ## Appendix — all non-alerting results
 
-Results marked significant survived FDR but failed materiality; dedrift
+Results marked significant survived BH adjustment but failed materiality; dedrift
 deliberately does not alert on them. Anderson-Darling and Welch run as
 corroboration OUTSIDE the FDR pool (they test the same hypothesis as KS on
 the same data); their raw p-values are shown for context and never alert.
@@ -122,17 +180,26 @@ _ANYTIME_TEMPLATE = """\
 Cycle `{{ r.current_cycle }}`, epoch fingerprint `{{ r.fingerprint }}`
 (check ts {{ r.ts }}).
 
-## The guarantee, stated exactly
+## Error-control target and evidence status
 
-Over an **unbounded** monitoring horizon, the probability of ever raising a
-false alert on a stable agent is at most **α = {{ r.alpha }}** — *per epoch*.
+The construction targets an **unbounded-horizon** false-alert budget **per epoch**
+budget of **α = {{ r.alpha }}**. Per-process optional-stopping control and
+per-check e-BH control are proven. Repeated e-BH over this dependent battery
+still relies on the causal condition described below, so the package does
+not present the trajectory-wide target as an unconditional theorem.
+
+Current rate-channel evidence coverage: **{{ r.coverage_status }}**.
+{% if r.coverage_status != 'FULL' %}
+> **INCOMPLETE EVIDENCE:** this is not a green result.{% if r.suppressed_families %}
+> Uncovered/suppressed families: {{ r.suppressed_families | join(', ') }}.{% endif %}
+{% endif %}
 
 | Component | Value | What it pays for |
 |---|---|---|
 | α (lifetime, battery-wide) | {{ r.alpha }} | the whole claim |
 | α′ (e-BH level) | {{ '%.4g' | format(r.alpha_prime) }} | multiplicity across {{ r.n_processes }} e-processes |
 | γ total | {{ r.gamma_total }} | nuisance-parameter coverage |
-| γ per process | {{ '%.2e' | format(r.gamma_per_process) }} | γ total ÷ {{ r.n_processes }} |
+| γ per process | {{ '%.2e' | format(r.gamma_per_process) }} | {{ 'γ total ÷ ' ~ r.n_processes if r.n_processes else 'no active process' }} |
 
 {% if r.pool_declared_now %}
 The pool of {{ r.n_processes }} e-processes was **declared at this check** —
@@ -168,8 +235,8 @@ from this cycle.
 {% endif %}
 {% if r.degraded %}
 > **DEGRADED DATA:** too many current-cycle records carry errors. Alerts are
-> suppressed; e-values were still accumulated because a suppressed cycle
-> contributes `E_t = 1` exactly, which preserves the supermartingale.
+> suppressed; the cycle was folded with `E_t = 1`, while sufficient
+> statistics and wealth remained unchanged.
 {% endif %}
 
 ## Alerts ({{ alerts | length }})
@@ -190,8 +257,8 @@ process.
 ## All e-processes
 
 Wealth is the accumulated evidence *since the epoch began*. Negative means
-the bets have lost — evidence **for** stability, which the fixed-sample path
-cannot express. "Bets" counts cycles where a bet was admissible; a
+the configured bets have lost; it is **not** affirmative evidence of
+stability. "Bets" counts cycles where a bet was admissible; a
 suppressed or degenerate cycle contributes exactly 1 (log 0) and is not a
 missing update.
 
@@ -307,7 +374,28 @@ def render_report(store: Store, result: CheckResult) -> str:
     Returns:
         Markdown text; deterministic given identical logs and config.
     """
-    records = [r for r in store.read_records() if r.cycle_id is not None]
+    if result.snapshot_record_ids:
+        snapshot = store.read_records_by_ids(result.snapshot_record_ids)
+    else:
+        # Compatibility for programmatically constructed/older CheckResult
+        # objects that predate persisted snapshot IDs.
+        logged = store.read_records()
+        positions = [
+            index
+            for index, record in enumerate(logged)
+            if record.source == Source.CANARY and record.cycle_id == result.current_cycle
+        ]
+        snapshot = logged[: positions[-1] + 1] if positions else []
+    if not any(
+        record.source == Source.CANARY and record.cycle_id == result.current_cycle
+        for record in snapshot
+    ):
+        raise ValueError(f"check cycle {result.current_cycle!r} is absent from the canary log")
+    records = [
+        record
+        for record in snapshot
+        if record.source == Source.CANARY and record.cycle_id is not None
+    ]
     frame = signatures_frame(records)
     cycles = list(dict.fromkeys(frame["cycle_id"]))
 
@@ -332,12 +420,14 @@ def render_report(store: Store, result: CheckResult) -> str:
     env.filters["effect"] = _effect_str
     template = env.from_string(_TEMPLATE)
 
-    if result.degraded:
-        verdict = "DEGRADED DATA"
-    elif result.n_alerts > 0:
-        verdict = "DRIFT DETECTED"
-    else:
-        verdict = "OK"
+    verdict = result.overall_verdict
+
+    evaluated = frame[frame["exact_match"].notna()]
+    rubric_ids = sorted(str(value) for value in frame["rubric_id"].dropna().unique() if str(value))
+    correctness = {
+        "n_records": len(evaluated),
+        "rubric_ids": rubric_ids,
+    }
 
     non_alerts = sorted(
         (t for t in result.tests if not t.alert),
@@ -356,7 +446,8 @@ def render_report(store: Store, result: CheckResult) -> str:
         alerts=result.alerts(),
         attributions=attributions,
         sparklines=spark_rows,
-        config_events=store.config_events(),
+        config_events=store.config_events({record.id for record in snapshot}),
         non_alerts=non_alerts,
         degraded_pct=20,
+        correctness=correctness,
     )

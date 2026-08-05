@@ -12,7 +12,7 @@ hide:
 
 <p class="dd-sub">
 dedrift catches silent behavioral drift in AI agents — with calibrated
-false-alarm rates, FDR-controlled alerting, and config-change attribution.
+false-alarm rates, multiplicity-adjusted alerting, and config-change attribution.
 Every statistical claim is enforced by simulation tests that run in CI.
 </p>
 
@@ -48,7 +48,7 @@ silent updates — all shift agent behavior without a single error in your logs.
 
     ---
 
-    Benjamini–Hochberg FDR across every test in the check, then a
+    Benjamini–Hochberg adjustment across every primary test in the check, then an observed
     materiality gate on effect size. Statistically significant but
     practically trivial? You don't get paged.
 
@@ -105,8 +105,8 @@ onset.
 <p class="dd-section-sub">
 Every detector's false-alarm rate is measured against a documented
 acceptance band by simulation tests that run in CI on every commit. The
-full pipeline's null alert rate: 8 of 500 stable-agent checks (Wilson 95%
-upper bound 0.031). The parts that aren't calibrated — the diagnostic flag
+full pipeline's null alert rate: 10 of 500 stable-agent checks (Wilson 95%
+upper bound 0.0364). The parts that aren't calibrated — the diagnostic flag
 channel — carry their measured rate too, because honesty is the product.
 </p>
 

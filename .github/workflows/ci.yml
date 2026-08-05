@@ -2,8 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -29,14 +31,35 @@ jobs:
       - name: Unit tests
         run: pytest -m "not calibration and not power"
       - name: Calibration & power tests
-        # Exit code 5 = no tests collected; tolerated until the detector
-        # calibration/power suites land in Phase 2, then enforced as usual.
+        if: matrix.python-version == '3.12'
+        run: pytest -m "calibration or power"
+
+  package:
+    name: Built-wheel smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build wheel and source distribution
         run: |
-          set +e
-          pytest -m "calibration or power"
-          rc=$?
-          if [ "$rc" -eq 5 ]; then
-            echo "No calibration/power tests yet (Phase 2)."
-            exit 0
-          fi
-          exit "$rc"
+          python -m pip install --upgrade build
+          python -m build
+      - name: Install and verify the wheel in isolation
+        run: |
+          python -m venv /tmp/dedrift-wheel-smoke
+          /tmp/dedrift-wheel-smoke/bin/python -m pip install dist/*.whl
+          /tmp/dedrift-wheel-smoke/bin/python -m pip check
+          /tmp/dedrift-wheel-smoke/bin/python - <<'PY'
+          from importlib.metadata import version
+
+          import dedrift
+
+          assert dedrift.__version__ == version("dedrift"), (
+              dedrift.__version__,
+              version("dedrift"),
+          )
+          PY
+          /tmp/dedrift-wheel-smoke/bin/dedrift --help

@@ -1,9 +1,11 @@
 """Benjamini-Hochberg false discovery rate control (SPEC.md §6, principle 3).
 
-All p-valued tests in a check pass through here before any alert can exist.
-BH is valid under independence and positive regression dependence (PRDS);
-our per-family test batteries are positively correlated (KS/AD/Welch on the
-same data), which PRDS covers.
+All primary p-valued tests in a check pass through here before any alert can
+exist. BH is valid under independence and PRDS, but this package's shared,
+two-sided test battery has no established PRDS result. The default pipeline's
+simulation calibration is therefore the operative evidence; this function
+must not be described as arbitrary-dependence FDR control. Corroboration tests
+(AD/Welch) are excluded from the pool upstream.
 """
 
 from __future__ import annotations
@@ -14,8 +16,10 @@ import numpy as np
 def benjamini_hochberg(p_values: list[float], q: float = 0.05) -> tuple[list[bool], list[float]]:
     """Apply the BH step-up procedure.
 
-    NaN p-values (degenerate tests) are never rejected and receive adjusted
-    p-value NaN; they do not count toward the number of tests m.
+    NaN p-values (degenerate declared tests) are conservatively treated as
+    p=1 when determining the family size, but remain unrejected and display
+    adjusted p-value NaN. Dropping them would make multiplicity depend on the
+    observed data and can make the procedure more liberal.
 
     Args:
         p_values: Raw p-values, one per test.
@@ -28,13 +32,14 @@ def benjamini_hochberg(p_values: list[float], q: float = 0.05) -> tuple[list[boo
     n = len(p)
     rejected = [False] * n
     adjusted: list[float] = [float("nan")] * n
-    valid = np.where(~np.isnan(p))[0]
-    m = len(valid)
+    valid_mask = ~np.isnan(p)
+    m = n
     if m == 0:
         return rejected, adjusted
 
-    order = valid[np.argsort(p[valid])]
-    sorted_p = p[order]
+    working = np.where(valid_mask, p, 1.0)
+    order = np.argsort(working)
+    sorted_p = working[order]
     ranks = np.arange(1, m + 1)
 
     # Adjusted p-values: monotone step-up.
@@ -46,7 +51,8 @@ def benjamini_hochberg(p_values: list[float], q: float = 0.05) -> tuple[list[boo
     k = threshold_idx.max() + 1 if len(threshold_idx) else 0
 
     for rank_pos, original_idx in enumerate(order):
-        adjusted[int(original_idx)] = float(adj[rank_pos])
-        if rank_pos < k:
+        if valid_mask[original_idx]:
+            adjusted[int(original_idx)] = float(adj[rank_pos])
+        if rank_pos < k and valid_mask[original_idx]:
             rejected[int(original_idx)] = True
     return rejected, adjusted

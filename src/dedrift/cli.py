@@ -7,6 +7,8 @@ Phases 0-1 expose ``init``, ``log``, ``sim``, ``canary run``, and
 from __future__ import annotations
 
 import importlib
+import re
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -30,6 +32,32 @@ baseline_app = typer.Typer(help="Golden baseline management.", no_args_is_help=T
 app.add_typer(baseline_app, name="baseline")
 embedder_app = typer.Typer(help="Pinned-embedder management.", no_args_is_help=True)
 app.add_typer(embedder_app, name="embedder")
+cycle_app = typer.Typer(help="Canary-cycle lifecycle operations.", no_args_is_help=True)
+app.add_typer(cycle_app, name="cycle")
+
+
+def _load_project_config(store: Store) -> ProjectConfig:
+    """Load a project config and turn validation errors into CLI errors."""
+    from dedrift.config import ProjectConfig
+
+    try:
+        return ProjectConfig.load(store.project_dir)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Invalid {store.config_path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _project_repetitions(store: Store, requested: int | None) -> int:
+    """Return authoritative project repetitions, rejecting CLI conflicts."""
+    configured = _load_project_config(store).canary_repetitions
+    if requested is not None and requested != configured:
+        typer.echo(
+            f"--repetitions={requested} conflicts with project.canary_repetitions="
+            f"{configured}; edit {store.config_path} to change the project design.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return configured
 
 
 @embedder_app.command("pin")
@@ -87,6 +115,20 @@ def init(
 @app.command()
 def log(
     file: Annotated[Path, typer.Argument(help="JSONL file of InteractionRecords to ingest.")],
+    finalize_cycles: Annotated[
+        bool,
+        typer.Option(
+            "--finalize-cycles/--keep-cycles-open",
+            help=(
+                "Mark canary cycles in this file complete. The safe default keeps them "
+                "open for streaming; finalize explicitly before checking."
+            ),
+        ),
+    ] = False,
+    expected_records: Annotated[
+        int | None,
+        typer.Option(help="Expected records in each canary cycle (validated on finalization)."),
+    ] = None,
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
     """Ingest agent interaction records from a JSONL file."""
@@ -94,21 +136,75 @@ def log(
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
+    if expected_records is not None and expected_records < 1:
+        typer.echo("--expected-records must be >= 1", err=True)
+        raise typer.Exit(code=1)
     records: list[InteractionRecord] = []
-    with file.open("r", encoding="utf-8") as f:
-        for i, line in enumerate(f, start=1):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                records.append(InteractionRecord.from_jsonl(stripped))
-            except ValueError as exc:
-                typer.echo(f"Line {i}: invalid record: {exc}", err=True)
-                raise typer.Exit(code=1) from exc
-    with store:
-        store.append_many(records)
-        total = store.count_records()
-    typer.echo(f"Ingested {len(records)} records ({total} total).")
+    try:
+        with file.open("r", encoding="utf-8") as f:
+            for line_number, line in enumerate(f, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    records.append(InteractionRecord.from_jsonl(stripped))
+                except ValueError as exc:
+                    typer.echo(f"Line {line_number}: invalid record: {exc}", err=True)
+                    raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"Could not read {file}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    cycle_ids = sorted(
+        {
+            str(record.cycle_id)
+            for record in records
+            if record.source.value == "canary" and record.cycle_id is not None
+        }
+    )
+    expected_counts = (
+        {cycle_id: expected_records for cycle_id in cycle_ids}
+        if expected_records is not None
+        else None
+    )
+    try:
+        with store:
+            store.append_many(
+                records,
+                finalize_cycles=finalize_cycles,
+                expected_cycle_counts=expected_counts,
+            )
+            total = store.count_records()
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not ingest records: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    lifecycle = "finalized" if finalize_cycles else "left open"
+    typer.echo(
+        f"Ingested {len(records)} records ({total} total); "
+        f"{len(cycle_ids)} canary cycle(s) {lifecycle}."
+    )
+
+
+@cycle_app.command("finalize")
+def cycle_finalize(
+    cycle_id: Annotated[str, typer.Argument(help="Canary cycle ID to mark complete.")],
+    expected_records: Annotated[
+        int | None,
+        typer.Option(help="Exact record count expected for this cycle."),
+    ] = None,
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Finalize a streamed canary cycle so checks may consume it."""
+    store = Store(path)
+    if not store.exists():
+        typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        with store:
+            store.finalize_cycle(cycle_id, expected_records=expected_records)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not finalize cycle: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Finalized canary cycle {cycle_id!r}.")
 
 
 @app.command()
@@ -119,7 +215,15 @@ def sim(
         typer.Option(help="Cycle at which a scripted model swap shifts behavior (default: none)."),
     ] = None,
     canaries: Annotated[int, typer.Option(help="Number of distinct canaries.")] = 30,
-    repetitions: Annotated[int, typer.Option(help="Repetitions per canary per cycle.")] = 7,
+    repetitions: Annotated[
+        int | None,
+        typer.Option(
+            help=(
+                "Compatibility check for project.canary_repetitions; omit to use the "
+                "authoritative project value."
+            )
+        ),
+    ] = None,
     seed: Annotated[int, typer.Option(help="Random seed (reproducible).")] = 1729,
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
@@ -128,27 +232,69 @@ def sim(
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
+    if cycles < 1 or canaries < 1 or seed < 0 or (change_cycle is not None and change_cycle < 0):
+        typer.echo(
+            "--cycles and --canaries must be >= 1; --seed and --change-cycle must be >= 0",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    effective_repetitions = _project_repetitions(store, repetitions)
     config = SimConfig(
         n_canaries=canaries,
-        repetitions=repetitions,
+        repetitions=effective_repetitions,
         change_cycle=change_cycle,
         seed=seed,
     )
     if change_cycle is not None:
         config = SimConfig(
             n_canaries=canaries,
-            repetitions=repetitions,
+            repetitions=effective_repetitions,
             pre=config.pre,
             post=drifted_profile(config.pre),
             change_cycle=change_cycle,
             seed=seed,
         )
-    agent = SimAgent(config)
-    records = agent.run_cycles(cycles)
     with store:
-        store.append_many(records)
-        events = store.config_events()
-    typer.echo(f"Simulated {cycles} cycles: {len(records)} records.")
+        existing_cycles = {
+            record.cycle_id
+            for record in store.read_records()
+            if record.source.value == "canary" and record.cycle_id is not None
+        }
+    numeric_cycles = [
+        int(match.group(1))
+        for cycle_id in existing_cycles
+        if (match := re.fullmatch(r"cycle-(\d+)", cycle_id)) is not None
+    ]
+    start_cycle = max(numeric_cycles, default=-1) + 1
+    # Fast-forward the seeded simulator so repeated CLI invocations are the
+    # same deterministic history as one longer invocation (RNG, timestamps,
+    # record IDs, and change-cycle semantics all remain aligned).
+    agent = SimAgent(config)
+    generated = agent.run_cycles(start_cycle + cycles)
+    records = [
+        record
+        for record in generated
+        if record.cycle_id is not None and int(record.cycle_id.rsplit("-", 1)[1]) >= start_cycle
+    ]
+    try:
+        with store:
+            expected_counts = {
+                f"cycle-{cycle:04d}": canaries * effective_repetitions
+                for cycle in range(start_cycle, start_cycle + cycles)
+            }
+            store.append_many(
+                records,
+                finalize_cycles=True,
+                expected_cycle_counts=expected_counts,
+            )
+            events = store.config_events()
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not persist simulation: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Simulated {cycles} cycles ({start_cycle}..{start_cycle + cycles - 1}): "
+        f"{len(records)} records."
+    )
     typer.echo(f"Config events in timeline: {len(events)}.")
     if change_cycle is not None:
         typer.echo(f"Scripted model swap at cycle {change_cycle} (simmodel@v1 -> v2).")
@@ -181,7 +327,15 @@ def canary_run(
     rag_index_version: Annotated[
         str | None, typer.Option(help="Agent stack: RAG index version.")
     ] = None,
-    repetitions: Annotated[int, typer.Option(help="N repetitions per canary.")] = 7,
+    repetitions: Annotated[
+        int | None,
+        typer.Option(
+            help=(
+                "Compatibility check for project.canary_repetitions; omit to use the "
+                "authoritative project value."
+            )
+        ),
+    ] = None,
     cycles: Annotated[int, typer.Option(help="Number of cycles to run.")] = 1,
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
@@ -192,28 +346,42 @@ def canary_run(
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
-    loaded_suite = CanarySuite.from_yaml(suite)
-    agent_fn = _load_agent_fn(agent)
-    config = AgentConfig(
-        model=model,
-        prompt_hash=prompt_hash,
-        tool_schema_hash=tool_schema_hash,
-        rag_index_version=rag_index_version,
-        agent_version=agent_version,
-    )
+    if cycles < 1:
+        typer.echo("--cycles must be >= 1", err=True)
+        raise typer.Exit(code=1)
+    effective_repetitions = _project_repetitions(store, repetitions)
+    try:
+        loaded_suite = CanarySuite.from_yaml(suite)
+        agent_fn = _load_agent_fn(agent)
+        agent_config = AgentConfig(
+            model=model,
+            prompt_hash=prompt_hash,
+            tool_schema_hash=tool_schema_hash,
+            rag_index_version=rag_index_version,
+            agent_version=agent_version,
+        )
+    except typer.Exit:
+        raise
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Could not prepare canary run: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     runner = CanaryRunner(
         loaded_suite,
         agent_fn,  # type: ignore[arg-type]
-        config,
-        repetitions=repetitions,
+        agent_config,
+        repetitions=effective_repetitions,
     )
-    with store:
-        for _ in range(cycles):
-            records = runner.run_cycle(store=store)
-            typer.echo(f"Cycle {records[0].cycle_id}: {len(records)} records.")
+    try:
+        with store:
+            for _ in range(cycles):
+                records = runner.run_cycle(store=store)
+                typer.echo(f"Cycle {records[0].cycle_id}: {len(records)} records.")
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not persist canary cycle: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(
         f"Ran {cycles} cycle(s) of suite v{loaded_suite.version} "
-        f"({len(loaded_suite.canaries)} canaries x {repetitions} repetitions)."
+        f"({len(loaded_suite.canaries)} canaries x {effective_repetitions} repetitions)."
     )
 
 
@@ -236,7 +404,7 @@ def signatures(
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
     with store:
-        records = [r for r in store.read_records() if r.cycle_id is not None]
+        records, _snapshot_offset = store.read_finalized_canary_snapshot()
     if not records:
         typer.echo("No canary records with cycle IDs found.")
         raise typer.Exit(code=0)
@@ -287,20 +455,29 @@ def baseline_set(
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
     with store:
+        selectors = int(bool(cycle_ids)) + int(last is not None) + int(first is not None)
+        if selectors != 1:
+            typer.echo("Choose exactly one: cycle IDs, --first N, or --last N.", err=True)
+            raise typer.Exit(code=1)
+        if (last is not None and last < 1) or (first is not None and first < 1):
+            typer.echo("--first and --last must be >= 1.", err=True)
+            raise typer.Exit(code=1)
         if last is not None or first is not None:
-            records = [r for r in store.read_records() if r.cycle_id is not None]
+            records, _snapshot_offset = store.read_finalized_canary_snapshot()
             if not records:
                 typer.echo("No canary cycles found.", err=True)
                 raise typer.Exit(code=1)
             frame = signatures_frame(records)
             cycles = list(dict.fromkeys(frame["cycle_id"]))
             chosen = cycles[:first] if first is not None else cycles[-(last or 0) :]
-        elif cycle_ids:
-            chosen = list(cycle_ids)
         else:
-            typer.echo("Provide cycle IDs, --first N, or --last N.", err=True)
-            raise typer.Exit(code=1)
-        set_golden_baseline(store, chosen)
+            assert cycle_ids
+            chosen = list(cycle_ids)
+        try:
+            set_golden_baseline(store, chosen)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            typer.echo(f"Could not set golden baseline: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
         typer.echo(f"Golden baseline frozen: {get_golden_baseline(store)}")
 
 
@@ -313,21 +490,20 @@ def check(
             "--inference",
             help=(
                 "fixed = per-check FDR (default, the reference implementation); "
-                "anytime = e-processes with a lifetime guarantee. Both run on "
-                "identical logs, so results are directly comparable."
+                "anytime = lifetime-oriented e-processes (rate channel only; "
+                "trajectory-wide control has a documented causal assumption)."
             ),
         ),
     ] = "",
 ) -> None:
     """Run the gated drift check for the latest cycle (dual baselines)."""
     from dedrift.check import run_check
-    from dedrift.config import ProjectConfig
 
     store = Store(path)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
-    cfg = ProjectConfig.load(store.project_dir)
+    cfg = _load_project_config(store)
     mode = inference or cfg.inference
     if mode not in ("fixed", "anytime"):
         typer.echo(f"--inference must be 'fixed' or 'anytime', got {mode!r}", err=True)
@@ -335,9 +511,14 @@ def check(
     if mode == "anytime":
         _check_anytime(store, cfg)
         return
-    with store:
-        result = run_check(store)
+    try:
+        with store:
+            result = run_check(store, config=cfg)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not run check: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Current cycle: {result.current_cycle}")
+    typer.echo(f"Overall: {result.overall_verdict}")
     typer.echo(f"Sudden (vs rolling {len(result.rolling_cycles)} cycles): {result.verdict_sudden}")
     typer.echo(
         f"Cumulative (vs golden {len(result.golden_cycles)} cycles): {result.verdict_cumulative}"
@@ -349,22 +530,31 @@ def check(
             f"COMPOSITION MISMATCH [{c.baseline}] {c.family}: {c.detail} "
             "(comparison suppressed — not drift)"
         )
-    typer.echo(f"Alerts: {result.n_alerts} (q={result.fdr_q}, materiality-gated)")
+    typer.echo(
+        f"Alerts: {result.n_alerts} "
+        f"(BH-adjusted equality tests q={result.fdr_q}, observed-effect gated)"
+    )
     for a in result.alerts()[:10]:
         typer.echo(
             f"  [{a.baseline}] {a.family}/{a.signature} {a.outcome.test}: "
             f"effect={a.outcome.effect_size:+.3f}, p_adj={a.p_adjusted:.4g}"
         )
-    if result.n_alerts > 0:
+    if result.overall_verdict == "DRIFT DETECTED":
         raise typer.Exit(code=2)
+    if result.overall_verdict != "OK":
+        raise typer.Exit(code=3)
 
 
 def _check_anytime(store: Store, cfg: ProjectConfig) -> None:
     """Render the anytime-valid check. Exit 2 on drift, matching `fixed`."""
     from dedrift.anytime import run_anytime_check
 
-    with store:
-        res = run_anytime_check(store, cfg)
+    try:
+        with store:
+            res = run_anytime_check(store, cfg)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not run anytime check: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Current cycle: {res.current_cycle}   epoch fingerprint {res.fingerprint}")
     typer.echo(
         f"Anytime-valid: alpha={res.alpha} = alpha'({res.alpha_prime}) "
@@ -372,6 +562,9 @@ def _check_anytime(store: Store, cfg: ProjectConfig) -> None:
         f"gamma per process {res.gamma_per_process:.2e}"
     )
     typer.echo(f"Verdict: {res.verdict}")
+    typer.echo(f"Rate-channel coverage: {res.coverage_status}")
+    if res.suppressed_families:
+        typer.echo("Uncovered/suppressed families: " + ", ".join(res.suppressed_families))
     for notice in res.resets:
         typer.echo(f"  RESET {notice}")
     if res.degraded:
@@ -384,12 +577,18 @@ def _check_anytime(store: Store, cfg: ProjectConfig) -> None:
         typer.echo("Highest wealth (no alert):")
         for p in top:
             typer.echo(f"  {p.label}: log-wealth={p.log_wealth:.2f} over {p.cycles} cycles")
-    typer.echo(
-        "Guarantee: P(ever alerting on a stable agent) <= alpha, PER EPOCH "
-        "(a suite/embedder/baseline change resets the evidence)."
-    )
+    if res.n_processes:
+        typer.echo(
+            "Target: P(ever alerting on a stable agent) <= alpha, PER EPOCH. "
+            "Per-process control is proven; repeated battery-wide e-BH relies "
+            "on the documented causal assumption."
+        )
+    else:
+        typer.echo("Anytime error-control target not active: no valid processes.")
     if res.n_alerts:
         raise typer.Exit(code=2)
+    if res.degraded or res.verdict != "OK" or res.n_processes == 0:
+        raise typer.Exit(code=3)
 
 
 @app.command()
@@ -402,37 +601,51 @@ def report(
         str,
         typer.Option(
             "--inference",
-            help="fixed (p-values, default) or anytime (e-processes, lifetime guarantee).",
+            help="fixed (p-values, default) or anytime (lifetime-oriented rate e-processes).",
         ),
     ] = "",
 ) -> None:
     """Run a check and render the full markdown report."""
     from dedrift.check import run_check
-    from dedrift.config import ProjectConfig
     from dedrift.report import render_anytime_report, render_report
 
     store = Store(path)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
-    cfg = ProjectConfig.load(store.project_dir)
+    cfg = _load_project_config(store)
     mode = inference or cfg.inference
     if mode not in ("fixed", "anytime"):
         typer.echo(f"--inference must be 'fixed' or 'anytime', got {mode!r}", err=True)
         raise typer.Exit(code=1)
-    with store:
-        if mode == "anytime":
-            from dedrift.anytime import run_anytime_check
+    try:
+        with store:
+            if mode == "anytime":
+                from dedrift.anytime import run_anytime_check
 
-            markdown = render_anytime_report(run_anytime_check(store, cfg))
-        else:
-            result = run_check(store)
-            markdown = render_report(store, result)
+                result_anytime = run_anytime_check(store, cfg)
+                markdown = render_anytime_report(result_anytime)
+                exit_code = (
+                    2 if result_anytime.n_alerts else (0 if result_anytime.verdict == "OK" else 3)
+                )
+            else:
+                result = run_check(store, config=cfg)
+                markdown = render_report(store, result)
+                exit_code = (
+                    2
+                    if result.overall_verdict == "DRIFT DETECTED"
+                    else (0 if result.overall_verdict == "OK" else 3)
+                )
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        typer.echo(f"Could not render report: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if output is None:
         typer.echo(markdown)
     else:
         output.write_text(markdown, encoding="utf-8")
         typer.echo(f"Report written to {output}")
+    if exit_code:
+        raise typer.Exit(code=exit_code)
 
 
 if __name__ == "__main__":

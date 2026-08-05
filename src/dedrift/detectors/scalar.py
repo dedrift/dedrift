@@ -65,8 +65,18 @@ def _cohens_d(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> flo
     return float((np.mean(cur) - np.mean(ref)) / np.sqrt(pooled))
 
 
-def _degenerate(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> bool:
-    return len(ref) < 2 or len(cur) < 2 or (np.ptp(ref) == 0 and np.ptp(cur) == 0)
+def _too_small(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> bool:
+    return len(ref) < 2 or len(cur) < 2
+
+
+def _same_constant(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> bool:
+    """Whether both windows are constant at the same value."""
+    return bool(np.ptp(ref) == 0 and np.ptp(cur) == 0 and ref[0] == cur[0])
+
+
+def _different_constants(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> bool:
+    """Whether both windows are constant but at different values."""
+    return bool(np.ptp(ref) == 0 and np.ptp(cur) == 0 and ref[0] != cur[0])
 
 
 def ks_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestOutcome:
@@ -87,8 +97,10 @@ def ks_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestO
         Outcome with D as the effect and the raw mean shift in original
         units.
     """
-    if _degenerate(ref, cur):
+    if _too_small(ref, cur):
         return TestOutcome("ks", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
+    if _same_constant(ref, cur):
+        return TestOutcome("ks", 0.0, 1.0, 0.0, 0.0, len(ref), len(cur))
     res = stats.ks_2samp(ref, cur, method="auto")
     return TestOutcome(
         test="ks",
@@ -117,8 +129,13 @@ def ad_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> TestO
     Returns:
         Outcome with Cohen's d and raw mean shift as effects.
     """
-    if _degenerate(ref, cur):
+    if _too_small(ref, cur):
         return TestOutcome("ad", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
+    if _same_constant(ref, cur):
+        return TestOutcome("ad", 0.0, 1.0, 0.0, 0.0, len(ref), len(cur))
+    if _different_constants(ref, cur):
+        delta = float(np.mean(cur) - np.mean(ref))
+        return TestOutcome("ad", float("inf"), 0.0, float("inf"), delta, len(ref), len(cur))
     import warnings
 
     with warnings.catch_warnings():
@@ -151,8 +168,22 @@ def welch_t_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> 
     Returns:
         Outcome with Cohen's d and raw mean shift as effects.
     """
-    if _degenerate(ref, cur):
+    if _too_small(ref, cur):
         return TestOutcome("welch_t", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
+    if _same_constant(ref, cur):
+        return TestOutcome("welch_t", 0.0, 1.0, 0.0, 0.0, len(ref), len(cur))
+    if _different_constants(ref, cur):
+        delta = float(np.mean(cur) - np.mean(ref))
+        direction = float(np.sign(delta))
+        return TestOutcome(
+            "welch_t",
+            direction * float("inf"),
+            0.0,
+            direction * float("inf"),
+            delta,
+            len(ref),
+            len(cur),
+        )
     res = stats.ttest_ind(cur, ref, equal_var=False)
     return TestOutcome(
         test="welch_t",
@@ -190,8 +221,10 @@ def levene_test(ref: npt.NDArray[np.float64], cur: npt.NDArray[np.float64]) -> T
     Returns:
         Outcome for the dispersion channel.
     """
-    if _degenerate(ref, cur):
+    if _too_small(ref, cur):
         return TestOutcome("levene", float("nan"), float("nan"), 1.0, 0.0, len(ref), len(cur))
+    if _same_constant(ref, cur) or _different_constants(ref, cur):
+        return TestOutcome("levene", 0.0, 1.0, 1.0, 0.0, len(ref), len(cur))
     res = stats.levene(ref, cur, center="median")
     z_ref = float(np.mean(np.abs(ref - np.median(ref))))
     z_cur = float(np.mean(np.abs(cur - np.median(cur))))
@@ -241,19 +274,34 @@ def p95_permutation_test(
     Returns:
         Outcome for the tail-behavior channel.
     """
-    if _degenerate(ref, cur):
+    if _too_small(ref, cur):
         return TestOutcome("p95_perm", float("nan"), float("nan"), 0.0, 0.0, len(ref), len(cur))
+    if _same_constant(ref, cur):
+        return TestOutcome("p95_perm", 0.0, 1.0, 0.0, 0.0, len(ref), len(cur))
     rng = np.random.default_rng(seed)
     n, m = len(ref), len(cur)
     p95_ref = float(np.percentile(ref, 95))
     p95_cur = float(np.percentile(cur, 95))
     observed = p95_cur - p95_ref
     pooled = np.concatenate([ref, cur])
-    # Vectorized label permutations: each row is a random ordering of pooled.
-    order = np.argsort(rng.random((n_permutations, n + m)), axis=1)
-    shuffled = pooled[order]
-    diffs = np.percentile(shuffled[:, n:], 95, axis=1) - np.percentile(shuffled[:, :n], 95, axis=1)
-    p = float((np.sum(np.abs(diffs) >= abs(observed)) + 1) / (n_permutations + 1))
+    # Stream vectorized batches. The pipeline raises B to the resolution
+    # required by its full BH family (often 6k+); allocating one B x N random,
+    # index, and shuffled matrix can otherwise exhaust memory on production
+    # windows. Chunking preserves the exact seeded permutation sequence.
+    max_batch_elements = 1_000_000
+    batch_size = max(1, min(n_permutations, max_batch_elements // (n + m)))
+    exceedances = 0
+    remaining = n_permutations
+    while remaining:
+        batch = min(batch_size, remaining)
+        order = np.argsort(rng.random((batch, n + m)), axis=1)
+        shuffled = pooled[order]
+        diffs = np.percentile(shuffled[:, n:], 95, axis=1) - np.percentile(
+            shuffled[:, :n], 95, axis=1
+        )
+        exceedances += int(np.sum(np.abs(diffs) >= abs(observed)))
+        remaining -= batch
+    p = float((exceedances + 1) / (n_permutations + 1))
     rel = observed / p95_ref if p95_ref != 0 else float("inf")
     return TestOutcome(
         test="p95_perm",

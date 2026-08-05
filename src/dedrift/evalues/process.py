@@ -43,6 +43,7 @@ def epoch_fingerprint(
     golden_cycles: tuple[str, ...],
     extractor_version: str,
     judge_version: str = "",
+    inference_config: str = "",
 ) -> str:
     """Hash of everything whose change invalidates accumulated evidence.
 
@@ -58,6 +59,7 @@ def epoch_fingerprint(
             "golden": sorted(golden_cycles),
             "extractor": extractor_version,
             "judge": judge_version,
+            "inference_config": inference_config,
         },
         sort_keys=True,
         separators=(",", ":"),

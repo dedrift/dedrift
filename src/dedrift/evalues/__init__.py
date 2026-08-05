@@ -2,18 +2,18 @@
 
 Fixes a defect in the fixed-sample path rather than adding a feature. The
 p-value pipeline controls the false-alarm rate *per check*; operators run
-checks forever, so at the measured 1.6% per-check rate an unchanged agent
+checks forever, so at the measured 2.0% per-check rate an unchanged agent
 accrues roughly ten false alerts a month. A monitoring tool whose error
 guarantee decays with use has the wrong guarantee.
 
-E-processes replace it with a statement that holds at all stopping times:
-over an unbounded horizon, the probability of ever falsely alerting on a
-stable agent is at most alpha. Read :mod:`dedrift.evalues.base` first for
-the contracts (especially predictability), then
+E-processes give each process a statement that holds at all stopping times.
+The repeated dependent e-BH battery additionally needs the causal condition
+documented in ``docs/anytime.md``; its trajectory-wide target is measured,
+not asserted as an unconditional theorem. Read :mod:`dedrift.evalues.base`
+first for the contracts (especially predictability), then
 :mod:`dedrift.evalues.rates` for how the unknown null rate is handled and
 what it costs, and :mod:`dedrift.evalues.process` for epoch semantics —
-the guarantee is alpha *per epoch*, and that is the correct reading, not a
-weakened one.
+the target is alpha *per epoch*.
 
 The p-value path is not deleted. It is the reference implementation, and
 its measured cumulative false-alarm growth is the evidence motivating this

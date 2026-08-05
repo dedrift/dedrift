@@ -10,16 +10,26 @@ trajectory-level behaviour in ``test_evalues_anytime.py``.
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from typer.testing import CliRunner
 
-from dedrift.anytime import load_pool, load_states, run_anytime_check, wealth_table
+import dedrift.anytime as anytime_module
+from dedrift.anytime import (
+    load_pool,
+    load_processed_cycles,
+    load_states,
+    run_anytime_check,
+    wealth_table,
+)
 from dedrift.check import run_check, set_golden_baseline
 from dedrift.cli import app
 from dedrift.config import AnytimeConfig, ProjectConfig
+from dedrift.embeddings import pin_embedder
 from dedrift.evalues.rates import per_process_gamma
 from dedrift.report import render_anytime_report
+from dedrift.schema import InteractionInput, InteractionRecord, Source
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
 from dedrift.store import Store
 
@@ -40,6 +50,34 @@ def project(tmp_path: Path, cycles: int = 6, change_cycle: int | None = None) ->
     ids = sorted({r.cycle_id for r in records if r.cycle_id is not None})
     set_golden_baseline(store, ids[:3])
     return store
+
+
+def make_records(*, cycles: int = 6, change_cycle: int | None = None) -> list[InteractionRecord]:
+    """Deterministic records used by mutation-focused pipeline tests."""
+    cfg = SimConfig(
+        n_canaries=18,
+        repetitions=7,
+        post=drifted_profile(BehaviorProfile()),
+        change_cycle=change_cycle,
+        seed=5,
+    )
+    return SimAgent(cfg).run_cycles(cycles)
+
+
+def store_records(tmp_path: Path, records: list[InteractionRecord]) -> Store:
+    store = Store.init_project(tmp_path)
+    store.append_many(records)
+    ids = list(dict.fromkeys(r.cycle_id for r in records if r.cycle_id is not None))
+    set_golden_baseline(store, ids[:3])
+    return store
+
+
+def stamp_suite(record: InteractionRecord, fingerprint: str) -> InteractionRecord:
+    """Stamp the full-suite identity that production CanaryRunner records carry."""
+    metadata = {**record.input.metadata, "_dedrift": {"suite_fingerprint": fingerprint}}
+    return record.model_copy(
+        update={"input": InteractionInput(text=record.input.text, metadata=metadata)}
+    )
 
 
 class TestBudgetArithmetic:
@@ -72,16 +110,35 @@ class TestBudgetArithmetic:
 
 
 class TestStatePersistence:
-    def test_state_survives_between_checks_and_accumulates(self, tmp_path: Path) -> None:
+    def test_all_unseen_cycles_are_folded_once_and_recheck_is_read_only(
+        self, tmp_path: Path
+    ) -> None:
         store = project(tmp_path)
         first = run_anytime_check(store)
         saved = load_states(store)
         assert len(saved) == first.n_processes
-        assert all(s.cycles == 1 for s in saved.values())
+        assert first.processed_cycles == ("cycle-0003", "cycle-0004", "cycle-0005")
+        assert load_processed_cycles(store, first.fingerprint) == set(first.processed_cycles)
+        assert all(s.cycles == 3 for s in saved.values())
+        checks_before = (
+            store.connect()
+            .execute("SELECT COUNT(*) FROM checks WHERE baseline_kind = 'anytime'")
+            .fetchone()[0]
+        )
+        db_files = (store.index_path, Path(f"{store.index_path}-wal"))
+        db_before = {path: path.read_bytes() for path in db_files if path.exists()}
 
-        second = run_anytime_check(store)  # same latest cycle, folded again
+        second = run_anytime_check(store)
         again = load_states(store)
-        assert all(s.cycles == 2 for s in again.values())
+        checks_after = (
+            store.connect()
+            .execute("SELECT COUNT(*) FROM checks WHERE baseline_kind = 'anytime'")
+            .fetchone()[0]
+        )
+        assert second.processed_cycles == ()
+        assert again == saved
+        assert checks_after == checks_before
+        assert {path: path.read_bytes() for path in db_files if path.exists()} == db_before
         assert second.n_processes == first.n_processes
         store.close()
 
@@ -100,9 +157,11 @@ class TestStatePersistence:
         after = load_states(store)
         assert any(s.epoch == 1 for s in after.values()), "no process reset on a new baseline"
         assert res.resets, "reset happened but was not reported"
-        assert "per epoch" in res.resets[0]
+        assert "historical cycles" in res.resets[0]
+        assert res.processed_cycles == ()
+        assert res.verdict == "NO CURRENT OBSERVATION"
         golden_states = [s for k, s in after.items() if k[0] == "golden"]
-        assert all(s.cycles == 1 for s in golden_states), "wealth carried across an epoch boundary"
+        assert all(s.cycles == 0 for s in golden_states), "historical cycles were replayed"
         store.close()
 
     def test_wealth_table_orders_by_evidence(self, tmp_path: Path) -> None:
@@ -110,6 +169,136 @@ class TestStatePersistence:
         res = run_anytime_check(store)
         table = wealth_table(res)
         assert list(table["log_wealth"]) == sorted(table["log_wealth"], reverse=True)
+        store.close()
+
+
+class TestProductionStateGuards:
+    def test_degraded_cycle_is_neutral_and_does_not_train_the_prior(self, tmp_path: Path) -> None:
+        records = make_records(cycles=4)
+        current = records[-1].cycle_id
+        degraded = [
+            record.model_copy(update={"errors": ["forced collection failure"]})
+            if record.cycle_id == current
+            else record
+            for record in records
+        ]
+        store = store_records(tmp_path, degraded)
+
+        result = run_anytime_check(store)
+        states = load_states(store)
+        store.close()
+
+        assert result.verdict == "DEGRADED DATA"
+        assert result.processed_cycles == (current,)
+        assert all(state.cycles == 1 for state in states.values())
+        assert all(state.log_wealth == 0.0 for state in states.values())
+        assert all(state.bets_placed == 0 for state in states.values())
+        assert all(state.prior.n_cycles == 0 for state in states.values())
+        assert all(state.prior.successes == 0 for state in states.values())
+        assert all(state.prior.trials == 0 for state in states.values())
+
+    def test_composition_suppression_is_neutral_for_only_the_bad_family(
+        self, tmp_path: Path
+    ) -> None:
+        records = [stamp_suite(record, "sha256:suite-a") for record in make_records(cycles=4)]
+        current = records[-1].cycle_id
+        bad_family = "happy_path"
+        incomplete = [
+            record
+            for record in records
+            if not (
+                record.cycle_id == current and record.input.metadata.get("family") == bad_family
+            )
+        ]
+        store = store_records(tmp_path, incomplete)
+
+        run_anytime_check(store)
+        states = load_states(store)
+        store.close()
+
+        bad = [state for key, state in states.items() if key[1] == bad_family]
+        good = [state for key, state in states.items() if key[1] != bad_family]
+        assert bad
+        assert all(state.log_wealth == 0.0 for state in bad)
+        assert all(state.bets_placed == 0 for state in bad)
+        assert all(state.prior.n_cycles == 0 for state in bad)
+        assert all(state.prior.successes == 0 for state in bad)
+        assert all(state.prior.trials == 0 for state in bad)
+        assert any(state.bets_placed == 1 for state in good)
+
+    def test_mixed_suite_backlog_is_rejected_without_state_mutation(self, tmp_path: Path) -> None:
+        records = make_records(cycles=6)
+        changed = [
+            stamp_suite(
+                record,
+                "sha256:suite-b" if record.cycle_id == "cycle-0005" else "sha256:suite-a",
+            )
+            for record in records
+        ]
+        store = store_records(tmp_path, changed)
+
+        with pytest.raises(ValueError, match="backlog spans a canary-suite boundary"):
+            run_anytime_check(store)
+
+        assert load_states(store) == {}
+        assert (
+            store.connect().execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0]
+            == 0
+        )
+        assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == 0
+        store.close()
+
+    def test_actual_pinned_embedder_not_config_text_defines_epoch(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        first = run_anytime_check(store, ProjectConfig(embedder="ignored-a"))
+        second = run_anytime_check(store, ProjectConfig(embedder="ignored-b"))
+        assert second.fingerprint == first.fingerprint
+        assert second.processed_cycles == ()
+
+        pin_embedder(store, "hash")
+        third = run_anytime_check(store, ProjectConfig(embedder="still-ignored"))
+        assert third.fingerprint != first.fingerprint
+        assert third.processed_cycles == ()
+        assert third.verdict == "NO CURRENT OBSERVATION"
+        assert all(state.epoch == 1 for state in load_states(store).values())
+        store.close()
+
+    def test_production_records_with_cycle_ids_do_not_enter_the_experiment(
+        self, tmp_path: Path
+    ) -> None:
+        store = project(tmp_path)
+        template = store.read_records()[0]
+        production = template.model_copy(
+            update={
+                "id": str(uuid4()),
+                "source": Source.PRODUCTION,
+                "cycle_id": "production-cycle",
+            }
+        )
+        store.append(production)
+
+        result = run_anytime_check(store)
+        assert result.current_cycle == "cycle-0005"
+        assert "production-cycle" not in result.processed_cycles
+        store.close()
+
+    def test_state_ledger_pool_and_check_roll_back_together(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = project(tmp_path)
+
+        def fail_persist(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("simulated check-row failure")
+
+        monkeypatch.setattr(anytime_module, "_persist", fail_persist)
+        with pytest.raises(RuntimeError, match="simulated check-row failure"):
+            run_anytime_check(store)
+
+        conn = store.connect()
+        assert load_states(store) == {}
+        assert conn.execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM epoch_pool").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM checks").fetchone()[0] == 0
         store.close()
 
 
@@ -135,7 +324,7 @@ class TestBothPathsOnIdenticalLogs:
         store = project(tmp_path, cycles=8, change_cycle=7)
         anytime = run_anytime_check(store)
         assert anytime.verdict in {"OK", "DRIFT DETECTED"}
-        assert all(p.cycles == 1 for p in anytime.processes)
+        assert all(p.cycles == 5 for p in anytime.processes)
         store.close()
 
     def test_degraded_data_suppresses_alerts_on_the_anytime_path_too(self, tmp_path: Path) -> None:
@@ -191,7 +380,7 @@ class TestAnytimeReport:
         # honesty sections that must never be dropped
         assert "What is proven, and what is measured" in md
         assert "Multiplicity spent, and on what" in md
-        assert "evidence **for** stability" in md
+        assert "not** affirmative evidence" in md
 
     def test_report_is_deterministic_given_state(self, tmp_path: Path) -> None:
         store = project(tmp_path)
@@ -266,7 +455,11 @@ class TestEpochPool:
         first = run_anytime_check(store)
         # add another cycle's worth of records under the same epoch
         cfg = SimConfig(n_canaries=18, repetitions=7, change_cycle=None, seed=99)
-        store.append_many(SimAgent(cfg).run_cycles(1))
+        added = [
+            record.model_copy(update={"id": str(uuid4()), "cycle_id": "cycle-0006"})
+            for record in SimAgent(cfg).run_cycles(1)
+        ]
+        store.append_many(added)
         later = run_anytime_check(store)
         store.close()
         assert later.n_processes == first.n_processes

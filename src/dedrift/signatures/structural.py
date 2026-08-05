@@ -16,6 +16,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from dedrift.canary import (
+    CANARY_FINGERPRINT_KEY,
+    CORRECTNESS_PREDICATE_KEY,
+    DEDRIFT_METADATA_KEY,
+    EXPECTATION_FINGERPRINT_KEY,
+    EXPECTED_KEY,
+    RUBRIC_ID_KEY,
+    STRUCTURED_EXPECTED_SUBSET_PREDICATE_ID,
+    SUITE_FINGERPRINT_KEY,
+    expectation_fingerprint,
+)
 from dedrift.schema import InteractionRecord
 
 DEFAULT_REFUSAL_PATTERNS: tuple[str, ...] = (
@@ -62,6 +73,13 @@ class RecordSignature:
         cycle_id: Cycle ID (None for production records).
         family: Canary family, from input metadata ("unknown" if absent).
         config_fingerprint: Config fingerprint of the source record.
+        suite_fingerprint: Canonical identity of the suite which produced the
+            record, when written by :class:`dedrift.canary.CanaryRunner`.
+        canary_fingerprint: Identity of the input and evaluation contract.
+        correctness_predicate_id: Versioned predicate applied to ``expected``.
+        expectation_fingerprint: Identity of predicate plus expected values.
+        rubric_id: Preserved judge rubric identity. Structural extraction does
+            not execute rubric-based judging.
         output_chars: Output length in characters.
         output_words: Output length in whitespace-delimited words.
         refusal: True if the output matches a refusal pattern.
@@ -85,6 +103,11 @@ class RecordSignature:
     cycle_id: str | None
     family: str
     config_fingerprint: str
+    suite_fingerprint: str | None
+    canary_fingerprint: str | None
+    correctness_predicate_id: str | None
+    expectation_fingerprint: str | None
+    rubric_id: str | None
     output_chars: int
     output_words: int
     refusal: bool
@@ -125,6 +148,18 @@ def _exact_match(structured: dict[str, Any] | None, expected: dict[str, Any] | N
     return all(structured.get(k) == v for k, v in expected.items())
 
 
+def _dedrift_metadata(record: InteractionRecord) -> dict[str, Any]:
+    """Return validated record-local canary provenance, or an empty mapping."""
+    value = record.input.metadata.get(DEDRIFT_METADATA_KEY)
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 def extract_record_signature(
     record: InteractionRecord,
     expected: dict[str, Any] | None = None,
@@ -142,6 +177,18 @@ def extract_record_signature(
         The extracted signature.
     """
     text = record.output.text
+    provenance = _dedrift_metadata(record)
+    record_expected = provenance.get(EXPECTED_KEY)
+    if expected is None and isinstance(record_expected, dict):
+        expected = record_expected
+    predicate_id = _optional_string(provenance.get(CORRECTNESS_PREDICATE_KEY))
+    expected_id = _optional_string(provenance.get(EXPECTATION_FINGERPRINT_KEY))
+    if expected is not None:
+        # Explicit ``expected_by_canary`` maps remain supported. They predate
+        # record-local provenance, so derive truthful identities when the old
+        # caller path supplies the expectation.
+        predicate_id = STRUCTURED_EXPECTED_SUBSET_PREDICATE_ID
+        expected_id = expectation_fingerprint(expected)
     usage: dict[str, int] = {}
     for call in record.tool_calls:
         usage[call.name] = usage.get(call.name, 0) + 1
@@ -152,6 +199,11 @@ def extract_record_signature(
         cycle_id=record.cycle_id,
         family=family,
         config_fingerprint=record.config_fingerprint,
+        suite_fingerprint=_optional_string(provenance.get(SUITE_FINGERPRINT_KEY)),
+        canary_fingerprint=_optional_string(provenance.get(CANARY_FINGERPRINT_KEY)),
+        correctness_predicate_id=predicate_id,
+        expectation_fingerprint=expected_id,
+        rubric_id=_optional_string(provenance.get(RUBRIC_ID_KEY)),
         output_chars=len(text),
         output_words=len(text.split()),
         refusal=_is_refusal(text, refusal_patterns),
@@ -177,7 +229,9 @@ def signatures_frame(
 
     Args:
         records: Source records (canary records need ``cycle_id`` set).
-        expected_by_canary: Optional map canary_id -> expected fields.
+        expected_by_canary: Optional compatibility map canary_id -> expected
+            fields. Record-local CanaryRunner metadata is used automatically;
+            an explicit map entry takes precedence.
         refusal_patterns: See :func:`extract_record_signature`.
 
     Returns:

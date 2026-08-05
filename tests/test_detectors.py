@@ -37,8 +37,32 @@ class TestScalarTests:
         cur = RNG.normal(0, 1, 200)
         assert ks_test(ref, cur).p_value > 0.001
 
-    def test_degenerate_gives_nan(self) -> None:
+    def test_same_constant_windows_are_valid_neutral_comparisons(self) -> None:
         ref = np.ones(10)
+        cur = np.ones(10)
+        for outcome in (
+            ks_test(ref, cur),
+            ad_test(ref, cur),
+            welch_t_test(ref, cur),
+            levene_test(ref, cur),
+            p95_permutation_test(ref, cur),
+        ):
+            assert outcome.p_value == 1.0
+            assert outcome.effect_raw == 0.0
+
+    def test_different_constant_windows_are_not_discarded_as_degenerate(self) -> None:
+        ref = np.zeros(20)
+        cur = np.ones(20)
+        ks = ks_test(ref, cur)
+        tail = p95_permutation_test(ref, cur, n_permutations=6_000, seed=9)
+        assert ks.statistic == 1.0
+        assert ks.effect_raw == 1.0
+        assert ks.p_value < 1e-6
+        assert tail.effect_raw == 1.0
+        assert tail.p_value < 0.001
+
+    def test_too_small_windows_are_undefined(self) -> None:
+        ref = np.ones(1)
         cur = np.ones(10)
         assert np.isnan(ks_test(ref, cur).p_value)
         assert np.isnan(ad_test(ref, cur).p_value)
@@ -96,13 +120,13 @@ class TestBH:
         assert rejected == [True, True, False, False, False]
         assert adjusted[0] <= 0.05
 
-    def test_nan_never_rejected_and_not_counted(self) -> None:
+    def test_nan_never_rejected_but_counts_in_declared_family(self) -> None:
         p = [0.01, float("nan"), 0.5]
         rejected, adjusted = benjamini_hochberg(p, q=0.05)
         assert rejected[1] is False
         assert np.isnan(adjusted[1])
-        # m=2, so p=0.01 adjusted = 0.02
-        assert adjusted[0] == pytest.approx(0.02)
+        # m=3: the unavailable declared hypothesis is conservatively p=1.
+        assert adjusted[0] == pytest.approx(0.03)
 
     def test_empty(self) -> None:
         assert benjamini_hochberg([], q=0.05) == ([], [])

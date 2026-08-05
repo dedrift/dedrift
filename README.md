@@ -14,16 +14,21 @@ dedrift's differentiation is statistical correctness:
   against stated acceptance bands — and the full pipeline's null alert rate is bounded
   (Wilson 95% upper bound < 5%) over 500 seeded stable-agent runs at a stated scale
   (12 canaries × 5 repetitions; see [the statistics page](https://dedrift.ai/statistics/)).
-- All alerting passes through FDR control (Benjamini–Hochberg) over one primary test per
-  channel; redundant tests run as corroboration outside the pool. No raw per-test
-  p-values dressed up as alerts.
+- Primary equality-test p-values pass through Benjamini–Hochberg adjustment;
+  redundant tests run as corroboration outside the pool. PRDS is not proven for this
+  shared battery, and the later observed-effect filter is not a practical-null FDR
+  procedure. The release therefore relies on stated default-scenario simulations,
+  not a universal production FDR claim.
 - Every alert requires both statistical significance and a configurable effect-size (materiality) threshold. Fewer, higher-confidence alerts.
 - LLM outputs are stochastic: canaries run N times per cycle and we compare distributions, never single outputs.
 - Dual baselines: every check runs against a rolling recent window (sudden breaks) and a frozen golden baseline (boiling-frog drift).
 - Honest about power: small N means low detection power, and the docs show you the math instead of hiding it.
-- **Anytime-valid mode** (`--inference anytime`): swaps per-check FDR for a
-  *lifetime* guarantee — over an unbounded horizon, P(ever falsely alerting on
-  a stable agent) ≤ α, per epoch. Measured 0 false alerts across 500
+- **Anytime mode** (`--inference anytime`): swaps per-check FDR for
+  lifetime-oriented rate e-processes targeting P(ever falsely alerting on a
+  stable agent) ≤ α, per epoch. Per-process optional-stopping control and
+  per-check e-BH are proven; the repeated dependent battery has a documented
+  causal assumption and is measured rather than presented as an unconditional
+  theorem. It produced 0 false alerts across 500
   stable-agent runs of 2000 cycles each with dependent streams (no false alert at any
   measured horizon), against 100% for the per-check path on identical histories. It
   costs detection power, and the cost is inconsistency rather than delay: a
@@ -37,21 +42,23 @@ Pre-alpha, under active development. Working today: logging schema + store, cana
 (pinned embedder, semantic displacement, MMD-RBF with a seeded permutation null and an
 auto-calibrated materiality floor), the full detector battery
 (KS/Levene/permutation-P95/two-proportion z/MMD as primaries; AD and Welch as
-corroboration; PSI and Page–Hinkley as labeled diagnostics) with BH-FDR over primaries
+corroboration; PSI and Page–Hinkley as labeled diagnostics) with BH adjustment over primaries
 and materiality gating, dual baselines, config-change attribution, and deterministic
 markdown reports — all with calibration and power tests enforced in CI. Plus an
-opt-in **anytime-valid** inference path (`--inference anytime`): e-values,
-e-processes and e-BH giving a lifetime rather than per-check guarantee, with
-per-epoch semantics and persisted process state. Rate channel only so far —
-run both modes.
+opt-in **anytime** inference path (`--inference anytime`): e-values,
+e-processes and e-BH targeting lifetime rather than per-check control, with
+per-epoch semantics, persisted exactly-once process state, and explicit
+coverage status. Rate channel only so far — run both modes.
 
 ## Install
 
 ```bash
 pip install dedrift              # core: zero ML dependencies
 pip install "dedrift[embeddings]"  # + semantic signatures (sentence-transformers)
-pip install "dedrift[judge]"       # + LLM-judge tier
 ```
+
+`rubric_id` is currently preserved as provenance only. No LLM judge is
+executed or advertised by this release.
 
 For development: `pip install -e ".[dev]"`.
 
@@ -78,6 +85,11 @@ variance ratio ~9x), BH-adjusted p-values, and attribution: "nearest config
 event: model fingerprint change, 0.0 h before onset." With your own agent,
 replace `sim` with `dedrift canary run --suite canaries.yaml --agent
 yourmodule:agent_fn --model 'provider/model@version'` on a schedule.
+
+`project.canary_repetitions` in `.dedrift/config.toml` is the authoritative
+sample design for both commands. `dedrift check` exits 0 only for a fully
+supported `OK`, 2 for detected drift, and 3 when evidence is degraded,
+missing, or only partially comparable.
 
 ## Detection power: the honest table
 
