@@ -833,9 +833,7 @@ def _run_anytime_check_snapshot(
                 bets_placed=sum(visible[i].bets_placed for i in member_idx),
                 rise_cycle=None,
                 crossed_at=None,
-                rejected=bool(
-                    decision.rejected[len(pool_keys) + offset] and not degraded
-                ),
+                rejected=bool(decision.rejected[len(pool_keys) + offset] and not degraded),
                 detail="pooled product of per-family e-values",
             )
             for offset, (key, wealth, member_idx) in enumerate(pooled_meta)

@@ -13,7 +13,7 @@ distinct questions rather than three answers to the same one.
 | Channel | Primary test | Materiality gate | Corroboration |
 |---|---|---|---|
 | Location / shape | Two-sample Kolmogorov–Smirnov | KS statistic D ≥ 0.15 (sup-norm CDF distance — catches shape changes with equal means, where Cohen's d ≈ 0). **D is also the reported effect** for this channel, so what gates is what you read; Cohen's d appears on the Welch corroboration row as a location diagnostic | Anderson–Darling, Welch's t (raw p shown, never alert) |
-| Tool-call order (new in v0.4.0) | Two-sample KS on `tool_order_inversions`, like any other scalar | Same scalar gates (D ≥ 0.15, …) | — |
+| Tool-call order | Two-sample KS on `tool_order_inversions`, like any other scalar | Same scalar gates (D ≥ 0.15, …) | — |
 | Dispersion | Brown–Forsythe (Levene, median-centered) | Robust dispersion ratio (mean abs deviation from the median) ≥ 1.5× either way | — |
 | Tail | P95 permutation test (pooled labels, seeded, add-one p) | Relative P95 shift ≥ 10% | — |
 | Rates | Two-proportion z, continuity-corrected | Percentage-point thresholds (refusal ≥ 2 pp, …; refusal is pattern-matched phrasing — see fine print) | — |
@@ -21,20 +21,21 @@ distinct questions rather than three answers to the same one.
 | Sequential per-cycle means | Page–Hinkley | Flag + onset localizer, not a p-value | — |
 | Industry heuristic | PSI, 10 bins frozen from golden | Labeled heuristic (0.1 / 0.25); **never** a test; emitted only above its validity scale (see fine print) | — |
 
-**The battery grew in v0.4.0, and the headline null moved with it.**
+**The tool-call-order channel takes the battery to m ≈ 336 — and the
+headline null is family-wise in m.**
 `tool_order_inversions` counts Kendall-tau inversions of the tool-call
 name sequence against its alphabetical sort — 0 for records with fewer
 than two calls. Counts and schema validity say nothing about tool-call
 *order*; this is the only Tier-1 channel that sees workflow reordering,
-which the independent audit measured as completely invisible to v0.3.1
-(0/30, by construction). The alphabetical reference is arbitrary by
+and a battery without it is blind to order reversal by construction (the
+independent audit measures 0/30 for such a battery). The alphabetical
+reference is arbitrary by
 design: a stable agent's inversion count is stationary under any fixed
 convention, and the tests compare distributions, so only *changes* in
-ordering register. The new scalar takes the primary pool from m ≈ 300 to
+ordering register. The scalar puts the primary pool at
 **m ≈ 336** at the default suite — and the any-alert rate is family-wise:
-it grows with m even when every per-test FDR statement is valid. That
-growth, not a calibration slip, is why the headline null below moved from
-its v0.3.1 value.
+it grows with m even when every per-test FDR statement is valid, so the
+headline null below is always stated at its battery size.
 
 ## The gating pipeline — order matters
 
@@ -74,14 +75,15 @@ runs (on every commit and inside the release pipeline):
   band.
 - **Pipeline-level null calibration** — 500 seeded stable-agent runs through
   the full pipeline; the per-check probability of any alert must have a
-  Wilson 95% upper bound below **0.065**. v0.4.0 measures **16/500 = 3.2%,
-  Wilson upper 5.1%**. The v0.3.1 measurement — 10/500, upper 0.0364 —
-  stays on the record as the historical value at m ≈ 300 primaries; the
-  gate was re-banded from 0.05 for exactly the battery-growth reason above,
-  since a gate frozen at the m ≈ 300 rate would fail a correctly behaving
-  m ≈ 336 battery. (A pass/fail over 20 runs — the
-  original spec — would pass 39% of the time even with a true 10% alert
-  rate; 500 runs with a reported bound is the honest version of the claim.)
+  Wilson 95% upper bound below **0.065**. The measured rate is **16/500 =
+  3.2%, Wilson upper 5.1%**, at m ≈ 336 primaries. The band sits above the
+  per-test nominal for exactly the battery-size reason above: the any-alert
+  rate is family-wise, and a gate frozen at a smaller battery's rate — the
+  same study measures 10/500, upper 3.6%, at m ≈ 300 primaries — would
+  fail a correctly behaving m ≈ 336 battery. (A pass/fail over 20 runs —
+  the naive version of this gate — would pass 39% of the time even with a
+  true 10% alert rate; 500 runs with a reported bound is the honest
+  version of the claim.)
   Scale caveat: these runs use 12 canaries × 5 repetitions, not the 18 × 7
   default, for CI runtime. Under a calibrated null the alert rate is
   approximately scale-free, but the materiality gates interact with N — so
@@ -123,12 +125,11 @@ distinguish from drift.
 
 Measured on stable agents with a latent per-cycle offset of magnitude σ —
 per-check false-alert rate with Wilson 95% intervals, audit-harness scale
-(30 canaries × 7 reps, 3-cycle golden), 30 reps per level for `auto` and
-20 for `auto + persistence=2`; the `off` column is the original v0.3.1
-audit at 100–300 reps per level, and `detection.cycle_effect = "off"` (the
-default) reproduces that record-level battery exactly:
+(30 canaries × 7 reps, 3-cycle golden): 30 reps per level for `auto`, 20
+for `auto + persistence=2`, and 100–300 reps per level for the
+record-level battery (`detection.cycle_effect = "off"`, the default):
 
-| σ | off (v0.3.1 battery) | auto | auto + persistence = 2 |
+| σ | record-level battery (default) | cluster-aware (`auto`) | `auto` + persistence = 2 |
 |---|---|---|---|
 | 0.00 | 2.3% [1.6, 3.1] | 4.5% [1.4, 7.6] | 1.8% [0.0, 3.7] |
 | 0.05 | 33.5% [29.4, 37.6] | 34.4% [26.9, 41.9] | 7.6% [2.8, 12.5] |
@@ -168,27 +169,30 @@ see through. The 16/500 headline is measured at σ = 0 and describes that
 regime only. Pinned or self-hosted models: leave the default `off`. For
 wobble-prone hosted models the valid default is [anytime-valid
 mode](anytime.md), which stays within its lifetime budget under iid wobble
-up to σ = 0.25 (measured 5/500; persistent AR(1) offsets at σ = 0.25,
+up to σ = 0.25 (measured 8/500; persistent AR(1) offsets at σ = 0.25,
 φ = 0.9 exceed it at 7.2% — the published boundary). `auto` + persistence
 is the fixed-path option, at the rates above.
 
 The correction is bought with power — detection within 3 post-drift
-checks, drift injected at cycle 5, audit harness (v0.3.1 cells at 30–60
-reps, v0.4.0 cells at 10–20; small-n, stated rather than smoothed over):
+checks, drift injected at cycle 5, audit harness (record-level cells at
+30–60 reps, cluster-aware cells at 10–20; small-n, stated rather than
+smoothed over):
 
-| injected shift | off (v0.3.1) | auto (v0.4.0) |
+| injected shift | record-level (`off`) | cluster-aware (`auto`) |
 |---|---|---|
 | gross model swap, multi-channel | 30/30 | 10/10 |
 | output length ×1.10 (d ≈ 0.77) | 31/60 (52%) | 8/20 (40%) |
 | refusal +20 pp | 24/60 (40%) | 4/20 (20%) |
 | variance only | 43/50 (86%) | 18/20 (90%) |
 | shape skew, moments matched | 14/50 (28%) | 6/20 (30%) |
-| tool-call order reversal | 0/30 (blind) | 5/10 first-check alerts |
 
-The gross swap remains certain; moderate single-channel shifts are where
-the cluster-aware battery pays. The last row is the new channel: order
-drift was invisible to v0.3.1 by construction and is now detected — at a
-scale where "detected" means half of first checks.
+The gross swap is certain under either battery; moderate single-channel
+shifts are where the cluster-aware battery pays. Tool-call order reversal
+is the order channel's own measurement: **5/10 first-check channel
+alerts** in the same harness — at a scale where "detected" means half of
+first checks — while a battery without the channel measures **0/30**,
+blind to order by construction. That hole is what the channel exists to
+close.
 
 ## Fine print, stated plainly
 
@@ -211,8 +215,8 @@ scale where "detected" means half of first checks.
   is **suppressed and reported as COMPOSITION MISMATCH** instead of drift.
   Power against shifts confined to a few canaries remains lower than for
   family-wide shifts. Exchangeability across cycles is the stronger
-  requirement, and its measured failure modes — with the v0.4.0 correction
-  and its costs — are in [Cycle effects](#cycle-effects) above.
+  requirement, and its measured failure modes — with the cluster-aware
+  correction and its costs — are in [Cycle effects](#cycle-effects) above.
 - **The guarantee on this page is per check, not per lifetime.**
   Everything above bounds the probability that *one* check on a stable
   agent raises an alert. Monitoring runs continuously, and expected
@@ -224,7 +228,7 @@ scale where "detected" means half of first checks.
   nothing in the batch machinery controls accumulation *across*
   sequence of them.
 
-    **Sequential control now exists**: [anytime-valid mode](anytime.md)
+    **Sequential control exists**: [anytime-valid mode](anytime.md)
     replaces the per-check statement with a lifetime one — measured 2
     false alerts in 500 stable-agent runs of 2000 cycles each (0.4%,
     Wilson upper 1.5%), against 100% for this path on identical
@@ -251,8 +255,8 @@ scale where "detected" means half of first checks.
 - **The flag channel (Page–Hinkley, PSI) is uncalibrated and carries no
   multiplicity control — treat flags as diagnostics, never as alerts.**
   PH runs on every (family, signature) stream (48 at the measured scale: 8 scalar signatures x 6 families), so
-  per-stream rates compound: measured on the 500-run null study at the
-  v0.3.1 battery (42 streams), **68.6% of stable checks showed at least one flag** (up from 56% once Page-Hinkley stopped standardising itself with data from after the point it was judging). With 48 streams the figure can only be higher; it has not been re-measured. That
+  per-stream rates compound: the 500-run null study measures, at a
+  42-stream battery, **68.6% of stable checks showing at least one flag**. With 48 streams the figure can only be higher; it has not been re-measured at 48. That
   number is printed here deliberately — flags never alert, they exist to
   localize onsets for attribution, and the report labels them as such.
   Cross-stream correction for the flag channel is on the roadmap.
@@ -279,11 +283,11 @@ scale where "detected" means half of first checks.
   no informational gain. Their raw p-values are printed for context and can
   never alert. (AD's p is additionally capped by SciPy's asymptotics to
   [0.001, 0.25].)
-- **BH is used without a PRDS claim.** This page previously said PRDS was
-  "believed to cover" positively correlated two-sided tests. That belief is
-  no longer available: Dobriban (2026, arXiv:2607.12208) constructs
+- **BH is used without a PRDS claim.** PRDS is not available here:
+  Dobriban (2026, arXiv:2607.12208) constructs
   correlated two-sided Gaussian p-values for which BH provably exceeds its
-  nominal level, disproving a twenty-year-old conjecture. Our primaries are
+  nominal level, disproving a twenty-year-old conjecture that would
+  otherwise have covered positively correlated two-sided tests. Our primaries are
   two-sided and computed on shared data — the exact configuration. The
   pipeline-level measured alert rate is therefore the operative guarantee
   for the default path; Benjamini–Yekutieli is on the roadmap for users who
@@ -294,16 +298,15 @@ scale where "detected" means half of first checks.
   each step): the idealized null crossing bound is ~0.15% per stream, but
   because centre and scale are estimated from few observations the measured
   rate is **8.5% per stream on 30-cycle histories and 11.3% on 60-cycle
-  ones** (8000 draws). An earlier version of this page said 1.5%; that came
-  from an estimator that used the whole stream, including cycles *after* the
-  alarm — a sequential detector reading its own future. Removing the
-  look-ahead raised the honest rate sixfold. This is why PH is a labelled
-  diagnostic that can never alert.
-  v0.4.0 fixed two further PH defects the audit surfaced: a missing
-  (family, cycle) used to reindex the stream with NaN and the running mean
-  never recovered, so streams now mask to the family's observed cycles; and
-  near-constant discrete streams used to render absurd statistics
-  (~2.6e15), now held at ~0 by a scale floor at the window's
+  ones** (8000 draws). The causal estimation is load-bearing: an estimator
+  that standardises with the whole stream, including cycles *after* the
+  alarm, reads its own future and reports a falsely reassuring rate near
+  1.5%. This is why PH is a labelled diagnostic that can never alert.
+  Two edge cases are engineered explicitly: a missing (family, cycle)
+  would reindex the stream with NaN from which the running mean never
+  recovers, so streams mask to the family's observed cycles; and
+  near-constant discrete streams can produce absurd statistics
+  (~2.6e15), held at ~0 by a scale floor at the window's
   floating-point resolution.
 PH alarms localize onsets for attribution;
   they never alert: only primary tests can.

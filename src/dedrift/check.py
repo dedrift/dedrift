@@ -829,15 +829,11 @@ def _run_check_snapshot(
                         # per-cycle z-grid itself shifts with the cycle's
                         # rate estimate and KS fires on the grid mismatch —
                         # measured 90% null alerts before this guard.
-                        continuous = (
-                            len(np.unique(ref)) >= 10 and len(np.unique(cur)) >= 10
-                        )
+                        continuous = len(np.unique(ref)) >= 10 and len(np.unique(cur)) >= 10
                         ks_std = None
                         if continuous:
                             ref_std = standardize_within_cycle(wref, base_cyc)
-                            cur_std = standardize_within_cycle(
-                                wcur, np.full(len(wcur), "__cur__")
-                            )
+                            cur_std = standardize_within_cycle(wcur, np.full(len(wcur), "__cur__"))
                             ref_std = ref_std[np.isfinite(ref_std)]
                             cur_std = cur_std[np.isfinite(cur_std)]
                             if len(ref_std) >= 2 and len(cur_std) >= 2:
@@ -899,9 +895,7 @@ def _run_check_snapshot(
                                 else float("nan")
                             )
                         else:
-                            ratio = (
-                                cur_mad / mean_ref_mad if mean_ref_mad > 0 else float("inf")
-                            )
+                            ratio = cur_mad / mean_ref_mad if mean_ref_mad > 0 else float("inf")
                         lev_out = replace(
                             lev_out,
                             p_value=p_lev if np.isfinite(p_lev) else lev_out.p_value,
@@ -963,11 +957,7 @@ def _run_check_snapshot(
                     len(cur_series),
                 )
                 ice = icc_by_channel.get((family, sig))
-                if (
-                    ice is not None
-                    and ice.engaged
-                    and np.isfinite(z_out.p_value)
-                ):
+                if ice is not None and ice.engaged and np.isfinite(z_out.p_value):
                     m_ref = len(ref_series) / max(
                         1, ref_fam.loc[ref_series.index, "cycle_id"].nunique()
                     )
@@ -1112,10 +1102,7 @@ def _run_check_snapshot(
                 significant=rej,
                 material=material,
                 alert=bool(
-                    t.primary
-                    and rej
-                    and material
-                    and (not degraded or t.signature == "had_error")
+                    t.primary and rej and material and (not degraded or t.signature == "had_error")
                 ),
             )
         )
@@ -1128,12 +1115,16 @@ def _run_check_snapshot(
     # trade-off are in docs/statistics.md#cycle-effects.
     demoted = 0
     if cfg.alert_persistence > 1:
-        prev_row = store.connect().execute(
-            "SELECT params_json FROM checks WHERE baseline_kind = 'dual' AND "
-            "json_extract(params_json, '$.current_cycle') != ? "
-            "ORDER BY id DESC LIMIT 1",
-            (current,),
-        ).fetchone()
+        prev_row = (
+            store.connect()
+            .execute(
+                "SELECT params_json FROM checks WHERE baseline_kind = 'dual' AND "
+                "json_extract(params_json, '$.current_cycle') != ? "
+                "ORDER BY id DESC LIMIT 1",
+                (current,),
+            )
+            .fetchone()
+        )
         # The gate compares against the previous check's CANDIDATE channels
         # (primary & significant & material), persisted in params_json —
         # referencing only fired alerts would self-extinguish the gate.

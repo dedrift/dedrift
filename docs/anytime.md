@@ -40,10 +40,11 @@ nothing about ours.
 | **anytime-valid** (two-sample e-processes + e-BH) | **2/500 (0.4%)** — Wilson upper bound 0.015 |
 | fixed-sample (BH per check) | **419/500 (84%)** by cycle 100; **500/500** by cycle 1000 |
 
-The anytime column is the v0.4.0 `twosample` rate model at the 2000-cycle
-horizon; the fixed column is the record-level battery, which the default
-`cycle_effect = "off"` reproduces. Two events in 500 runs is consistent
-with a true lifetime rate up to about 1.5% — inside the α = 0.05 budget,
+The anytime column is the `twosample` rate model (the default) at the
+2000-cycle horizon; the fixed column is the record-level battery,
+`cycle_effect = "off"` — also the default. Two events in 500 runs is
+consistent with a true lifetime rate up to about 1.5% — inside the
+α = 0.05 budget,
 and not a claim of exact flatness. What the contrast establishes is the
 difference in kind — a fixed-sample guarantee decays with
 use, and this one has not been observed to breach its budget.
@@ -74,8 +75,8 @@ single-family resolution.
 **Read that table before switching modes.** Anytime-valid mode is for
 catching real degradation over weeks without accumulating false alarms; it is
 not for catching a 2 pp shift this afternoon. If small shifts matter to you
-more than lifetime error control, `fixed` is the honest choice — which is why
-it remains the default.
+more than lifetime error control, `fixed` is the honest choice — which is
+why it is the default.
 
 The mechanism behind the cost is visible in the construction: the pooled
 denominator *learns the alternative* as the current stream accumulates, so
@@ -85,7 +86,7 @@ per-cycle growth decays ~1/t after onset and cumulative wealth grows only
 harness horizon +10 pp at p₀ = 0.30 was never caught (0/20), while +20 pp
 went 4/20 (median 26) and a low-baseline +10 pp 5/20 (median 28).
 
-## The rate model: twosample (default) vs frozen_cp (legacy)
+## The rate model: twosample (default) vs the Clopper–Pearson construction (frozen_cp)
 
 Each rate process is a **two-sample SAFE e-value** — the SAFE 2×2
 construction in sequential form (Grunwald, de Heide & Koolen, [Safe
@@ -111,18 +112,18 @@ against the prior, so **no coverage budget is spent** and the e-value
 grows at the posterior-predictive odds rate rather than the KL gap to the
 far edge of a worst-case interval.
 
-**Why the v0.3.1 construction had to go.** `frozen_cp` worst-cases over a
-frozen Clopper–Pearson interval for the unknown baseline rate, with the
+**The alternative construction, and its measured limit.** `frozen_cp`
+worst-cases over a frozen Clopper–Pearson interval for the unknown
+baseline rate, with the
 coverage budget split across the battery (γᵢ = γ_total ÷ K = 8×10⁻⁴ at
 K = 24). At canary scale that interval is so wide that it *contains the
 alternative* for any moderate shift, so the worst-case e-value cannot
-grow: the independent audit measured **0/30 detections at +5/+10/+20 pp
+grow: the independent audit measures **0/30 detections at +5/+10/+20 pp
 over 60 cycles at p₀ = 0.30**, with median log-wealth *decaying* ≈0.07
-per cycle under a +20 pp shift. (v0.3.1's own wider-horizon study had
-measured 23% detection at +10 pp within 400 cycles; the audit's mid-rate
-cell is the harsher and more realistic one.) `anytime.rate_model =
-"frozen_cp"` keeps the construction available for reproduction — that is
-all it is for — and `gamma_total` and `tilts` are meaningful only there.
+per cycle under a +20 pp shift. The construction ships as a documented
+ablation — its measured power profile is the evidence behind the
+twosample default, not a mode to run in production — and `gamma_total`
+and `tilts` are meaningful only there.
 
 **The saturation caveat.** The pooled denominator learns the alternative
 as drifted cycles accumulate, so per-cycle growth decays ~1/t after onset
@@ -145,8 +146,8 @@ wobble](#robustness-to-provider-side-wobble).
 
 With the default `twosample` rate model there is no nuisance interval, so
 **no coverage budget is spent and the e-BH level is the full per-epoch
-alpha: α′ = α = 0.05**. The split below applies only to the legacy
-`frozen_cp` construction, where the unknown baseline rate is paid for out
+alpha: α′ = α = 0.05**. The split below applies only to the `frozen_cp`
+construction, where the unknown baseline rate is paid for out
 of α:
 
 | Component | frozen_cp default | Pays for |
@@ -174,7 +175,8 @@ alone, since validity does not discriminate. We stop at 0.02 rather than
 0.03 because α′ *is* the battery's FDR level, and spending most of the
 lifetime budget insuring against a coverage failure never once observed
 buys little. Both are configurable — and both are inert under `twosample`,
-which the audit's 0/30 measurement makes the only recommended default.
+which the audit's 0/30 measurement of the alternative construction makes
+the recommended default.
 
 ## "Per epoch" is the part to understand
 
@@ -234,7 +236,7 @@ inference = "fixed"        # or "anytime"
 
 [anytime]
 alpha = 0.05               # lifetime, battery-wide
-rate_model = "twosample"   # default; "frozen_cp" is the legacy v0.3.1 construction
+rate_model = "twosample"   # default; "frozen_cp" is the Clopper–Pearson interval construction (an ablation)
 gamma_total = 0.02         # frozen_cp only: coverage budget; alpha_prime = alpha - gamma_total
 tilts = [1.5, 2.0, 3.0]    # frozen_cp only: symmetrised to {psi, 1/psi}
 epoch_allocation = "per_epoch"   # or "geometric"

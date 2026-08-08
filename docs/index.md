@@ -106,11 +106,10 @@ onset.
 Every detector's false-alarm rate is measured against a documented
 acceptance band by simulation tests that run in CI on every commit. The
 full pipeline's null alert rate: 16 of 500 stable-agent checks (3.2%,
-Wilson 95% upper bound 5.1%) — up from 10 of 500 in v0.3.1 not because
-calibration slipped but because the battery grew (m ≈ 300 → ≈ 336
-primaries with the new tool-call-order channel), and the family-wise
-any-alert rate grows with battery size even under valid per-test FDR.
-v0.4.0 also ships opt-in wobble-robust modes for hosted models, measured
+Wilson 95% upper bound 5.1%), measured at m ≈ 336 primaries — the
+any-alert rate is family-wise and grows with battery size even under
+valid per-test FDR, so the headline number is always stated at its
+battery size. Opt-in wobble-robust modes for hosted models are measured
 in both directions. The parts that aren't calibrated — the diagnostic flag
 channel — carry their measured rate too, because honesty is the product.
 </p>

@@ -291,8 +291,6 @@ class TestPageHinkleyScaleFloor:
 
     def test_real_shift_in_tight_stream_still_alarms(self) -> None:
         rng = np.random.default_rng(4)
-        values = np.concatenate(
-            [0.1 + rng.normal(0, 1e-4, 15), 0.2 + rng.normal(0, 1e-4, 15)]
-        )
+        values = np.concatenate([0.1 + rng.normal(0, 1e-4, 15), 0.2 + rng.normal(0, 1e-4, 15)])
         res = page_hinkley(values)
         assert res.alarm

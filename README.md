@@ -13,11 +13,12 @@ dedrift's differentiation is statistical correctness:
 - Every p-valued detector's false-alarm rate is *measured* by simulation tests in CI
   against stated acceptance bands — and the full pipeline's null alert rate is bounded
   over 500 seeded stable-agent runs at a stated scale
-  (12 canaries × 5 repetitions): v0.4.0 measured **16/500 = 3.2%, Wilson 95% upper
-  5.1%**, against a CI gate re-banded to 6.5%. The v0.3.1 measurement was 10/500
-  (upper 3.6%) at m ≈ 300 primaries; the move is battery size, not calibration decay —
-  the new `tool_order_inversions` signature grows the pool to m ≈ 336, and the
-  family-wise any-alert rate grows with m even under valid per-test FDR
+  (12 canaries × 5 repetitions): **16/500 = 3.2%, Wilson 95% upper
+  5.1%**, against a CI gate banded at 6.5%. That rate is family-wise and
+  grows with battery size m even under valid per-test FDR — the
+  `tool_order_inversions` signature takes the pool to m ≈ 336 primaries,
+  and at m ≈ 300 the same study measures 10/500 (upper 3.6%) — so the
+  headline number is always published at its battery size
   (see [the statistics page](https://dedrift.ai/statistics/)).
 - Primary equality-test p-values pass through Benjamini–Hochberg adjustment;
   redundant tests run as corroboration outside the pool. PRDS is not proven for this
@@ -40,10 +41,11 @@ dedrift's differentiation is statistical correctness:
   detected in 100/100 runs (median 17 cycles), +10 pp in 89/100 (median 50
   cycles, 400-cycle horizon). The measured validity boundary: persistent
   AR(1) cycle offsets (σ = 0.25, φ = 0.9) push the ever-alert rate to 7.2%,
-  above the 5% budget — published as the boundary of the guarantee. The
-  v0.3.1 construction (`anytime.rate_model = "frozen_cp"`) remains as a
-  legacy option; its coverage interval trapped the alternative at canary
-  scale (audit: 0/30 detections at +5/+10/+20 pp over 60 cycles). Opt-in,
+  above the 5% budget — published as the boundary of the guarantee. An
+  alternative Clopper–Pearson construction (`anytime.rate_model =
+  "frozen_cp"`) ships as a documented ablation; its coverage interval traps
+  the alternative at canary scale (audit: 0/30 detections at +5/+10/+20 pp
+  over 60 cycles). Opt-in,
   golden baseline only, and both numbers are published.
 
 ## Status

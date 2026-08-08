@@ -49,7 +49,7 @@ dedrift canary run --suite canaries.yaml --agent myagent:agent_fn \
 dedrift check     # exit 0 = OK, 2 = drift, 3 = inconclusive, 1 = operational error
 ```
 
-**Cycle lifecycle (v0.3.1+).** Checks consume only *finalized* cycles, so a
+**Cycle lifecycle.** Checks consume only *finalized* cycles, so a
 partially-written cycle can never be mistaken for a complete one. `dedrift sim`
 and `dedrift canary run` finalize as they go; `dedrift log` deliberately leaves
 imported cycles **open** unless you pass `--finalize-cycles`, so import then
@@ -124,7 +124,7 @@ instead (measured: 2 in 500 stable runs of 2000 cycles, Wilson upper 1.5%),
 at a real cost in detection power. Per-process and per-check results are
 proven; the repeated dependent battery relies on a documented causal
 assumption. Read
-[anytime-valid mode](anytime.md) before switching; `fixed` remains the default.
+[anytime-valid mode](anytime.md) before switching; `fixed` is the default.
 
 ```bash
 dedrift check --inference anytime     # lifetime-oriented rate monitoring

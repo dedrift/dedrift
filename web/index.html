@@ -439,14 +439,15 @@ Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
 <section id="whats-new" class="wrap" aria-labelledby="whatsnew-h">
   <div class="kicker">What's new</div>
   <h2 id="whatsnew-h">v0.4.0 — the audited release</h2>
-  <p class="lead">Every defect from the independent audit is fixed and locked in with regression tests. Then we added reach.</p>
+  <p class="lead">The independent audit's own harness re-confirms this build — every finding locked behind a regression test. Then there's the new reach.</p>
   <div class="cards2">
     <div class="card rv"><span class="tag">new channel</span><h3>Tool-order drift</h3>
-      <p>A new <code>tool_order_inversions</code> signature catches agents that call the right tools in the wrong
-      order — a failure mode the v0.3.1 battery was blind to (0/30 detected) and v0.4.0 now flags on the first
-      post-drift check (5/10 harness runs). The battery grows to m≈336 primaries.</p></div>
+      <p>A new <code>tool_order_inversions</code> signature detects tool-call-order drift — agents calling the
+      right tools in the wrong order, a channel most monitors never test. It flags the drift on the first
+      post-drift check (5/10 harness runs; a battery without the channel measures 0/30, blind by construction).
+      The battery grows to m≈336 primaries.</p></div>
     <div class="card rv"><span class="tag">stronger anytime</span><h3>Pooled SAFE rate processes</h3>
-      <p>Anytime mode moves to two-sample SAFE rate processes, plus one pooled e-process per rate signature
+      <p>Anytime mode runs two-sample SAFE rate processes, plus one pooled e-process per rate signature
       (battery 24 → 28). Broad drift detection roughly doubles: a +20pp refusal shift is caught in
       <b>100/100 runs, median 17 cycles</b>; +10pp in <b>89/100, median 50</b>.</p></div>
     <div class="card rv"><span class="tag">hosted-model wobble</span><h3>Cycle-effect correction + persistence</h3>
@@ -454,7 +455,7 @@ Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
       reduce the false-alert rate — honestly, they don't eliminate it:</p>
       <div class="tbl-wrap" style="margin-top:14px">
         <table class="ladder">
-          <thead><tr><th scope="col">wobble σ</th><th scope="col">v0.3.1 (uncorrected)</th><th scope="col">auto</th><th scope="col">auto + persist=2</th></tr></thead>
+          <thead><tr><th scope="col">wobble σ</th><th scope="col">record-level battery (default)</th><th scope="col">cluster-aware (auto)</th><th scope="col">auto + persist=2</th></tr></thead>
           <tbody>
             <tr><td>0.00</td><td>2.3%</td><td>4.5%</td><td>1.8%</td></tr>
             <tr><td>0.05</td><td>33.5%</td><td>34.4%</td><td>7.6%</td></tr>
@@ -469,10 +470,11 @@ Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
       sample sizes a per-cycle offset <em>is</em> a real distributional change. Pinned/self-hosted: leave it off.
       Hosted with wobble: anytime mode (valid there) or auto + persistence, with these numbers in front of you.
       <a href="/docs/statistics/">The full ladder and intervals →</a></p></div>
-    <div class="card rv"><span class="tag">audit-hardened</span><h3>Every audit defect fixed</h3>
-      <p>All defects from the independent audit — from NaN-poisoned sequential statistics to attribution events
-      mislabeled "before onset" — are fixed, regression-tested, and re-confirmed by the auditors' own harness.
-      The battery's m-dependence is now published wherever the headline null rate appears.</p></div>
+    <div class="card rv"><span class="tag">audit-hardened</span><h3>Every audit finding, regression-tested</h3>
+      <p>Streams mask to observed cycles, attribution events are labeled relative to onset, degradation can
+      never mask drift — each a regression-tested answer to a finding from the independent audit, re-confirmed
+      by the auditors' own harness.
+      The battery's m-dependence is published wherever the headline null rate appears.</p></div>
   </div>
 </section>
 

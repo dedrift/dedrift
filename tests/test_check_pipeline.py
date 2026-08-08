@@ -417,18 +417,12 @@ class TestAuditRegressions:
         result = run_check(store)  # current = cycle-0009; gap outside both windows
         assert result.current_cycle == "cycle-0009"
         assert not any(i.family == "edge_case" for i in result.composition_issues)
-        ph = [
-            f
-            for f in result.flags
-            if f.kind == "page_hinkley" and f.family == "edge_case"
-        ]
+        ph = [f for f in result.flags if f.kind == "page_hinkley" and f.family == "edge_case"]
         assert ph, "expected Page-Hinkley flags for the drifted family"
         assert any(f.change_cycle_id is not None for f in ph)
         store.close()
 
-    def test_attribution_never_calls_post_onset_event_preceding(
-        self, tmp_path: Path
-    ) -> None:
+    def test_attribution_never_calls_post_onset_event_preceding(self, tmp_path: Path) -> None:
         """Defect: absolute-time nearest-event search nominated config events
         that happened AFTER the estimated onset as 'before onset'."""
         config = SimConfig(
@@ -526,11 +520,7 @@ class TestToolOrderChannel:
 
         modified = [
             r.model_copy(
-                update={
-                    "tool_calls": _sorted_calls(
-                        r, reverse=r.cycle_id == "cycle-0007"
-                    )
-                }
+                update={"tool_calls": _sorted_calls(r, reverse=r.cycle_id == "cycle-0007")}
             )
             if r.input.metadata.get("family") == "tool_heavy"
             else r
@@ -605,8 +595,9 @@ class TestCycleEffectMode:
     """The v0.4.0 cluster-aware path: engagement, and the off switch."""
 
     def test_engagement_reported_under_cycle_offsets(self, tmp_path: Path) -> None:
-        cfg = SimConfig(n_canaries=18, repetitions=7, change_cycle=None, seed=37,
-                        cycle_effect_sigma=0.25)
+        cfg = SimConfig(
+            n_canaries=18, repetitions=7, change_cycle=None, seed=37, cycle_effect_sigma=0.25
+        )
         store = Store.init_project(tmp_path)
         records = SimAgent(cfg).run_cycles(8)
         store.append_many(records)
@@ -621,8 +612,9 @@ class TestCycleEffectMode:
         store.close()
 
     def test_off_restores_record_level_path(self, tmp_path: Path) -> None:
-        cfg = SimConfig(n_canaries=18, repetitions=7, change_cycle=None, seed=41,
-                        cycle_effect_sigma=0.25)
+        cfg = SimConfig(
+            n_canaries=18, repetitions=7, change_cycle=None, seed=41, cycle_effect_sigma=0.25
+        )
         store = Store.init_project(tmp_path)
         records = SimAgent(cfg).run_cycles(8)
         store.append_many(records)

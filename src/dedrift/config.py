@@ -44,9 +44,7 @@ _TABLE_KEYS = {
         }
     ),
     "embeddings": frozenset({"model"}),
-    "anytime": frozenset(
-        {"alpha", "gamma_total", "tilts", "epoch_allocation", "rate_model"}
-    ),
+    "anytime": frozenset({"alpha", "gamma_total", "tilts", "epoch_allocation", "rate_model"}),
 }
 
 
@@ -266,8 +264,7 @@ class AnytimeConfig:
             "frozen_cp",
         }:
             raise ValueError(
-                "anytime.rate_model must be 'twosample' or 'frozen_cp', "
-                f"got {self.rate_model!r}"
+                f"anytime.rate_model must be 'twosample' or 'frozen_cp', got {self.rate_model!r}"
             )
 
     @property
@@ -420,9 +417,7 @@ class ProjectConfig:
             epoch_allocation=_toml_string(
                 anytime_raw, "epoch_allocation", "per_epoch", section="anytime"
             ),
-            rate_model=_toml_string(
-                anytime_raw, "rate_model", "twosample", section="anytime"
-            ),
+            rate_model=_toml_string(anytime_raw, "rate_model", "twosample", section="anytime"),
         )
         materiality = Materiality(
             refusal_rate_pp=_toml_float(
@@ -463,10 +458,6 @@ class ProjectConfig:
             anytime=anytime,
             inference=_toml_string(detection, "inference", "fixed", section="detection"),
             cycle_effect=_toml_string(detection, "cycle_effect", "off", section="detection"),
-            cycle_effect_icc=_toml_float(
-                detection, "cycle_effect_icc", 0.02, section="detection"
-            ),
-            alert_persistence=_toml_int(
-                detection, "alert_persistence", 1, section="detection"
-            ),
+            cycle_effect_icc=_toml_float(detection, "cycle_effect_icc", 0.02, section="detection"),
+            alert_persistence=_toml_int(detection, "alert_persistence", 1, section="detection"),
         )

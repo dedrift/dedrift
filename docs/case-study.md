@@ -46,17 +46,16 @@ D = 0.92 (the output distributions barely overlap), output tokens D = 0.81
 and latency *dispersion* up 2.4× on the robust (mean-absolute-deviation)
 scale, while latency medians barely moved.
 
-!!! note "These numbers were re-derived after the detectors changed"
-    The same 432 stored records, re-analysed with the current code, give 30
-    alerts rather than 36. Two of the changes are in *how* the effect is
-    measured rather than in what happened: semantic displacement fell from
-    D = 0.97 to 0.92 once reference records stopped being scored against a
-    centroid they helped define, and latency dispersion reads 2.44 rather
-    than 4.73 because 4.73 was a **variance** ratio and the gate now uses
-    the robust scale the test is actually computed on.
+!!! note "How these effects are measured — and why MMD is silent here"
+    The effects are scored exactly as the gates define them: the semantic
+    centroid is fit on the reference records alone, so displacement is an
+    out-of-sample score (D = 0.92), and latency dispersion is the robust
+    mean-absolute-deviation ratio the test is computed on (2.44), not a
+    variance ratio.
 
-    One consequence cuts against this page: the demo froze a *three*-cycle
-    golden baseline, and the MMD noise floor now requires five. The floor is
+    One consequence of the demo's design cuts against this page: it froze a
+    *three*-cycle golden baseline, and the MMD noise floor requires five
+    reference cycles. The floor is
     therefore unavailable here, so MMD is diagnostic-only and cannot alert.
     That fail-closed behavior is deliberate: three pairwise values cannot
     calibrate a production materiality floor. Use at least five known-good

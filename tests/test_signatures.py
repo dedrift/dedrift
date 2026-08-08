@@ -81,9 +81,7 @@ class TestExtraction:
         )
         assert extract_record_signature(reversed_).tool_order_inversions == 3
         # Fewer than two calls contribute zero.
-        singleton = make_record(
-            tool_calls=[ToolCall(name="search", args_schema_ok=True, order=1)]
-        )
+        singleton = make_record(tool_calls=[ToolCall(name="search", args_schema_ok=True, order=1)])
         assert extract_record_signature(singleton).tool_order_inversions == 0
 
     def test_family_from_metadata(self) -> None:
