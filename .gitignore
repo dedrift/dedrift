@@ -37,3 +37,6 @@ dist/
 # MkDocs build output
 site/
 launch/
+
+# Local agent settings (never publish - may reference private tooling)
+.claude/
