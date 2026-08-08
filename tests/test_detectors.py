@@ -271,3 +271,26 @@ class TestFlagChannelCompounding:
             f"independent compounding gives {compounded:.3f}; the paper quotes 0.76 "
             "against an observed 0.686, attributing the gap to shared records"
         )
+
+
+class TestPageHinkleyScaleFloor:
+    """Audit regression: near-constant discrete streams produced statistics
+    of ~2.6e15 (float dust divided by a ~zero scale) and spurious alarms."""
+
+    def test_constant_stream_never_alarms(self) -> None:
+        res = page_hinkley(np.full(30, 7.0))
+        assert not res.alarm
+        assert res.statistic < 1.0
+
+    def test_float_dust_is_not_an_excursion(self) -> None:
+        rng = np.random.default_rng(3)
+        values = 0.1 + rng.normal(0, 1e-12, 40)
+        res = page_hinkley(values)
+        assert not res.alarm
+        assert res.statistic < 100.0  # was ~1e15 before the scale floor
+
+    def test_real_shift_in_tight_stream_still_alarms(self) -> None:
+        rng = np.random.default_rng(4)
+        values = np.concatenate([0.1 + rng.normal(0, 1e-4, 15), 0.2 + rng.normal(0, 1e-4, 15)])
+        res = page_hinkley(values)
+        assert res.alarm

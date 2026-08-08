@@ -27,10 +27,18 @@ class Attribution:
         signature: Signature name.
         onset_cycle: Estimated onset cycle ID.
         onset_ts: Timestamp of the onset cycle's first record (ISO).
-        nearest_event_ts: Timestamp of the nearest config event (ISO), if any.
+        nearest_event_ts: Timestamp of the nominated config event (ISO), if any.
         nearest_event_delta_hours: Signed hours from event to onset
-            (positive = event preceded onset).
+            (positive = event preceded onset; negative only when
+            ``event_relation`` is ``"precedes_detection"``).
         nearest_event_change: Human-readable fingerprint change.
+        event_relation: How the nominated event relates to the onset
+            estimate: ``"precedes_onset"`` (at or before the estimated
+            onset — the only temporally consistent reading),
+            ``"precedes_detection"`` (no event precedes the noisy onset
+            estimate; this is the latest event before the check ran —
+            weak evidence, labelled as such), or ``None`` when no event
+            exists at or before the check (a silent drift).
         co_shifting: Number of other (family, signature) alert groups whose
             onset falls in the same cycle.
     """
@@ -42,6 +50,7 @@ class Attribution:
     nearest_event_ts: str | None
     nearest_event_delta_hours: float | None
     nearest_event_change: str | None
+    event_relation: str | None
     co_shifting: int
 
 
@@ -100,6 +109,9 @@ def attribute(store: Store, result: CheckResult) -> list[Attribution]:
     onset_by_group = {g: ph_onsets.get(g, result.current_cycle) for g in groups}
     onset_counts = pd.Series(list(onset_by_group.values())).value_counts()
 
+    # The fallback window runs to the last record the check saw: detection
+    # happened at check time, so any event before that predates detection.
+    check_time = max((r.ts for r in records), default=None)
     out: list[Attribution] = []
     for family, signature in groups:
         onset_cycle = onset_by_group[(family, signature)]
@@ -109,13 +121,42 @@ def attribute(store: Store, result: CheckResult) -> list[Attribution]:
         nearest_ts: str | None = None
         nearest_delta: float | None = None
         nearest_change: str | None = None
+        relation: str | None = None
         for ts_str, old_fp, new_fp in real_events:
             event_ts = datetime.fromisoformat(ts_str)
             delta_hours = (onset_ts - event_ts).total_seconds() / 3600
-            if nearest_delta is None or abs(delta_hours) < abs(nearest_delta):
+            # Only events at or before the estimated onset are candidates:
+            # a drift cannot be "consistent with" a change that had not
+            # happened yet. (An earlier version ranked by absolute time and
+            # could nominate a post-onset event as "before onset".)
+            if delta_hours < 0:
+                continue
+            if nearest_delta is None or delta_hours < nearest_delta:
                 nearest_delta = delta_hours
                 nearest_ts = ts_str
                 nearest_change = f"{(old_fp or 'none')[:19]} -> {new_fp[:19]}"
+        if nearest_ts is not None:
+            relation = "precedes_onset"
+        elif check_time is not None:
+            # No event precedes the estimated onset. Onset estimates come
+            # from Page-Hinkley and are noisy (measured null alarm rates are
+            # documented), so an event after the estimate but before this
+            # check is still worth listing -- labelled as weak evidence,
+            # never described as preceding the onset.
+            fallback: tuple[float, str, str] | None = None
+            for ts_str, old_fp, new_fp in real_events:
+                event_ts = datetime.fromisoformat(ts_str)
+                if event_ts > check_time:
+                    continue
+                gap = (check_time - event_ts).total_seconds() / 3600
+                if fallback is None or gap < fallback[0]:
+                    fallback = (gap, ts_str, f"{(old_fp or 'none')[:19]} -> {new_fp[:19]}")
+            if fallback is not None:
+                _, nearest_ts, nearest_change = fallback
+                nearest_delta = round(
+                    (onset_ts - datetime.fromisoformat(nearest_ts)).total_seconds() / 3600, 2
+                )
+                relation = "precedes_detection"
         out.append(
             Attribution(
                 family=family,
@@ -127,6 +168,7 @@ def attribute(store: Store, result: CheckResult) -> list[Attribution]:
                     round(nearest_delta, 2) if nearest_delta is not None else None
                 ),
                 nearest_event_change=nearest_change,
+                event_relation=relation,
                 co_shifting=int(onset_counts.get(onset_cycle, 1)) - 1,
             )
         )

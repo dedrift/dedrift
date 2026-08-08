@@ -486,3 +486,78 @@ class TestEpochPool:
         assert "declared at this check" in first
         assert "frozen when this epoch began" in later
         assert "Multiplicity spent, and on what" in later
+
+
+class TestTwoSampleRateModel:
+    """The v0.3.2 two-sample SAFE rate process: power and the config switch."""
+
+    def test_twosample_detects_strong_rate_shift(self, tmp_path: Path) -> None:
+        """The frozen-CP construction could not do this at canary scale: the
+        audit measured 0/30 detections at +20pp over 60 cycles (v0.3.1)."""
+        cfg = SimConfig(
+            n_canaries=18,
+            repetitions=7,
+            pre=BehaviorProfile(refusal_prob=0.05),
+            post=BehaviorProfile(refusal_prob=0.55),
+            change_cycle=8,
+            seed=31,
+        )
+        store = Store.init_project(tmp_path)
+        records = SimAgent(cfg).run_cycles(16)
+        store.append_many(records)
+        ids = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        set_golden_baseline(store, ids[:3])
+        result = run_anytime_check(store)  # folds all unseen post-golden cycles
+        assert result.n_alerts > 0
+        refusal = [p for p in result.processes if p.key[2] == "refusal"]
+        assert any(p.rejected for p in refusal)
+        store.close()
+
+    def test_twosample_stays_quiet_on_stable(self, tmp_path: Path) -> None:
+        store = project(tmp_path, cycles=10, change_cycle=None)
+        result = run_anytime_check(store)
+        assert result.n_alerts == 0
+        store.close()
+
+    def test_frozen_cp_still_available(self, tmp_path: Path) -> None:
+        store = project(tmp_path, cycles=6, change_cycle=None)
+        cfg = ProjectConfig.load(store.project_dir)
+        legacy = ProjectConfig(
+            name=cfg.name,
+            anytime=AnytimeConfig(rate_model="frozen_cp"),
+        )
+        result = run_anytime_check(store, config=legacy)
+        assert result.n_alerts == 0
+        assert result.gamma_per_process > 0  # coverage budget is spent here
+        store.close()
+
+    def test_twosample_spends_no_coverage_budget(self, tmp_path: Path) -> None:
+        store = project(tmp_path, cycles=6, change_cycle=None)
+        result = run_anytime_check(store)
+        assert result.gamma_per_process == 0.0
+        assert result.alpha_prime == result.alpha
+        store.close()
+
+    def test_twosample_detects_midrate_shift_frozen_cp_missed(self, tmp_path: Path) -> None:
+        """Audit cell: p0=0.30 -> 0.50. The frozen-CP construction's interval
+        contains the alternative at this base rate (measured 0/30 in 60
+        cycles on the audit harness); the two-sample process detects within
+        60 cycles (its per-cycle growth decays ~1/t as the pooled posterior
+        learns the alternative, so mid-rate shifts take tens of cycles —
+        documented in docs/anytime.md)."""
+        cfg = SimConfig(
+            n_canaries=18,
+            repetitions=7,
+            pre=BehaviorProfile(refusal_prob=0.30),
+            post=BehaviorProfile(refusal_prob=0.50),
+            change_cycle=8,
+            seed=43,
+        )
+        store = Store.init_project(tmp_path)
+        records = SimAgent(cfg).run_cycles(60)
+        store.append_many(records)
+        ids = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        set_golden_baseline(store, ids[:3])
+        result = run_anytime_check(store)
+        assert result.n_alerts > 0
+        store.close()

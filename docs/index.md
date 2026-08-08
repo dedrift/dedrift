@@ -22,9 +22,9 @@ Every statistical claim is enforced by simulation tests that run in CI.
 
 <div class="dd-pip"><span>$</span> pip install dedrift</div>
 
-<p class="dd-proof-strip">Proven on a real agent: a silent model swap, caught
-in one canary cycle with correct attribution —
-<a href="case-study/">read the case study</a>.</p>
+<p class="dd-proof-strip">A silent model swap, caught in one canary cycle
+with correct attribution — reproducible in four commands.
+<a href="case-study/">see the demonstration</a>.</p>
 
 </div>
 
@@ -88,16 +88,16 @@ silent updates — all shift agent behavior without a single error in your logs.
 
 <div class="dd-section-title">Watch it catch a real one</div>
 <p class="dd-section-sub">
-We swapped the model behind a live agent — same prompt, same canaries,
-nothing announced. The first post-swap check fired on both baselines, with
-every alert attributed to the config fingerprint change 0.11&nbsp;h before
-onset.
+A scripted silent model swap — same prompt, same canaries, nothing
+announced. The first post-swap check fired on both baselines: 124 gated
+alerts, 21 co-shifting signature groups, attributed to the config
+fingerprint change at onset.
 </p>
 
-[![A real silent model swap, caught](assets/fig1_the_catch.png)](case-study.md)
+[![A scripted silent model swap, caught](assets/fig1_the_catch.png)](case-study.md)
 
 <p style="text-align:center" markdown>
-[Read the case study](case-study.md){ .md-button .md-button--primary }
+[See the demonstration](case-study.md){ .md-button .md-button--primary }
 [Reproduce it yourself](https://github.com/dedrift/dedrift/tree/main/examples){ .md-button }
 </p>
 
@@ -105,8 +105,12 @@ onset.
 <p class="dd-section-sub">
 Every detector's false-alarm rate is measured against a documented
 acceptance band by simulation tests that run in CI on every commit. The
-full pipeline's null alert rate: 10 of 500 stable-agent checks (Wilson 95%
-upper bound 0.0364). The parts that aren't calibrated — the diagnostic flag
+full pipeline's null alert rate: 16 of 500 stable-agent checks (3.2%,
+Wilson 95% upper bound 5.1%), measured at m ≈ 336 primaries — the
+any-alert rate is family-wise and grows with battery size even under
+valid per-test FDR, so the headline number is always stated at its
+battery size. Opt-in wobble-robust modes for hosted models are measured
+in both directions. The parts that aren't calibrated — the diagnostic flag
 channel — carry their measured rate too, because honesty is the product.
 </p>
 

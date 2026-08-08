@@ -39,6 +39,23 @@ import numpy as np
 import numpy.typing as npt
 
 
+def _floor_scale(scale: float, window: npt.NDArray[np.float64]) -> float:
+    """Refuse a scale that is float dust rather than measured variation.
+
+    On a near-constant discrete stream (all retries exactly 0, constant
+    latencies) the successive-difference scale can come out at 1e-15;
+    dividing by it turns rounding error into standardized excursions of
+    1e15 and the statistic renders as nonsense in reports. When the
+    estimated scale is indistinguishable from the window's own floating
+    point resolution, fall back to 1.0: the stream is constant, every z
+    stays ~0, and no alarm can fire -- the correct answer for a constant
+    stream.
+    """
+    magnitude = max(1.0, float(np.max(np.abs(window))))
+    floor = 1e-9 * magnitude
+    return scale if scale >= floor else 1.0
+
+
 @dataclass(frozen=True)
 class PageHinkleyResult:
     """Result of a Page-Hinkley scan over an ordered stream.
@@ -120,10 +137,10 @@ def page_hinkley(
             d = np.diff(window)
             s = float(np.median(np.abs(d - np.median(d))) * 1.4826 / np.sqrt(2.0))
             if s > 0:
-                return s
+                return _floor_scale(s, window)
             s = float(np.std(window, ddof=1))
             if s > 0:
-                return s
+                return _floor_scale(s, window)
         return 1.0
 
     z = np.empty(n, dtype=float)

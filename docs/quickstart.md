@@ -49,7 +49,7 @@ dedrift canary run --suite canaries.yaml --agent myagent:agent_fn \
 dedrift check     # exit 0 = OK, 2 = drift, 3 = inconclusive, 1 = operational error
 ```
 
-**Cycle lifecycle (v0.3.1+).** Checks consume only *finalized* cycles, so a
+**Cycle lifecycle.** Checks consume only *finalized* cycles, so a
 partially-written cycle can never be mistaken for a complete one. `dedrift sim`
 and `dedrift canary run` finalize as they go; `dedrift log` deliberately leaves
 imported cycles **open** unless you pass `--finalize-cycles`, so import then
@@ -115,12 +115,16 @@ failure mode, not a configuration choice.
 ### Two inference modes
 
 `dedrift check` controls false alarms *per check*. Because monitoring runs
-forever, that rate compounds — about ten false alerts a month at hourly
-checks. `--inference anytime` uses lifetime-oriented rate e-processes instead
-(measured: 0 in 500 stable runs of 2000 cycles), at a real cost in detection
-power. Per-process and per-check results are proven; the repeated dependent
-battery relies on a documented causal assumption. Read
-[anytime-valid mode](anytime.md) before switching; `fixed` remains the default.
+forever, that rate compounds — measured 3.2% per check on stable agents,
+about 23 false alerts a month at hourly checks. Two answers ship:
+`detection.alert_persistence = 2` requires an alert to repeat on a fresh
+cycle before it fires (wobble-induced false alerts are transient, drift
+persists), and `--inference anytime` uses lifetime-oriented rate e-processes
+instead (measured: 2 in 500 stable runs of 2000 cycles, Wilson upper 1.5%),
+at a real cost in detection power. Per-process and per-check results are
+proven; the repeated dependent battery relies on a documented causal
+assumption. Read
+[anytime-valid mode](anytime.md) before switching; `fixed` is the default.
 
 ```bash
 dedrift check --inference anytime     # lifetime-oriented rate monitoring

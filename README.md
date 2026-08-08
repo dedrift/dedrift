@@ -12,8 +12,14 @@ dedrift's differentiation is statistical correctness:
 
 - Every p-valued detector's false-alarm rate is *measured* by simulation tests in CI
   against stated acceptance bands — and the full pipeline's null alert rate is bounded
-  (Wilson 95% upper bound < 5%) over 500 seeded stable-agent runs at a stated scale
-  (12 canaries × 5 repetitions; see [the statistics page](https://dedrift.ai/statistics/)).
+  over 500 seeded stable-agent runs at a stated scale
+  (12 canaries × 5 repetitions): **16/500 = 3.2%, Wilson 95% upper
+  5.1%**, against a CI gate banded at 6.5%. That rate is family-wise and
+  grows with battery size m even under valid per-test FDR — the
+  `tool_order_inversions` signature takes the pool to m ≈ 336 primaries,
+  and at m ≈ 300 the same study measures 10/500 (upper 3.6%) — so the
+  headline number is always published at its battery size
+  (see [the statistics page](https://dedrift.ai/statistics/)).
 - Primary equality-test p-values pass through Benjamini–Hochberg adjustment;
   redundant tests run as corroboration outside the pool. PRDS is not proven for this
   shared battery, and the later observed-effect filter is not a practical-null FDR
@@ -28,12 +34,19 @@ dedrift's differentiation is statistical correctness:
   stable agent) ≤ α, per epoch. Per-process optional-stopping control and
   per-check e-BH are proven; the repeated dependent battery has a documented
   causal assumption and is measured rather than presented as an unconditional
-  theorem. It produced 0 false alerts across 500
-  stable-agent runs of 2000 cycles each with dependent streams (no false alert at any
-  measured horizon), against 100% for the per-check path on identical histories. It
-  costs detection power, and the cost is inconsistency rather than delay: a
-  +10 pp shift on one channel is caught in only 23% of runs. Opt-in, golden
-  baseline only, and both numbers are published.
+  theorem. The default rate model is the two-sample SAFE e-value: measured 2
+  false alerts across 500 stable-agent runs of 2000 cycles each with
+  dependent streams (0.4%, Wilson upper 1.5%), against 100% for the
+  per-check path on identical histories. Power on refusal shifts: +20 pp
+  detected in 100/100 runs (median 17 cycles), +10 pp in 89/100 (median 50
+  cycles, 400-cycle horizon). The measured validity boundary: persistent
+  AR(1) cycle offsets (σ = 0.25, φ = 0.9) push the ever-alert rate to 7.2%,
+  above the 5% budget — published as the boundary of the guarantee. An
+  alternative Clopper–Pearson construction (`anytime.rate_model =
+  "frozen_cp"`) ships as a documented ablation; its coverage interval traps
+  the alternative at canary scale (audit: 0/30 detections at +5/+10/+20 pp
+  over 60 cycles). Opt-in,
+  golden baseline only, and both numbers are published.
 
 ## Status
 
@@ -80,8 +93,8 @@ dedrift check                                  # exits 2: DRIFT DETECTED (both b
 dedrift report --out report.md                 # deterministic markdown report
 ```
 
-The report shows what shifted in plain units (e.g. refusal +21 pp, output
-variance ratio ~9x), BH-adjusted p-values, and attribution: "nearest config
+The report shows what shifted in plain units (e.g. refusal +21 pp, latency
+dispersion ratio 2.4x), BH-adjusted p-values, and attribution: "nearest config
 event: model fingerprint change, 0.0 h before onset." With your own agent,
 replace `sim` with `dedrift canary run --suite canaries.yaml --agent
 yourmodule:agent_fn --model 'provider/model@version'` on a schedule.
