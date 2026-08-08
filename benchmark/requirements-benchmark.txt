@@ -1,0 +1,21 @@
+# Pinned environment for the null-calibration benchmark (benchmark/).
+# Recreate with:
+#   python -m venv .venv-benchmark && . .venv-benchmark/bin/activate
+#   pip install -e . -r benchmark/requirements-benchmark.txt
+# Versions below are the ones the published numbers were measured with
+# (macOS arm64, Python 3.13.9). dedrift itself is installed editable from
+# this repository; its version is recorded inside each results document.
+numpy==2.5.1
+pandas==3.0.5
+scipy==1.18.0
+evidently==0.7.21
+
+# Considered and NOT measured — see benchmark/METHODS_CONSIDERED.md:
+# driftbase==0.15.1        (public write API is disconnected from the read
+#                           path compute_drift() uses; integration impossible
+#                           without writing internal tables)
+# nautilus-compass==2.3.0  (within-session persona drift; our histories have
+#                           no sessions — estimand mismatch, not config)
+# uptrain==0.7.1           (ConceptDrift streaming operator; see
+#                           METHODS_CONSIDERED.md)
+# whylogs==1.6.4           (no programmatic drift-alarm API at defaults)

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Added `benchmark/`: a reproducible null-calibration study measuring false-alarm
+  rates of seven drift-detection configurations (folk-threshold PSI with and
+  without the validity guard, Evidently 0.7.21 DataDriftPreset at defaults
+  pooled and per family, naive uncontrolled two-sample KS, and dedrift's
+  fixed-sample and anytime-valid paths) on 500 seeded stable-agent histories at
+  two canary scales. `make benchmark` regenerates the results JSONs, the
+  `web/benchmark/` page table, and the paper's validity-scale table.
+  `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded
+  with checkable reasons; `benchmark/OUTREACH.md` holds the maintainer
+  right-of-reply drafts (unsent; publication is the owner's decision after the
+  14-day window).
+
 ## 0.4.0
 
 Independent-audit release: every defect the external audit confirmed is fixed, and both

@@ -81,6 +81,10 @@ pydocstyle.convention = "google"
 # ASCII would make the guarantee harder to read, which is the opposite of
 # what this project is for.
 "src/dedrift/report.py" = ["E501", "RUF001"]
+# The benchmark table renderer emits typographic characters (×, α, –) into
+# the HTML page and LaTeX fragment on purpose; they are the published text,
+# not ambiguous identifiers.
+"benchmark/tables.py" = ["RUF001"]
 
 [tool.mypy]
 # 3.12, not 3.11: recent numpy stubs use PEP 695 `type` statements, which mypy

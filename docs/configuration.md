@@ -120,7 +120,7 @@ estimated causally, from data strictly before each step — a sequential
 detector that standardised on cycles *after* the alarm would read its own
 future and understate the rate roughly sixfold. Flags compound
 across streams — a stable agent shows ≥1 flag on
-[68.6% of checks](statistics.md) — which is why flags never page anyone.
+[69.8% of checks](statistics.md) — which is why flags never page anyone.
 
 ### Embeddings
 
