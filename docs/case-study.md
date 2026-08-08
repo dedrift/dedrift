@@ -1,67 +1,68 @@
-# Case study: a real silent model swap, caught in one cycle
+# Demonstration: a silent model swap, caught in one cycle
 
-Simulations prove calibration. They can't prove relevance. So we staged the
-incident every agent team fears — exactly the way it happens in the wild —
-and pointed dedrift at it.
+Simulations prove calibration. This page shows what a check looks like when
+the ground shifts — a scripted silent model swap you can regenerate end to
+end with four commands. Every number below is the output of those commands
+on the current build.
 
 ## The setup
 
-A real agent (a thin adapter over a production LLM CLI, fixed system prompt)
-ran a frozen suite of **18 canaries across six behavioral families** —
-happy-path, edge-case, refusal-boundary, tool-heavy JSON tasks, adversarial
-injections, long-context — at **4 repetitions per cycle** (72 records per
-cycle). Tier-2 semantic signatures used the zero-dependency pinned hash
-embedder.
-
-Four cycles were collected on `claude-haiku`. The first three were frozen as
-the golden baseline:
+The synthetic agent (`dedrift sim`) runs a frozen suite of **30 canaries
+across six behavioral families** — happy-path, edge-case, refusal-boundary,
+tool-heavy JSON tasks, adversarial injections, long-context — at **7
+repetitions per cycle** (210 records per cycle). Tier-2 semantic signatures
+use the zero-dependency pinned hash embedder.
 
 ```bash
-dedrift baseline set --first 3
+dedrift init
+dedrift embedder pin hash
+dedrift sim --cycles 8 --change-cycle 7   # scripted swap at the 8th cycle
+dedrift baseline set --first 3            # golden = cycles 1–3
 ```
 
-Then the silent swap: the model identifier changed to `claude-sonnet` —
-**same prompt, same canaries, same tooling** — and two more cycles ran. The
-only trace visible to the system is a changed configuration fingerprint.
-Nobody told the detector anything.
+The scripted swap changes the model identifier from `simmodel@v1` to
+`simmodel@v2` — **same prompt, same canaries, same tooling** — with the
+classic silent-degradation profile: longer outputs, higher refusal and
+format-error rates, a thicker latency tail. The only trace visible to the
+system is a changed configuration fingerprint. Nobody told the detector
+anything.
 
 ## The verdict
 
 ```text
 $ dedrift check
-Current cycle: cycle-20260802T121457Z-ca7752c8
-Sudden (vs rolling 2 cycles): DRIFT DETECTED
+Current cycle: cycle-0007
+Overall: DRIFT DETECTED
+Sudden (vs rolling 4 cycles): DRIFT DETECTED
 Cumulative (vs golden 3 cycles): DRIFT DETECTED
-Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
-  [golden] adversarial/semantic_displacement ks: effect=+0.917, p_adj=4.8e-07
-  [golden] adversarial/tokens_out ks: effect=+0.806, p_adj=6.6e-05
-  [golden] edge_case/latency_ms levene: effect=+2.439, p_adj=0.018
+Alerts: 124 (BH-adjusted equality tests q=0.05, observed-effect gated)
+  [golden] adversarial/output_chars ks: effect=+0.762, p_adj=2.42e-14
+  [golden] adversarial/output_words ks: effect=+0.771, p_adj=8.97e-15
+  [golden] adversarial/semantic_displacement ks: effect=+0.390, p_adj=0.002136
+  [golden] adversarial/tokens_out ks: effect=+0.676, p_adj=7.13e-11
   ...
 ```
 
-Both baselines fired on the first post-swap check. The effects are reported
-on the scales they were gated on: the semantic-displacement KS statistic
-D = 0.92 (the output distributions barely overlap), output tokens D = 0.81
-— the new model answers the same prompts in roughly **40% of the tokens** —
-and latency *dispersion* up 2.4× on the robust (mean-absolute-deviation)
-scale, while latency medians barely moved.
+Both baselines fired on the first post-swap check. Effects are reported on
+the scales they were gated on: output-length KS statistics up to D = 0.93
+(the distributions barely overlap), semantic displacement D ≈ 0.4–0.5 on
+the hash embedder, and latency *dispersion* up ~2.1× on the robust
+mean-absolute-deviation scale.
 
 !!! note "How these effects are measured — and why MMD is silent here"
-    The effects are scored exactly as the gates define them: the semantic
-    centroid is fit on the reference records alone, so displacement is an
-    out-of-sample score (D = 0.92), and latency dispersion is the robust
-    mean-absolute-deviation ratio the test is computed on (2.44), not a
+    The semantic centroid is fit on reference records alone, so
+    displacement is an out-of-sample score, and latency dispersion is the
+    robust mean-absolute-deviation ratio the test is computed on, not a
     variance ratio.
 
-    One consequence of the demo's design cuts against this page: it froze a
-    *three*-cycle golden baseline, and the MMD noise floor requires five
-    reference cycles. The floor is
-    therefore unavailable here, so MMD is diagnostic-only and cannot alert.
-    That fail-closed behavior is deliberate: three pairwise values cannot
-    calibrate a production materiality floor. Use at least five known-good
-    golden cycles or configure an externally justified floor.
+    The demo freezes a *three*-cycle golden baseline, and the MMD noise
+    floor requires five reference cycles. The floor is therefore
+    unavailable here, so MMD is diagnostic-only and cannot alert — that
+    fail-closed behavior is deliberate: three pairwise values cannot
+    calibrate a materiality floor. Use at least five known-good golden
+    cycles or configure an externally justified floor.
 
-![Per-record distributions by cycle: output tokens collapse after the swap; latency medians hold while the tail thickens](assets/fig1_the_catch.png)
+![Per-record distributions by cycle: output tokens jump after the swap; latency medians hold while the tail thickens](assets/fig1_the_catch.png)
 
 That right-hand panel is why dedrift tracks variance and P95 alongside
 means: agents often go erratic before they go wrong on average.
@@ -71,42 +72,39 @@ means: agents often go erratic before they go wrong on average.
 Every alerting signature group was correlated with the recorded config
 events:
 
-> **adversarial / semantic_displacement** — drift onset ≈ cycle
-> `cycle-20260802T121457Z…`. Nearest config event: model fingerprint change,
-> **0.11 h before onset**. 9 other signature group(s) shifted in the same
-> window.
+> **adversarial / output_words** — drift onset ≈ cycle `cycle-0007`.
+> Nearest preceding config event: model fingerprint change, **0.0 h before
+> onset**. 21 other signature group(s) shifted in the same window.
 
-Nine signature groups co-shifting in one cycle, right after a fingerprint
-change, is what a configuration change looks like — as opposed to a single
-family decaying on its own. The report says *"consistent with"*, never
-*"caused by"*; that's a design rule.
+Twenty-one signature groups co-shifting in one cycle, right after a
+fingerprint change, is what a configuration change looks like — as opposed
+to a single family decaying on its own. The report says *"consistent
+with"*, never *"caused by"*; that's a design rule. Events that occur after
+the estimated onset are never described as preceding it — they are labelled
+weak evidence instead.
 
 ## Honest imperfections
 
-Two things didn't go perfectly, and we'd rather tell you than have you find
-out:
-
-- Some Page–Hinkley onset estimates for token streams localized one to two
-  cycles early — with six cycles of history the change-point localizer is at
-  the edge of its usable range. Attribution still ranked the true config
-  event nearest.
-- Latency here includes CLI process overhead, not raw API latency. The
-  dispersion alert is plausibly real (the larger model's latency profile
-  genuinely differs), but we would not present the latency channel alone as
-  evidence of a model change.
+- With eight cycles of history the Page–Hinkley change-point localizer is
+  at the edge of its usable range, and a couple of signature groups
+  localize the onset a cycle early; those attributions are labelled as
+  weak evidence rather than preceding-onset. The estimate's measured false
+  alarm behavior is documented in [Statistics](statistics.md).
+- This is a scripted synthetic agent: it demonstrates detection and
+  attribution mechanics, not production prevalence. Evidence on real
+  production agents is what the design-partner program collects —
+  [apply from the pricing section](https://dedrift.ai/#pricing) if you run
+  one.
 
 ## Reproduce it
 
-The full harness ships in the repository — canary suite, agent adapters
-(API-key and Claude-subscription variants), and the run script:
-
 ```bash
-git clone https://github.com/dedrift/dedrift && cd dedrift
-pip install -e .
-./examples/run_real_demo.sh   # MODEL_A/MODEL_B/REPS overridable via env
+pip install dedrift
+dedrift init && dedrift embedder pin hash
+dedrift sim --cycles 8 --change-cycle 7 && dedrift baseline set --first 3
+dedrift check
 ```
 
-Runs on a laptop in under an hour at demo scale. If you'd like help running
-it against **your** agent — that's exactly what we're looking for design
-partners for. Write to `support@dedrift.ai`, or
-[apply from the pricing section](https://dedrift.ai/#pricing).
+Runs in about a minute. The numbers above regenerate bit-for-bit (the sim
+is seeded), and `dedrift report` renders the full markdown report with the
+attribution table.

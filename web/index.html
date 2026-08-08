@@ -353,31 +353,31 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
   </p>
   <div class="cta-row">
     <a class="btn btn-primary" href="/docs/quickstart/">Get started in minutes</a>
-    <a class="btn" href="#case-study">Watch a real catch</a>
+    <a class="btn" href="#case-study">Watch the catch</a>
   </div>
   <div class="pip"><span><span class="d">$</span> <b>pip install dedrift</b></span><button type="button" id="pipcopy" aria-label="Copy install command">copy</button></div>
 
   <div class="term rv" id="term">
-    <div class="term-bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>dedrift check — production agent, 30 canaries × 7 reps</span></div>
+    <div class="term-bar"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>dedrift check — scripted silent swap, 30 canaries × 7 reps</span></div>
     <div class="term-body" id="termbody"><span class="p">$ </span>dedrift check
-Current cycle: cycle-20260802T121457Z
-Sudden (vs rolling 2 cycles): <span class="a">DRIFT DETECTED</span>
+Current cycle: cycle-0007
+Sudden (vs rolling 4 cycles): <span class="a">DRIFT DETECTED</span>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span>
-Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
-  [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.917</span>, p_adj=4.8e-07
-  [golden] adversarial/tokens_out ks: effect=<span class="a">+0.806</span>, p_adj=6.6e-05
-  [golden] edge_case/latency_ms levene: effect=<span class="a">+2.439</span>, p_adj=0.018
-<span class="dim"># attribution: model fingerprint change, 0.11 h before onset</span>
+Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
+  [golden] adversarial/output_words ks: effect=<span class="a">+0.771</span>, p_adj=8.97e-15
+  [golden] adversarial/tokens_out ks: effect=<span class="a">+0.676</span>, p_adj=7.13e-11
+  [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.390</span>, p_adj=0.002136
+<span class="dim"># attribution: model fingerprint change, 0.0 h before onset</span>
 <span class="dim"># consistent with the swap. nobody told it anything.</span></div>
   </div>
-  <p class="term-cap">Real output from the silent-swap case study below — not a mockup.</p>
+  <p class="term-cap">Real output of the scripted demonstration below — regenerate it in four commands.</p>
 
   <div class="stats" aria-label="Measured results, v0.4.0">
     <div class="stat rv"><div class="n"><em>3.2%</em></div>
       <div class="l">measured null alert rate — 16 of 500 stable-agent checks alerted</div>
       <div class="fine">Wilson 95% upper 5.1% · family-wise over m≈336 primaries; grows with battery size even under valid per-test FDR</div></div>
     <div class="stat rv"><div class="n"><em>1 cycle</em></div>
-      <div class="l">to catch a real silent model swap — flagged on both baselines, correctly attributed</div>
+      <div class="l">to catch a silent model swap — flagged on both baselines, correctly attributed</div>
       <div class="fine">harness: 30 canaries × 7 reps, golden = 3 cycles</div></div>
     <div class="stat rv"><div class="n"><em>100%</em></div>
       <div class="l">of stable checks falsely flagged by raw PSI at canary scale — measured</div>
@@ -481,25 +481,25 @@ Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
 <section id="case-study" class="wrap" aria-labelledby="case-h">
   <div class="split">
     <div class="fig-panel rv">
-      <img src="/docs/assets/fig1_the_catch.png" alt="A real silent model swap: output tokens collapse after the swap; latency tails thicken" loading="lazy">
+      <img src="/docs/assets/fig1_the_catch.png" alt="A scripted silent model swap: output tokens jump after the swap; latency tails thicken" loading="lazy">
     </div>
     <div>
-      <div class="kicker" style="text-align:left">Proven on a real agent</div>
+      <div class="kicker" style="text-align:left">A reproducible catch</div>
       <h2 id="case-h">We swapped the model.<br>Nobody told the detector.</h2>
-      <p class="lead">Four cycles on one production model, then a silent switch to another — same prompt, same canaries.</p>
+      <p class="lead">A scripted silent swap you can regenerate in four commands — 30 canaries × 7 reps, golden frozen at cycle 3, the swap at cycle 8 behind a changed model fingerprint.</p>
       <div class="metrics">
-        <div class="metric"><b>30</b>gated alerts</div>
-        <div class="metric"><b>D=0.81</b>output tokens</div>
-        <div class="metric"><b>D=0.92</b>semantic shift</div>
-        <div class="metric"><b>2.44</b>latency dispersion ratio</div>
-        <div class="metric"><b>0.11 h</b>attribution before onset</div>
+        <div class="metric"><b>124</b>gated alerts</div>
+        <div class="metric"><b>D=0.93</b>output lengths</div>
+        <div class="metric"><b>D≈0.4–0.5</b>semantic shift</div>
+        <div class="metric"><b>2.1×</b>latency dispersion ratio</div>
+        <div class="metric"><b>0.0 h</b>attribution at onset</div>
       </div>
       <ul>
         <li>First post-swap check: <b style="color:var(--amber)">DRIFT DETECTED</b> on both baselines</li>
-        <li>Every alert attributed to the model fingerprint change, 0.11 h before onset</li>
+        <li>21 signature groups co-shift, attributed to the fingerprint change at onset</li>
         <li>Same pipeline pages you on prompt edits and RAG refreshes</li>
       </ul>
-      <a class="btn btn-primary" href="/docs/case-study/">Read the case study</a>
+      <a class="btn btn-primary" href="/docs/case-study/">Read the demonstration</a>
       <a class="btn btn-ghost" href="https://github.com/dedrift/dedrift/tree/main/examples">Reproduce it ↗</a>
     </div>
   </div>
@@ -710,17 +710,17 @@ Alerts: 30 (BH-adjusted equality tests, observed-effect gated)
   });
 })();
 
-/* ---- terminal typing — the real case-study verdict ---- */
+/* ---- terminal typing — the scripted-demonstration verdict ---- */
 const LINES = [
   ['p','$ '],['t','dedrift check\n'],
-  ['t','Current cycle: cycle-20260802T121457Z\n'],
-  ['t','Sudden (vs rolling 2 cycles): '],['a','DRIFT DETECTED\n'],
+  ['t','Current cycle: cycle-0007\n'],
+  ['t','Sudden (vs rolling 4 cycles): '],['a','DRIFT DETECTED\n'],
   ['t','Cumulative (vs golden 3 cycles): '],['a','DRIFT DETECTED\n'],
-  ['t','Alerts: 30 (BH-adjusted equality tests, observed-effect gated)\n'],
-  ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.917'],['t',', p_adj=4.8e-07\n'],
-  ['t','  [golden] adversarial/tokens_out ks: effect='],['a','+0.806'],['t',', p_adj=6.6e-05\n'],
-  ['t','  [golden] edge_case/latency_ms levene: effect='],['a','+2.439'],['t',', p_adj=0.018\n'],
-  ['dim','# attribution: model fingerprint change, 0.11 h before onset\n'],
+  ['t','Alerts: 124 (BH-adjusted equality tests, observed-effect gated)\n'],
+  ['t','  [golden] adversarial/output_words ks: effect='],['a','+0.771'],['t',', p_adj=8.97e-15\n'],
+  ['t','  [golden] adversarial/tokens_out ks: effect='],['a','+0.676'],['t',', p_adj=7.13e-11\n'],
+  ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.390'],['t',', p_adj=0.002136\n'],
+  ['dim','# attribution: model fingerprint change, 0.0 h before onset\n'],
   ['dim','# consistent with the swap. nobody told it anything.\n'],
 ];
 const body = document.getElementById('termbody');

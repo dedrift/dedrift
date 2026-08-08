@@ -45,7 +45,7 @@ extra_css:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
-  - Case study: case-study.md
+  - Demonstration: case-study.md
   - Statistics:
       - The statistics: statistics.md
       - Anytime-valid mode: anytime.md
