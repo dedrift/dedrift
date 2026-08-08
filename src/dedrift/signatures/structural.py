@@ -47,6 +47,7 @@ SCALAR_SIGNATURES: tuple[str, ...] = (
     "output_chars",
     "output_words",
     "tool_call_count",
+    "tool_order_inversions",
     "steps",
     "retries",
     "latency_ms",
@@ -88,6 +89,14 @@ class RecordSignature:
         exact_match: True if all ``expected`` key/value pairs match the
             structured output exactly; None when no ``expected`` was given.
         tool_call_count: Number of tool calls.
+        tool_order_inversions: Kendall-tau inversions of the tool-call name
+            sequence against its alphabetical sort (0 for <2 calls). Counts
+            and schema validity say nothing about ORDER; this is the only
+            Tier-1 channel that sees workflow reordering. The alphabetical
+            reference order is arbitrary by design: a stable agent's
+            inversion count is stationary under any fixed convention, and
+            the tests are distribution comparisons, so only *changes* in
+            ordering register.
         tool_usage: Tool-name usage counts.
         args_schema_ok_all: True if every tool call had schema-valid args
             (vacuously True with zero tool calls).
@@ -114,6 +123,7 @@ class RecordSignature:
     format_valid: bool
     exact_match: bool | None
     tool_call_count: int
+    tool_order_inversions: int
     tool_usage: dict[str, int]
     args_schema_ok_all: bool
     steps: int
@@ -146,6 +156,21 @@ def _exact_match(structured: dict[str, Any] | None, expected: dict[str, Any] | N
     if structured is None:
         return False
     return all(structured.get(k) == v for k, v in expected.items())
+
+
+def _tool_order_inversions(names: list[str]) -> int:
+    """Kendall-tau inversions of the tool-call sequence vs alphabetical order.
+
+    Records with fewer than two calls contribute 0, so the constant mass at
+    zero is part of the distribution on both arms of every comparison; the
+    channel only responds when the ORDER law itself moves.
+    """
+    inversions = 0
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            if names[j] < names[i]:
+                inversions += 1
+    return inversions
 
 
 def _dedrift_metadata(record: InteractionRecord) -> dict[str, Any]:
@@ -210,6 +235,7 @@ def extract_record_signature(
         format_valid=_format_valid(record.output.structured, expected),
         exact_match=_exact_match(record.output.structured, expected),
         tool_call_count=len(record.tool_calls),
+        tool_order_inversions=_tool_order_inversions([c.name for c in record.tool_calls]),
         tool_usage=usage,
         args_schema_ok_all=all(c.args_schema_ok for c in record.tool_calls),
         steps=record.steps,

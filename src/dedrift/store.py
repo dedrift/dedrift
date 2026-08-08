@@ -132,7 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_config_events_ts ON config_events (ts);
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
-    baseline_kind TEXT NOT NULL,      -- 'rolling' | 'golden'
+    baseline_kind TEXT NOT NULL,      -- 'dual' (fixed path) | 'anytime'
     params_json TEXT NOT NULL,
     verdict TEXT NOT NULL,
     snapshot_offset INTEGER,

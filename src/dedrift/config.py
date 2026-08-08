@@ -17,7 +17,19 @@ else:  # pragma: no cover
 _TOP_LEVEL_KEYS = frozenset({"project", "detection", "materiality", "embeddings", "anytime"})
 _TABLE_KEYS = {
     "project": frozenset({"name", "canary_repetitions", "rolling_window_cycles"}),
-    "detection": frozenset({"fdr_q", "permutations", "seed", "ph_lambda", "ph_delta", "inference"}),
+    "detection": frozenset(
+        {
+            "fdr_q",
+            "permutations",
+            "seed",
+            "ph_lambda",
+            "ph_delta",
+            "inference",
+            "cycle_effect",
+            "cycle_effect_icc",
+            "alert_persistence",
+        }
+    ),
     "materiality": frozenset(
         {
             "refusal_rate_pp",
@@ -32,7 +44,9 @@ _TABLE_KEYS = {
         }
     ),
     "embeddings": frozenset({"model"}),
-    "anytime": frozenset({"alpha", "gamma_total", "tilts", "epoch_allocation"}),
+    "anytime": frozenset(
+        {"alpha", "gamma_total", "tilts", "epoch_allocation", "rate_model"}
+    ),
 }
 
 
@@ -200,12 +214,20 @@ class AnytimeConfig:
             the hypothesis changed) or ``"geometric"`` (spends
             ``alpha * 2**-e`` on epoch ``e``, giving a genuine
             unbounded-epoch lifetime bound at a power cost).
+        rate_model: ``"twosample"`` (default) builds each rate process as a
+            two-sample SAFE e-value (beta-binomial predictive ratio against
+            the frozen reference counts) — no nuisance interval, no coverage
+            budget spent, and measured power far beyond the interval-trapped
+            construction. ``"frozen_cp"`` restores the v0.3.1
+            Clopper-Pearson worst-case e-value, for which ``gamma_total``
+            and ``tilts`` remain meaningful.
     """
 
     alpha: float = 0.05
     gamma_total: float = 0.02
     tilts: tuple[float, ...] = (1.5, 2.0, 3.0)
     epoch_allocation: str = "per_epoch"
+    rate_model: str = "twosample"
 
     def __post_init__(self) -> None:
         """Validate the lifetime error budget and betting-grid domain."""
@@ -239,6 +261,14 @@ class AnytimeConfig:
                 "anytime.epoch_allocation must be 'per_epoch' or 'geometric', "
                 f"got {self.epoch_allocation!r}"
             )
+        if not isinstance(self.rate_model, str) or self.rate_model not in {
+            "twosample",
+            "frozen_cp",
+        }:
+            raise ValueError(
+                "anytime.rate_model must be 'twosample' or 'frozen_cp', "
+                f"got {self.rate_model!r}"
+            )
 
     @property
     def alpha_prime(self) -> float:
@@ -266,6 +296,25 @@ class ProjectConfig:
             Stays ``"fixed"`` until the anytime path has been reviewed on a
             project's own data; both paths run on identical logs so the
             comparison is reproducible.
+        cycle_effect: ``"off"`` (default) keeps the exact record-level
+            battery of v0.3.1 — calibrated at sigma=0. ``"auto"`` engages
+            the per-channel cluster-aware correction for hosted models with
+            within-version wobble; the measured trade-off (false-alert
+            reduction vs power cost) is published in
+            docs/statistics.md#cycle-effects and the choice should be made
+            on those numbers, not by default.
+        cycle_effect_icc: Intraclass-correlation threshold above which a
+            channel switches to the cluster-aware p-value. Spurious
+            engagement at sigma=0 can only inflate variance (conservative),
+            never sharpen a p-value.
+        alert_persistence: Consecutive-check requirement for an alert to
+            fire (1 = every check stands alone, the v0.3.1 semantics). At 2+,
+            a channel alerts only if it also alerted at the previous check
+            on a DIFFERENT current cycle: wobble-induced false alerts are
+            transient, drift persists, so this squares the false-alert rate
+            at the cost of one cycle of detection delay. Recommended for
+            hosted models with within-version wobble; measured numbers in
+            docs/statistics.md#cycle-effects.
     """
 
     name: str = "default"
@@ -280,6 +329,9 @@ class ProjectConfig:
     embedder: str = ""
     anytime: AnytimeConfig = field(default_factory=AnytimeConfig)
     inference: str = "fixed"
+    cycle_effect: str = "off"
+    cycle_effect_icc: float = 0.02
+    alert_persistence: int = 1
 
     def __post_init__(self) -> None:
         """Validate project, detector, and inference settings."""
@@ -309,6 +361,19 @@ class ProjectConfig:
             raise ValueError(
                 f"detection.inference must be 'fixed' or 'anytime', got {self.inference!r}"
             )
+        if not isinstance(self.cycle_effect, str) or self.cycle_effect not in {"auto", "off"}:
+            raise ValueError(
+                f"detection.cycle_effect must be 'auto' or 'off', got {self.cycle_effect!r}"
+            )
+        _require_range(
+            "detection.cycle_effect_icc",
+            self.cycle_effect_icc,
+            minimum=0.0,
+            maximum=1.0,
+            minimum_inclusive=False,
+            maximum_inclusive=False,
+        )
+        _require_int("detection.alert_persistence", self.alert_persistence, minimum=1)
 
     @classmethod
     def load(cls, project_dir: Path) -> ProjectConfig:
@@ -355,6 +420,9 @@ class ProjectConfig:
             epoch_allocation=_toml_string(
                 anytime_raw, "epoch_allocation", "per_epoch", section="anytime"
             ),
+            rate_model=_toml_string(
+                anytime_raw, "rate_model", "twosample", section="anytime"
+            ),
         )
         materiality = Materiality(
             refusal_rate_pp=_toml_float(
@@ -394,4 +462,11 @@ class ProjectConfig:
             embedder=_toml_string(embeddings, "model", "", section="embeddings"),
             anytime=anytime,
             inference=_toml_string(detection, "inference", "fixed", section="detection"),
+            cycle_effect=_toml_string(detection, "cycle_effect", "off", section="detection"),
+            cycle_effect_icc=_toml_float(
+                detection, "cycle_effect_icc", 0.02, section="detection"
+            ),
+            alert_persistence=_toml_int(
+                detection, "alert_persistence", 1, section="detection"
+            ),
         )

@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +54,15 @@ from dedrift.detectors import (
     two_proportion_z_test,
     welch_t_test,
 )
+from dedrift.detectors.cyclefx import (
+    CycleEffectEstimate,
+    cycle_level_pvalue,
+    estimate_icc,
+    per_cycle_statistic,
+    rate_z_pvalue_clustered,
+    standardize_within_cycle,
+    welch_pvalue_clustered,
+)
 from dedrift.detectors.heuristic import PSI_MODERATE
 from dedrift.detectors.mmd import MIN_FLOOR_CYCLES
 from dedrift.embeddings import embed_records, get_pinned_embedder
@@ -63,6 +72,11 @@ from dedrift.signatures.structural import RATE_SIGNATURES, SCALAR_SIGNATURES
 from dedrift.store import Store, _atomic_private_writer, _harden_permissions
 
 BASELINE_FILE = "baseline.json"
+
+#: Cap on the per-channel cycle-effect estimate: beyond this the estimate is
+#: treated as drift-contaminated and the correction is bounded (a larger rho
+#: would inflate every corrected p enough to hide the drift that produced it).
+RHO_CAP = 0.15
 
 #: Fraction of errored records in the current cycle above which the check
 #: refuses to interpret drift and reports DEGRADED DATA instead.
@@ -224,6 +238,12 @@ class CheckResult:
             windows were not composition-comparable.
         assessments: Machine-readable coverage and power status per baseline.
         mmd_floors: Semantic materiality-floor values and calibration status.
+        cycle_effects: Per-channel cycle-effect engagements (baseline,
+            family, signature, estimated ICC, reference-cycle count) whose
+            p-values were replaced by the cluster-aware correction.
+        persistence_demoted: Significant+material first-time alerts held by
+            the alert_persistence gate at this check (0 when the gate is
+            off).
         overall_verdict: Conservative aggregate status for CLI/report use.
         n_alerts: Convenience count of alerting tests.
     """
@@ -245,6 +265,8 @@ class CheckResult:
     composition_issues: list[CompositionIssue] = field(default_factory=list)
     assessments: list[ComparisonAssessment] = field(default_factory=list)
     mmd_floors: list[MmdFloorAssessment] = field(default_factory=list)
+    cycle_effects: list[dict[str, Any]] = field(default_factory=list)
+    persistence_demoted: int = 0
     snapshot_log_offset: int = 0
     snapshot_record_ids: tuple[str, ...] = field(default_factory=tuple)
 
@@ -680,6 +702,7 @@ def _run_check_snapshot(
     tests: list[TestRecord] = []
     flags: list[FlagRecord] = []
     issues: list[CompositionIssue] = []
+    cycle_notes: list[dict[str, Any]] = []
     mmd_floors: dict[tuple[str, str], MmdFloorAssessment] = {}
     families = sorted(frame["family"].unique())
     n_reference_baselines = int(bool(rolling)) + int(bool(golden))
@@ -700,6 +723,43 @@ def _run_check_snapshot(
         )
     effective_permutations = max(cfg.permutations, resolution_floor)
 
+    # Cycle-effect engagement: per-channel ICC from ALL history cycles
+    # (never the one under test), log scale for positive channels. Two
+    # measured failure modes shaped this:
+    #  * golden-window-only estimation (K=3) cannot separate wobble from
+    #    noise at canary within-cycle overdispersion (under-engagement left
+    #    the sigma=0.15 audit null at 67%);
+    #  * history-wide estimation is contaminated by a drift already in
+    #    history, disarming the correction at post-onset checks.
+    # The compromise: history-wide estimation with rho CAPPED at
+    # RHO_CAP — beyond the cap the estimate is treated as drift-
+    # contaminated and the correction is bounded rather than allowed to
+    # disarm detection. semantic_displacement is excluded: its leave-one-out
+    # reference construction already spans multiple cycles.
+    hist_frame = frame[frame["cycle_id"] != current]
+    golden_frame = frame[frame["cycle_id"].isin(golden)]
+    icc_by_channel: dict[tuple[str, str], Any] = {}
+    if cfg.cycle_effect == "auto":
+        for family in families:
+            fam_hist = hist_frame[hist_frame["family"] == family]
+            for sig in tuple(scalar_signatures) + tuple(RATE_SIGNATURES):
+                if sig == "semantic_displacement":
+                    continue
+                pair = fam_hist[[sig, "cycle_id"]].dropna()
+                vals = pair[sig].to_numpy(dtype=float)
+                if not len(vals):
+                    continue
+                if sig not in RATE_SIGNATURES and float(np.min(vals)) > 0.0:
+                    vals = np.log(vals)
+                ice = estimate_icc(
+                    vals,
+                    pair["cycle_id"].to_numpy(),
+                    threshold=cfg.cycle_effect_icc,
+                )
+                if ice.rho > RHO_CAP:
+                    ice = CycleEffectEstimate(RHO_CAP, ice.n_cycles, True)
+                icc_by_channel[(family, sig)] = ice
+
     def battery(
         baseline_name: str, ref_frame: pd.DataFrame, skip: frozenset[str]
     ) -> list[TestRecord]:
@@ -712,24 +772,179 @@ def _run_check_snapshot(
             if ref_fam.empty or cur_fam.empty:
                 continue
             for sig in scalar_signatures:
-                ref = ref_fam[sig].dropna().to_numpy(dtype=float)
+                ref_pair = ref_fam[[sig, "cycle_id"]].dropna()
+                ref = ref_pair[sig].to_numpy(dtype=float)
                 cur = cur_fam[sig].dropna().to_numpy(dtype=float)
+                ice = icc_by_channel.get((family, sig))
                 # Primaries (enter BH, may alert): KS, Levene, P95 permutation.
-                out.append(TestRecord(baseline_name, family, sig, ks_test(ref, cur)))
-                out.append(TestRecord(baseline_name, family, sig, levene_test(ref, cur)))
-                out.append(
-                    TestRecord(
-                        baseline_name,
-                        family,
-                        sig,
-                        p95_permutation_test(
-                            ref,
-                            cur,
-                            n_permutations=effective_permutations,
-                            seed=_test_seed(cfg.seed, baseline_name, family, sig, "p95_perm"),
-                        ),
-                    )
+                ks_out = ks_test(ref, cur)
+                lev_out = levene_test(ref, cur)
+                p95_out = p95_permutation_test(
+                    ref,
+                    cur,
+                    n_permutations=effective_permutations,
+                    seed=_test_seed(cfg.seed, baseline_name, family, sig, "p95_perm"),
                 )
+                if ice is not None and ice.engaged:
+                    # Cycle-level null stats come from THIS baseline's
+                    # reference cycles when there are enough of them (they
+                    # define the null level; all-history stats would absorb
+                    # a persistent drift and dilute it). Early rolling
+                    # windows (<3 cycles) fall back to all history.
+                    base_cyc = ref_pair["cycle_id"].to_numpy()
+                    hist_pair = hist_frame.loc[
+                        hist_frame["family"] == family, [sig, "cycle_id"]
+                    ].dropna()
+                    hist_vals = hist_pair[sig].to_numpy(dtype=float)
+                    hist_cyc = hist_pair["cycle_id"].to_numpy()
+                    if len(set(base_cyc.tolist())) >= 3:
+                        null_vals, null_cyc = ref, base_cyc
+                    else:
+                        null_vals, null_cyc = hist_vals, hist_cyc
+                    # Work in log space for strictly positive channels:
+                    # provider wobble is multiplicative (exp offsets), so
+                    # logged offsets are additive and the Gaussian/t
+                    # approximations behind the cycle-level summaries and
+                    # Welch hold far better than on skewed raw statistics.
+                    positive = (
+                        len(ref) > 0
+                        and len(cur) > 0
+                        and float(np.min(ref)) > 0.0
+                        and float(np.min(cur)) > 0.0
+                    )
+                    wref = np.log(ref) if positive else ref
+                    wcur = np.log(cur) if positive else cur
+                    wnull = np.log(null_vals) if positive else null_vals
+                    if np.isfinite(ks_out.p_value):
+                        # Engaged KS is a disjunctive composite: KS on
+                        # within-cycle-standardized values (shape; cycle
+                        # offsets cancel exactly, so record-level power
+                        # survives) OR design-effect Welch (location; the
+                        # Kish correction IS the right one for means under
+                        # clustering). Bonferroni-min is valid under any
+                        # dependence of the two members.
+                        #
+                        # The shape member requires quasi-continuous data:
+                        # on few-support channels (retries, tool counts) the
+                        # per-cycle z-grid itself shifts with the cycle's
+                        # rate estimate and KS fires on the grid mismatch —
+                        # measured 90% null alerts before this guard.
+                        continuous = (
+                            len(np.unique(ref)) >= 10 and len(np.unique(cur)) >= 10
+                        )
+                        ks_std = None
+                        if continuous:
+                            ref_std = standardize_within_cycle(wref, base_cyc)
+                            cur_std = standardize_within_cycle(
+                                wcur, np.full(len(wcur), "__cur__")
+                            )
+                            ref_std = ref_std[np.isfinite(ref_std)]
+                            cur_std = cur_std[np.isfinite(cur_std)]
+                            if len(ref_std) >= 2 and len(cur_std) >= 2:
+                                ks_std = ks_test(ref_std, cur_std)
+                        p_mean = welch_pvalue_clustered(
+                            wref,
+                            wcur,
+                            ice.rho,
+                            len(wref) / max(1, len(set(base_cyc.tolist()))),
+                            float(len(wcur)),
+                        )
+                        parts = [p_mean] if np.isfinite(p_mean) else []
+                        if ks_std is not None and np.isfinite(ks_std.p_value):
+                            parts.append(ks_std.p_value)
+                        p_comp = (
+                            min(1.0, 2.0 * min(parts))
+                            if len(parts) == 2
+                            else (parts[0] if parts else ks_out.p_value)
+                        )
+                        # Gating needs both members' effects in D units:
+                        # D_shape misses pure location shifts, so add the
+                        # KS distance that a pure location shift of the
+                        # observed size would produce on the reference law.
+                        delta = float(np.mean(wcur) - np.mean(wnull)) if len(wcur) else 0.0
+                        d_loc = (
+                            ks_test(wref, wref + delta).statistic
+                            if len(wref) and np.isfinite(delta)
+                            else 0.0
+                        )
+                        d_shape = ks_std.statistic if ks_std is not None else 0.0
+                        ks_out = replace(
+                            ks_out,
+                            statistic=d_shape,
+                            p_value=p_comp,
+                            effect_size=max(d_shape, d_loc),
+                            effect_raw=math.exp(delta) - 1.0 if positive else delta,
+                        )
+                    ref_mads = per_cycle_statistic(wnull, null_cyc, "mad")
+                    cur_mad = (
+                        float(np.mean(np.abs(wcur - np.median(wcur))))
+                        if len(wcur)
+                        else float("nan")
+                    )
+                    # Near-discrete cycle statistics (a 0/1 P95 flipping by
+                    # sampling noise) make the t summary meaningless: too few
+                    # distinct reference values => keep the record-level p.
+                    p_lev = (
+                        cycle_level_pvalue(ref_mads, cur_mad)
+                        if len(np.unique(ref_mads)) >= 4
+                        else float("nan")
+                    )
+                    if np.isfinite(p_lev):
+                        mean_ref_mad = float(np.mean(ref_mads))
+                        if positive:
+                            # ratio of log-scale dispersions, on the gated scale
+                            ratio = (
+                                math.exp(cur_mad - mean_ref_mad)
+                                if np.isfinite(cur_mad)
+                                else float("nan")
+                            )
+                        else:
+                            ratio = (
+                                cur_mad / mean_ref_mad if mean_ref_mad > 0 else float("inf")
+                            )
+                        lev_out = replace(
+                            lev_out,
+                            p_value=p_lev if np.isfinite(p_lev) else lev_out.p_value,
+                            effect_size=ratio,
+                        )
+                    ref_p95s = per_cycle_statistic(wnull, null_cyc, "p95")
+                    cur_p95 = float(np.percentile(wcur, 95)) if len(wcur) else float("nan")
+                    p_p95 = (
+                        cycle_level_pvalue(ref_p95s, cur_p95)
+                        if len(np.unique(ref_p95s)) >= 4
+                        else float("nan")
+                    )
+                    if np.isfinite(p_p95):
+                        mean_ref_p95 = float(np.mean(ref_p95s))
+                        if positive:
+                            rel = (
+                                math.exp(cur_p95 - mean_ref_p95) - 1.0
+                                if np.isfinite(cur_p95)
+                                else float("nan")
+                            )
+                        else:
+                            rel = (
+                                (cur_p95 - mean_ref_p95) / abs(mean_ref_p95)
+                                if mean_ref_p95 != 0
+                                else (0.0 if cur_p95 == 0 else float("inf"))
+                            )
+                        p95_out = replace(
+                            p95_out,
+                            p_value=p_p95 if np.isfinite(p_p95) else p95_out.p_value,
+                            effect_size=rel,
+                        )
+                    cycle_notes.append(
+                        {
+                            "baseline": baseline_name,
+                            "family": family,
+                            "signature": sig,
+                            "rho": round(ice.rho, 4),
+                            "n_reference_cycles": ice.n_cycles,
+                        }
+                    )
+                out.append(TestRecord(baseline_name, family, sig, ks_out))
+                out.append(TestRecord(baseline_name, family, sig, lev_out))
+                out.append(TestRecord(baseline_name, family, sig, p95_out))
                 # Corroboration only (same location hypothesis as KS on the
                 # same data; admitting them would inflate m at no gain).
                 out.append(TestRecord(baseline_name, family, sig, ad_test(ref, cur), primary=False))
@@ -741,19 +956,43 @@ def _run_check_snapshot(
                 cur_series = cur_fam[sig].dropna()
                 if ref_series.empty or cur_series.empty:
                     continue
-                out.append(
-                    TestRecord(
-                        baseline_name,
-                        family,
-                        sig,
-                        two_proportion_z_test(
+                z_out = two_proportion_z_test(
+                    int(ref_series.sum()),
+                    len(ref_series),
+                    int(cur_series.sum()),
+                    len(cur_series),
+                )
+                ice = icc_by_channel.get((family, sig))
+                if (
+                    ice is not None
+                    and ice.engaged
+                    and np.isfinite(z_out.p_value)
+                ):
+                    m_ref = len(ref_series) / max(
+                        1, ref_fam.loc[ref_series.index, "cycle_id"].nunique()
+                    )
+                    z_out = replace(
+                        z_out,
+                        p_value=rate_z_pvalue_clustered(
                             int(ref_series.sum()),
                             len(ref_series),
                             int(cur_series.sum()),
                             len(cur_series),
+                            ice.rho,
+                            m_ref,
+                            float(len(cur_series)),
                         ),
                     )
-                )
+                    cycle_notes.append(
+                        {
+                            "baseline": baseline_name,
+                            "family": family,
+                            "signature": sig,
+                            "rho": round(ice.rho, 4),
+                            "n_reference_cycles": ice.n_cycles,
+                        }
+                    )
+                out.append(TestRecord(baseline_name, family, sig, z_out))
         return out
 
     verdicts: dict[str, str] = {}
@@ -837,6 +1076,13 @@ def _run_check_snapshot(
     # Corroboration tests carry material=None: the gates are defined on the
     # primary effect scales, and e.g. the AD statistic is not commensurable
     # with a sup-norm CDF distance.
+    #
+    # Degradation suppresses alerts EXCEPT had_error: a check that refuses
+    # to interpret drift while the error rate surges, and stays silent about
+    # the surge itself, makes an error storm a perfect evasion. The error
+    # rate remains interpretable under degradation (it is the degradation
+    # criterion), so it alerts; everything else stays suppressed and the
+    # overall verdict remains DEGRADED DATA.
     gated: list[TestRecord] = []
     for t, rej, adj in zip(tests, rejected, adjusted, strict=True):
         material: bool | None
@@ -865,9 +1111,45 @@ def _run_check_snapshot(
                 p_adjusted=adj,
                 significant=rej,
                 material=material,
-                alert=bool(t.primary and rej and material and not degraded),
+                alert=bool(
+                    t.primary
+                    and rej
+                    and material
+                    and (not degraded or t.signature == "had_error")
+                ),
             )
         )
+
+    # Alert persistence gate: with alert_persistence > 1, a channel alerts
+    # only if it also alerted at the previous check on a DIFFERENT current
+    # cycle. Wobble-induced alerts are transient; drift persists. First-time
+    # significant+material channels are demoted to the appendix (they remain
+    # visible) and fire only if they persist. Measured numbers and the
+    # trade-off are in docs/statistics.md#cycle-effects.
+    demoted = 0
+    if cfg.alert_persistence > 1:
+        prev_row = store.connect().execute(
+            "SELECT params_json FROM checks WHERE baseline_kind = 'dual' AND "
+            "json_extract(params_json, '$.current_cycle') != ? "
+            "ORDER BY id DESC LIMIT 1",
+            (current,),
+        ).fetchone()
+        # The gate compares against the previous check's CANDIDATE channels
+        # (primary & significant & material), persisted in params_json —
+        # referencing only fired alerts would self-extinguish the gate.
+        prev_channels: set[tuple[str, str, str]] = set()
+        if prev_row is not None:
+            prev_params = json.loads(prev_row[0])
+            for base_, fam_, sig_ in prev_params.get("candidate_channels", []):
+                prev_channels.add((str(base_), str(fam_), str(sig_)))
+        new_gated: list[TestRecord] = []
+        for t in gated:
+            if t.alert and (t.baseline, t.family, t.signature) not in prev_channels:
+                demoted += 1
+                new_gated.append(replace(t, alert=False))
+            else:
+                new_gated.append(t)
+        gated = new_gated
 
     # Flags: PSI (golden bins) and Page-Hinkley (per-cycle means over history).
     # Families with a composition issue are skipped here too — diagnostics
@@ -909,11 +1191,21 @@ def _run_check_snapshot(
         if family in composition_bad:
             continue
         fam_frame = frame[frame["family"] == family]
+        # Per-cycle means over the cycles where THIS family has data, in
+        # global cycle order. Reindexing onto all cycles instead inserts NaN
+        # for mid-history gaps, and NaN propagates through the running mean
+        # and both accumulators: the stream could never alarm again after a
+        # single missed cycle, silently. Masking to observed cycles shortens
+        # the stream (onset precision degrades honestly) instead of
+        # poisoning it.
+        present = set(fam_frame["cycle_id"].unique())
+        fam_cycles = [c for c in cycles if c in present]
+        fam_frame_by_cycle = fam_frame.groupby("cycle_id")
         for sig in SCALAR_SIGNATURES:
-            means = fam_frame.groupby("cycle_id")[sig].mean().reindex(cycles).to_numpy()
+            means = fam_frame_by_cycle[sig].mean().reindex(fam_cycles).to_numpy()
             ph: PageHinkleyResult = page_hinkley(means, lambda_=cfg.ph_lambda, delta=cfg.ph_delta)
             if ph.alarm:
-                onset = cycles[ph.change_index] if ph.change_index is not None else None
+                onset = fam_cycles[ph.change_index] if ph.change_index is not None else None
                 material = any(
                     g.material for g in gated if g.family == family and g.signature == sig
                 )
@@ -979,6 +1271,8 @@ def _run_check_snapshot(
         composition_issues=sorted(issues, key=lambda i: (i.baseline, i.family)),
         assessments=assessments,
         mmd_floors=sorted(mmd_floors.values(), key=lambda item: (item.baseline, item.family)),
+        cycle_effects=cycle_notes,
+        persistence_demoted=demoted,
         snapshot_log_offset=snapshot_offset,
         snapshot_record_ids=tuple(record.id for record in records),
     )
@@ -1012,6 +1306,16 @@ def _persist(store: Store, result: CheckResult) -> None:
                         "overall_verdict": result.overall_verdict,
                         "assessments": [asdict(a) for a in result.assessments],
                         "mmd_floors": [asdict(item) for item in result.mmd_floors],
+                        "cycle_effects": result.cycle_effects,
+                        "persistence_demoted": result.persistence_demoted,
+                        # Channels that earned an alert this check, whether
+                        # or not the persistence gate fired them; the gate
+                        # reads this at the next check.
+                        "candidate_channels": [
+                            [t.baseline, t.family, t.signature]
+                            for t in result.tests
+                            if t.primary and t.significant and t.material
+                        ],
                         "composition_issues": [
                             {
                                 "baseline": i.baseline,

@@ -49,7 +49,15 @@ alternative and target power before using this result as a release gate.
 {% endif %}
 {% if r.degraded %}
 > **DEGRADED DATA:** more than {{ degraded_pct }}% of current-cycle records carry
-> errors. Drift conclusions are suppressed; fix data collection first.
+> errors. Drift conclusions are suppressed — except the error-rate channel
+> itself, which still alerts (the surge IS the signal); fix data collection
+> first.
+{% endif %}
+{% if not r.mmd_floors %}
+> **Semantic channel OFF:** no embedder is pinned for this project, so
+> meaning-level drift (topic or phrasing shifts with identical structure) is
+> not measurable here. Pin one with `dedrift embedder pin hash`
+> (zero-dependency) or an `st:` sentence-transformer.
 {% endif %}
 {% if r.composition_issues %}
 > **COMPOSITION MISMATCH — {{ r.composition_issues | length }} family comparison(s) suppressed.**
@@ -59,6 +67,22 @@ alternative and target power before using this result as a release gate.
 >
 {% for c in r.composition_issues -%}
 > - `[{{ c.baseline }}] {{ c.family }}`: {{ c.detail }}
+{% endfor %}
+{% endif %}
+{% if r.cycle_effects %}
+## Cycle-effect correction engaged ({{ r.cycle_effects | length }} channels)
+
+The reference window shows per-cycle clustering (a latent per-cycle offset —
+the hosted-model wobble the record-level tests do not model). These channels'
+p-values use the cluster-aware correction (Kish effective size for KS and
+rate z; cycle-level Gaussian summary for Levene/P95) instead of the
+record-level p-value. The correction can only inflate, never sharpen, a
+p-value at sigma=0. See docs/statistics.md#cycle-effects.
+
+| Baseline | Family | Signature | est. ICC | Ref cycles |
+|---|---|---|---:|---:|
+{% for c in r.cycle_effects -%}
+| {{ c.baseline }} | {{ c.family }} | {{ c.signature }} | {{ '%.3f' | format(c.rho) }} | {{ c.n_reference_cycles }} |
 {% endfor %}
 {% endif %}
 
@@ -107,9 +131,22 @@ units; confirm near-threshold alerts.
 {% for a in alerts -%}
 | {{ a.baseline }} | {{ a.family }} | {{ a.signature }} | {{ a.outcome.test }} | {{ a | effect }} | {{ '%.4g' | format(a.p_adjusted) }} |
 {% endfor %}
+{% if alerts | selectattr("signature", "equalto", "refusal") | list %}
+> **Reading refusal alerts:** the refusal signature is pattern-matched
+> *phrasing*, not a semantic judgment. A model that changes how it phrases
+> refusals moves this rate in either direction — including DOWN while true
+> refusals rise — so read the sign alongside output-length and semantic
+> channels before concluding refusal behavior improved.
+{% endif %}
 {% else %}
 No alerts. Statistically significant results below materiality (if any) are
 listed in the appendix — deliberately not alerted (principle: alert quality).
+{% endif %}
+{% if r.persistence_demoted %}
+> **Persistence gate:** {{ r.persistence_demoted }} first-time
+> significant+material channel(s) held back at this check
+> (`detection.alert_persistence` > 1): they fire only if still alerting at
+> the next check. Wobble alerts are transient; drift persists.
 {% endif %}
 
 ## Attribution (correlational — "consistent with", never "caused by")
@@ -117,8 +154,8 @@ listed in the appendix — deliberately not alerted (principle: alert quality).
 {% if attributions %}
 {% for at in attributions -%}
 - **{{ at.family }} / {{ at.signature }}** — drift onset ≈ cycle `{{ at.onset_cycle }}`
-  ({{ at.onset_ts }}).{% if at.nearest_event_ts %} Nearest config event: {{ at.nearest_event_change }},
-  {{ at.nearest_event_delta_hours }} h {% if at.nearest_event_delta_hours >= 0 %}before{% else %}after{% endif %} onset.{% else %} No config events recorded.{% endif %}
+  ({{ at.onset_ts }}).{% if at.event_relation == "precedes_onset" %} Nearest preceding config event: {{ at.nearest_event_change }},
+  {{ at.nearest_event_delta_hours }} h before onset.{% elif at.event_relation == "precedes_detection" %} No config event precedes the estimated onset; nearest event before this check: {{ at.nearest_event_change }} ({{ -at.nearest_event_delta_hours }} h AFTER the estimated onset — listed because onset estimates are noisy; weak evidence).{% else %} No config event at or before onset — the drift is silent (no recorded stack change explains it).{% endif %}
   {%- if at.co_shifting > 0 %} {{ at.co_shifting }} other signature group(s) shifted in the same window.{% endif %}
 {% endfor %}
 {% else %}

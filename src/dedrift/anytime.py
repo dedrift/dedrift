@@ -80,6 +80,7 @@ from dedrift.evalues import (
 from dedrift.evalues.ebh import ebh_from_logs
 from dedrift.evalues.process import state_to_row
 from dedrift.evalues.rates import per_process_gamma
+from dedrift.evalues.twosample import twosample_rate_evalue
 from dedrift.schema import InteractionRecord
 from dedrift.signatures import signatures_frame
 from dedrift.signatures.structural import RATE_SIGNATURES
@@ -576,6 +577,7 @@ def _run_anytime_check_snapshot(
             "gamma_total": ac.gamma_total,
             "tilts": ac.tilts,
             "epoch_allocation": ac.epoch_allocation,
+            "rate_model": ac.rate_model,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -653,6 +655,14 @@ def _run_anytime_check_snapshot(
                 "expected 'per_epoch' or 'geometric'"
             )
             raise ValueError(msg)
+        if ac.rate_model == "twosample":
+            # The two-sample beta-binomial e-value integrates the shared
+            # null parameter against a prior: there is no nuisance interval,
+            # so no coverage budget is spent and the e-BH level is the full
+            # per-epoch alpha. gamma_total remains meaningful only for the
+            # frozen_cp construction.
+            effective_gamma_total = 0.0
+            effective_alpha_prime = effective_alpha
         gamma_i = per_process_gamma(effective_gamma_total, max(len(pool_keys), 1))
 
         working: dict[Key, EProcessState] = {}
@@ -728,14 +738,17 @@ def _run_anytime_check_snapshot(
                         reference_trials=reference[1],
                     )
                     successes, trials = int(cur_fam.sum()), len(cur_fam)
-                    outcome = rate_evalue(
-                        successes,
-                        trials,
-                        prior,
-                        gamma=gamma_i,
-                        grid=grid,
-                        frozen_reference=(baseline_name == ANYTIME_BASELINE),
-                    )
+                    if ac.rate_model == "twosample":
+                        outcome = twosample_rate_evalue(successes, trials, prior)
+                    else:
+                        outcome = rate_evalue(
+                            successes,
+                            trials,
+                            prior,
+                            gamma=gamma_i,
+                            grid=grid,
+                            frozen_reference=(baseline_name == ANYTIME_BASELINE),
+                        )
                     update = update_process(
                         state,
                         outcome,
@@ -768,7 +781,33 @@ def _run_anytime_check_snapshot(
             visible.append(state)
 
         log_evalues = [state.log_wealth for state in visible]
-        decision = ebh_from_logs(log_evalues, alpha=effective_alpha_prime)
+        # Pooled per-signature processes (two-sample model only): the
+        # product of the per-family e-values, exp(sum of log-wealths), is
+        # itself an e-value under cross-family independence within a cycle,
+        # and e-BH tolerates the resulting dependence with the per-family
+        # entries. A family-wide shift (a provider swap moves every family's
+        # refusal rate) accumulates evidence six times faster in the pooled
+        # process, while the per-family processes keep the resolution.
+        # Membership is a fixed function of the declared pool, so
+        # predictability is preserved.
+        pooled_meta: list[tuple[Key, float, list[int]]] = []
+        if ac.rate_model == "twosample":
+            for sig in sorted({key[2] for key in pool_keys}):
+                member_idx = [
+                    i
+                    for i, key in enumerate(pool_keys)
+                    if key[2] == sig and key[0] == ANYTIME_BASELINE
+                ]
+                if len(member_idx) < 2:
+                    continue
+                pooled_log = float(sum(visible[i].log_wealth for i in member_idx))
+                pooled_meta.append(
+                    ((ANYTIME_BASELINE, "pooled", sig, "rate"), pooled_log, member_idx)
+                )
+        decision = ebh_from_logs(
+            log_evalues + [w for _, w, _ in pooled_meta],
+            alpha=effective_alpha_prime,
+        )
         processes = [
             ProcessReport(
                 key=key,
@@ -784,6 +823,23 @@ def _run_anytime_check_snapshot(
             )
             for index, (key, state) in enumerate(zip(pool_keys, visible, strict=True))
         ]
+        processes.extend(
+            ProcessReport(
+                key=key,
+                log_wealth=wealth,
+                evidence=float(min(wealth, 700.0)),
+                epoch=visible[member_idx[0]].epoch,
+                cycles=max(visible[i].cycles for i in member_idx),
+                bets_placed=sum(visible[i].bets_placed for i in member_idx),
+                rise_cycle=None,
+                crossed_at=None,
+                rejected=bool(
+                    decision.rejected[len(pool_keys) + offset] and not degraded
+                ),
+                detail="pooled product of per-family e-values",
+            )
+            for offset, (key, wealth, member_idx) in enumerate(pooled_meta)
+        )
 
         n_alerts = sum(1 for process in processes if process.rejected)
         monitored_families = {key[1] for key in pool_keys}
@@ -825,7 +881,10 @@ def _run_anytime_check_snapshot(
             alpha_prime=effective_alpha_prime,
             gamma_total=effective_gamma_total,
             gamma_per_process=gamma_i,
-            n_processes=len(processes),
+            # The declared, state-persisting pool; pooled per-signature
+            # entries in `processes` are derived battery inputs without
+            # their own state, so they do not count here.
+            n_processes=len(pool_keys),
             pool_declared_now=pool_declared_now,
             verdict=verdict,
             degraded=degraded,

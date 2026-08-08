@@ -38,6 +38,7 @@ from dedrift.evalues.rates import (
     tilt_from_materiality,
     worst_case_log_evalue,
 )
+from dedrift.evalues.twosample import log_beta_binomial_evalue, twosample_rate_evalue
 
 __all__ = [
     "EBHResult",
@@ -49,10 +50,12 @@ __all__ = [
     "ebh",
     "epoch_fingerprint",
     "geometric_allocation",
+    "log_beta_binomial_evalue",
     "log_tilt_evalue",
     "rate_evalue",
     "symmetric_grid",
     "tilt_from_materiality",
+    "twosample_rate_evalue",
     "update_process",
     "ville_threshold",
     "worst_case_log_evalue",

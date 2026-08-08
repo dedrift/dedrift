@@ -8,6 +8,14 @@ estimates. Multiplicity is handled downstream by Benjamini-Hochberg FDR
 as alerts.
 """
 
+from dedrift.detectors.cyclefx import (
+    CycleEffectEstimate,
+    cycle_level_pvalue,
+    estimate_icc,
+    per_cycle_statistic,
+    rate_z_pvalue_clustered,
+    standardize_within_cycle,
+)
 from dedrift.detectors.fdr import benjamini_hochberg
 from dedrift.detectors.heuristic import psi, psi_null_expectation
 from dedrift.detectors.mmd import calibrate_mmd_floor, mmd_rbf_test
@@ -23,18 +31,24 @@ from dedrift.detectors.scalar import (
 from dedrift.detectors.sequential import PageHinkleyResult, page_hinkley
 
 __all__ = [
+    "CycleEffectEstimate",
     "PageHinkleyResult",
     "TestOutcome",
     "ad_test",
     "benjamini_hochberg",
     "calibrate_mmd_floor",
+    "cycle_level_pvalue",
+    "estimate_icc",
     "ks_test",
     "levene_test",
     "mmd_rbf_test",
     "p95_permutation_test",
     "page_hinkley",
+    "per_cycle_statistic",
     "psi",
     "psi_null_expectation",
+    "rate_z_pvalue_clustered",
+    "standardize_within_cycle",
     "two_proportion_z_test",
     "welch_t_test",
 ]

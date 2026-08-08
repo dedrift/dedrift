@@ -17,6 +17,10 @@ permutations = 500            # resamples for permutation tests (seeded)
 seed = 1729                   # global seed, recorded in every report
 ph_lambda = 12.0              # Page–Hinkley alarm threshold (robust-scale units)
 ph_delta = 0.3                # Page–Hinkley dead-zone
+inference = "fixed"           # "fixed" | "anytime" (see docs/anytime.md)
+cycle_effect = "auto"         # "auto" | "off" (v0.3.1 record-level battery)
+cycle_effect_icc = 0.02       # ICC threshold for engaging the correction
+alert_persistence = 1         # checks a channel must alert in a row to fire
 
 [materiality]
 refusal_rate_pp = 2.0         # min refusal-rate shift, percentage points
@@ -71,6 +75,20 @@ permutations run in bounded-memory chunks; semantic MMD still has quadratic
 kernel memory in the number of records and should be load-tested at your
 intended scale.
 
+### `cycle_effect`, `cycle_effect_icc`, `alert_persistence`
+
+`cycle_effect = "auto"` (default) engages the cluster-aware correction on
+channels whose golden-window/history cycle means show a shared per-cycle
+latent offset (hosted-model wobble): within-cycle-standardized KS for
+shape, design-effect Welch for location, design-effect rate z, and
+Student-t cycle-level summaries for dispersion/P95. `"off"` restores the
+exact v0.3.1 record-level battery. `cycle_effect_icc` is the engagement
+threshold on the estimated ICC. `alert_persistence = 2` holds a first-time
+alert until the same channel alerts at the next check — wobble alerts are
+transient, drift persists; measured false-alert rates by mode are in
+docs/statistics.md#cycle-effects, including the power cost (one cycle of
+delay).
+
 ### `ks_distance`
 
 The KS channel gates — and reports — the KS statistic D (sup-norm CDF
@@ -122,10 +140,16 @@ inference = "fixed"        # or "anytime"
 
 [anytime]
 alpha = 0.05               # lifetime, battery-wide false-alert budget
-gamma_total = 0.02         # coverage budget; alpha_prime = alpha - gamma_total
-tilts = [1.5, 2.0, 3.0]    # symmetrised to {psi, 1/psi}
+rate_model = "twosample"   # or "frozen_cp" (the v0.3.1 construction)
+gamma_total = 0.02         # frozen_cp only: coverage budget
+tilts = [1.5, 2.0, 3.0]    # frozen_cp only: symmetrised to {psi, 1/psi}
 epoch_allocation = "per_epoch"   # or "geometric"
 ```
+
+With `rate_model = "twosample"` (default) each rate process is a two-sample
+SAFE e-value against the frozen reference counts; there is no nuisance
+interval, so no coverage budget is spent and the e-BH level is the full
+`alpha`. `gamma_total` and `tilts` apply only to `"frozen_cp"`.
 
 Switches the inference layer from per-check FDR to lifetime-oriented rate
 e-processes. Per-process optional-stopping and per-check e-BH control are

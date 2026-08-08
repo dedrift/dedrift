@@ -289,3 +289,22 @@ class TestMaterialityDerivedBets:
         grid = symmetric_grid((tilt_from_materiality(0.05, 2.0),))
         assert len(grid) == 2
         assert grid[0] * grid[1] == pytest.approx(1.0)
+
+
+class TestEbhNonFinite:
+    """Audit regression: ebh() mapped every non-finite e-value to 0, turning
+    an overflowed (+inf) e-value -- the strongest possible evidence -- into
+    no evidence at all."""
+
+    def test_inf_is_maximal_evidence_not_zero(self) -> None:
+        res = ebh([float("inf"), 5.0, 1.0], alpha=0.05)
+        assert res.rejected[0] is True
+
+    def test_nan_still_no_evidence(self) -> None:
+        res = ebh([100.0, float("nan"), 80.0], alpha=0.05)
+        assert res.rejected[1] is False
+        assert res.n_rejected >= 1
+
+    def test_neg_inf_is_no_evidence(self) -> None:
+        res = ebh([float("-inf"), 1.0], alpha=0.05)
+        assert res.rejected[0] is False

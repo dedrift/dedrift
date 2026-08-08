@@ -69,7 +69,11 @@ def ebh(evalues: list[float], alpha: float = 0.05) -> EBHResult:
     Args:
         evalues: E-values (non-negative). NaN is treated as 0 — no
             evidence — rather than propagating, so one degenerate channel
-            cannot silently void the battery.
+            cannot silently void the battery. ``+inf`` is the opposite
+            case: an e-value that overflowed float64 is the STRONGEST
+            possible evidence, so it is clamped to the largest finite
+            double (an earlier version mapped every non-finite value to 0,
+            turning infinite evidence into no evidence).
         alpha: FDR level.
 
     Returns:
@@ -78,7 +82,9 @@ def ebh(evalues: list[float], alpha: float = 0.05) -> EBHResult:
     if not evalues:
         return EBHResult([], 0, float("inf"), [])
     e = np.asarray(evalues, dtype=float)
-    e = np.where(np.isfinite(e), e, 0.0)
+    e = np.where(np.isnan(e), 0.0, e)
+    e = np.where(np.isposinf(e), np.finfo(np.float64).max, e)
+    e = np.where(np.isneginf(e), 0.0, e)
     e = np.maximum(e, 0.0)
     m = len(e)
 

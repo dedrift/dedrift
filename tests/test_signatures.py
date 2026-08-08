@@ -61,6 +61,31 @@ class TestExtraction:
         assert s.tool_usage == {"search": 2, "calc": 1}
         assert not s.args_schema_ok_all
 
+    def test_tool_order_inversions(self) -> None:
+        # Alphabetical order (calc < lookup < search) has zero inversions.
+        ordered = make_record(
+            tool_calls=[
+                ToolCall(name="calc", args_schema_ok=True, order=1),
+                ToolCall(name="lookup", args_schema_ok=True, order=2),
+                ToolCall(name="search", args_schema_ok=True, order=3),
+            ]
+        )
+        assert extract_record_signature(ordered).tool_order_inversions == 0
+        # The exact reverse has the maximum, C(3,2) = 3.
+        reversed_ = make_record(
+            tool_calls=[
+                ToolCall(name="search", args_schema_ok=True, order=1),
+                ToolCall(name="lookup", args_schema_ok=True, order=2),
+                ToolCall(name="calc", args_schema_ok=True, order=3),
+            ]
+        )
+        assert extract_record_signature(reversed_).tool_order_inversions == 3
+        # Fewer than two calls contribute zero.
+        singleton = make_record(
+            tool_calls=[ToolCall(name="search", args_schema_ok=True, order=1)]
+        )
+        assert extract_record_signature(singleton).tool_order_inversions == 0
+
     def test_family_from_metadata(self) -> None:
         r = make_record()
         assert extract_record_signature(r).family == "unknown"
