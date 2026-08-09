@@ -153,15 +153,14 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 <tr><td><b>PSI, folk threshold 0.25</b></td><td>same metric; flag at PSI ≥ 0.25 (“major”)</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
 <tr><td><b>Evidently — pooled table, ≥ 1 drifted column</b></td><td>DataDriftPreset 0.7.21, all defaults</td><td>none stated (per-column tests at 0.05)</td><td class='num'>356/500 = 71.2% [67.1, 75.0]</td><td class='num'>—</td></tr>
 <tr><td><b>Evidently — pooled table, dataset verdict</b></td><td>defaults; drifted-column share ≥ 0.5</td><td>none stated</td><td class='num'>2/500 = 0.4% [0.1, 1.4]</td><td class='num'>—</td></tr>
-<tr><td><b>Evidently — per canary family, ≥ 1 drifted column</b></td><td>same preset, one report per family</td><td>none stated</td><td class='num'>498/500 = 99.6% [98.6, 99.9]</td><td class='num'>—</td></tr>
 <tr><td><b>Naive two-sample KS battery</b></td><td>α = 0.05 per (family × signature), no control</td><td>5% per test only</td><td class='num'>250/500 = 50.0% [45.6, 54.4]</td><td class='num'>—</td></tr>
 <tr class='grp'><td colspan='5'>dedrift, measured under the same protocol</td></tr>
 <tr><td><b>dedrift PSI + validity guard</b></td><td>identical metric; refused where E[PSI] > 0.05</td><td>none stated (diagnostic)</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
 <tr><td><b>dedrift fixed-sample path (alerts)</b></td><td>BH-FDR q = 0.05 + materiality, dual baselines</td><td>FDR q = 0.05 per check</td><td class='num'>8/500 = 1.6% [0.8, 3.1]</td><td class='num'>358/500 = 71.6% [67.5, 75.4]</td></tr>
 <tr><td><b>dedrift flag channel (Page–Hinkley / guarded PSI)</b></td><td>diagnostic flags, deliberately uncalibrated</td><td>none stated — published limitation</td><td class='num'>372/500 = 74.4% [70.4, 78.0]</td><td class='num'>—</td></tr>
-<tr><td><b>dedrift anytime-valid path</b></td><td>e-processes + e-BH, golden baseline, twosample rates</td><td>≤ 0.05 lifetime per epoch</td><td class='num'>0/25,000 = 0.0% [0.0, 0.0]</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td></tr>
+<tr><td><b>dedrift anytime-valid path</b></td><td>e-processes + e-BH, golden baseline, twosample rates</td><td>≤ 0.05 lifetime per epoch</td><td class='num'>—</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td></tr>
 </tbody></table></div>
-<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The anytime row's per-check cell is its per-cycle adjudication rate over all 25,000 folds (500 runs × 50 cycles) — the per-cycle object an e-BH battery produces. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
+<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The anytime-valid path has no per-check cell: it makes no per-check claim, and its per-fold rate is over 25,000 folds against every other row's 500 runs, so printing it in that column would compare different estimands. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
 <!-- BENCHMARK:TABLE:END -->
 </section>
 
@@ -178,15 +177,14 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 <tr><td><b>PSI, folk threshold 0.25</b></td><td>same metric; flag at PSI ≥ 0.25 (“major”)</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
 <tr><td><b>Evidently — pooled table, ≥ 1 drifted column</b></td><td>DataDriftPreset 0.7.21, all defaults</td><td>none stated (per-column tests at 0.05)</td><td class='num'>329/500 = 65.8% [61.5, 69.8]</td><td class='num'>—</td></tr>
 <tr><td><b>Evidently — pooled table, dataset verdict</b></td><td>defaults; drifted-column share ≥ 0.5</td><td>none stated</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
-<tr><td><b>Evidently — per canary family, ≥ 1 drifted column</b></td><td>same preset, one report per family</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
 <tr><td><b>Naive two-sample KS battery</b></td><td>α = 0.05 per (family × signature), no control</td><td>5% per test only</td><td class='num'>268/500 = 53.6% [49.2, 57.9]</td><td class='num'>—</td></tr>
 <tr class='grp'><td colspan='5'>dedrift, measured under the same protocol</td></tr>
 <tr><td><b>dedrift PSI + validity guard</b></td><td>identical metric; refused where E[PSI] > 0.05</td><td>none stated (diagnostic)</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
 <tr><td><b>dedrift fixed-sample path (alerts)</b></td><td>BH-FDR q = 0.05 + materiality, dual baselines</td><td>FDR q = 0.05 per check</td><td class='num'>16/500 = 3.2% [2.0, 5.1]</td><td class='num'>420/500 = 84.0% [80.5, 87.0]</td></tr>
 <tr><td><b>dedrift flag channel (Page–Hinkley / guarded PSI)</b></td><td>diagnostic flags, deliberately uncalibrated</td><td>none stated — published limitation</td><td class='num'>349/500 = 69.8% [65.6, 73.7]</td><td class='num'>—</td></tr>
-<tr><td><b>dedrift anytime-valid path</b></td><td>e-processes + e-BH, golden baseline, twosample rates</td><td>≤ 0.05 lifetime per epoch</td><td class='num'>2/25,000 = 0.0% [0.0, 0.0]</td><td class='num'>1/500 = 0.2% [0.0, 1.1]</td></tr>
+<tr><td><b>dedrift anytime-valid path</b></td><td>e-processes + e-BH, golden baseline, twosample rates</td><td>≤ 0.05 lifetime per epoch</td><td class='num'>—</td><td class='num'>1/500 = 0.2% [0.0, 1.1]</td></tr>
 </tbody></table></div>
-<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The anytime row's per-check cell is its per-cycle adjudication rate over all 25,000 folds (500 runs × 50 cycles) — the per-cycle object an e-BH battery produces. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
+<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The anytime-valid path has no per-check cell: it makes no per-check claim, and its per-fold rate is over 25,000 folds against every other row's 500 runs, so printing it in that column would compare different estimands. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
 <!-- BENCHMARK:TABLE2:END -->
 </section>
 
@@ -265,10 +263,13 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
     against any tool. Ambiguous defaults are resolved by the tool's own documentation and recorded in
     <code>benchmark/methods.py</code>.</li>
     <li><b>Evidently (0.7.21).</b> <code>DataDriftPreset</code>, all defaults, on the signature table —
-    the documented route for drift over per-output descriptor tables — run pooled over the whole suite
-    and once per canary family. We record the per-column flag rate (its auto-selected per-column tests
-    at the default 0.05 threshold), the any-column rate, and its dataset-level verdict (drifted-column
-    share ≥ 0.5, its own default).</li>
+    the documented route for drift over per-output descriptor tables — run pooled over the whole suite.
+    We record the per-column flag rate (its auto-selected per-column tests at the default 0.05
+    threshold), the any-column rate, and its dataset-level verdict (drifted-column share ≥ 0.5, its
+    own default). A per-canary-family arm was also run and is in the results JSON, but it is not
+    tabled: splitting one report into six and taking any-of is a user's choice rather than a
+    documented default, so its rate would partly be our own multiplicity rather than the tool's
+    calibration.</li>
     <li><b>dedrift (0.4.0).</b> The shipped fixed-sample path (BH-FDR q = 0.05 + materiality gates,
     dual baselines) and the anytime-valid path (e-processes + e-BH on the golden baseline,
     <code>rate_model="twosample"</code>, lifetime α = 0.05), both at <code>ProjectConfig()</code>
