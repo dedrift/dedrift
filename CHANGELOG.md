@@ -10,9 +10,9 @@
   two canary scales. `make benchmark` regenerates the results JSONs, the
   `web/benchmark/` page table, and the paper's validity-scale table.
   `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded
-  with checkable reasons; `benchmark/OUTREACH.md` holds the maintainer
-  right-of-reply drafts (unsent; publication is the owner's decision after the
-  14-day window).
+  with checkable reasons; the maintainer right-of-reply drafts are held
+  locally (`benchmark/OUTREACH.md`, git-ignored; unsent — publication is
+  the owner's decision after the 14-day window).
 
 ## 0.4.0
 
