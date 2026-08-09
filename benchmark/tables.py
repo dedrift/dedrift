@@ -310,6 +310,20 @@ def render_macros(docs: dict[tuple[str, str], dict[str, Any]]) -> str:
     chi.sort(key=lambda kv: -kv[1])
     body = ", ".join(f"${100 * rate:.1f}\\%$" for _, rate in chi[:3])
     out.append(_macro("benchEvChiSuite", body))
+    # The same sentence contrasts those with the columns Evidently routes to
+    # a p-value test. Deriving the ceiling keeps the contrast honest if a
+    # re-run moves it; hand-typing a range is how a claim goes stale.
+    pval_max = max(
+        (
+            cell["rate"]
+            for cell in docs[("percheck", "suite")]["methods"]["evidently_pooled"][
+                "per_column"
+            ].values()
+            if not any("chi" in m.lower() for m in cell["methods"])
+        ),
+        default=0.0,
+    )
+    out.append(_macro("benchEvPvalMaxSuite", f"${100 * pval_max:.1f}\\%$"))
     out.append("")
     return "\n".join(out)
 
