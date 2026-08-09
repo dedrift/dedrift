@@ -66,9 +66,9 @@ default `"off"` keeps the exact v0.3.1 record-level battery):
   standardized KS (shape; offsets cancel exactly) disjoined with design-effect Welch
   (location), design-effect-inflated rate z, and Student-t cycle-level summaries for
   dispersion and P95. On the audit's sigma ladder the per-check false-alert rate under
-  within-version wobble drops from {36.8%, 70.6%, 88.3%, 97.6%} at sigma = {0.05, 0.10,
-  0.15, 0.25} to {34.4%, 63.7%, 80.6%, 92.9%} with `auto` — and to {7.6%, 31.7%,
-  47.1%, 65.4%} with `auto` + `alert_persistence = 2` — while the exchangeable null
+  within-version wobble drops from {36.5%, 71.0%, 89.0%, 98.5%} at sigma = {0.05, 0.10,
+  0.15, 0.25} to {34.0%, 64.0%, 81.3%, 94.0%} with `auto` — and to {6.0%, 31.0%,
+  47.0%, 66.0%} with `auto` + `alert_persistence = 2` — while the exchangeable null
   stays calibrated (auto at sigma = 0: 3.8% at CI scale, 4.5% [1.4, 7.6] on the
   harness) and gross-swap detection remains 10/10. The correction reduces but does not
   restore calibration at canary scale; the residual is information-theoretic.

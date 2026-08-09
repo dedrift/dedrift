@@ -126,22 +126,30 @@ distinguish from drift.
 Measured on stable agents with a latent per-cycle offset of magnitude σ —
 per-check false-alert rate with Wilson 95% intervals, audit-harness scale
 (30 canaries × 7 reps, 3-cycle golden), all three columns measured on the
-current build: 300 checks per level for the record-level battery
-(`detection.cycle_effect = "off"`, the default), 30 replicates per level
-for `auto`, 20 for `auto + persistence=2`:
+current build. Each project contributes five checks, so the denominators
+below are 300 checks at σ = 0 and 200 above it for the record-level
+battery (`detection.cycle_effect = "off"`, the default), 150 for `auto`,
+and 100 for `auto + persistence=2`:
 
 | σ | record-level battery (default) | cluster-aware (`auto`) | `auto` + persistence = 2 |
 |---|---|---|---|
-| 0.00 | 3.0% [1.6, 5.6] | 4.5% [1.4, 7.6] | 1.8% [0.0, 3.7] |
-| 0.05 | 36.8% [30.1, 43.4] | 34.4% [26.9, 41.9] | 7.6% [2.8, 12.5] |
-| 0.10 | 70.6% [64.4, 76.8] | 63.7% [56.1, 71.2] | 31.7% [22.8, 40.6] |
-| 0.15 | 88.3% [83.9, 92.6] | 80.6% [74.3, 86.8] | 47.1% [37.5, 56.7] |
-| 0.25 | 97.6% [95.7, 99.5] | 92.9% [89.0, 96.8] | 65.4% [56.3, 74.5] |
+| 0.00 | 3.0% [1.6, 5.6] — 9/300 | 3.3% [1.4, 7.6] — 5/150 | 0.0% [0.0, 3.7] — 0/100 |
+| 0.05 | 36.5% [30.1, 43.4] — 73/200 | 34.0% [26.9, 41.9] — 51/150 | 6.0% [2.8, 12.5] — 6/100 |
+| 0.10 | 71.0% [64.4, 76.8] — 142/200 | 64.0% [56.1, 71.2] — 96/150 | 31.0% [22.8, 40.6] — 31/100 |
+| 0.15 | 89.0% [83.9, 92.6] — 178/200 | 81.3% [74.3, 86.8] — 122/150 | 47.0% [37.5, 56.7] — 47/100 |
+| 0.25 | 98.5% [95.7, 99.5] — 197/200 | 94.0% [89.0, 96.8] — 141/150 | 66.0% [56.3, 74.5] — 66/100 |
 
-(An earlier build measured the record-level column at 2.3% / 33.5% /
-70.8% / 87.5% / 97.8%. The rise is expected rather than noise: the
-any-alert rate is family-wise, and the `tool_order_inversions` signature
-takes the battery from m ≈ 300 to m ≈ 336 primaries.)
+Each cell is the observed rate `k/n` with its Wilson 95% interval, and the
+counts are printed so the rate can be checked against them.
+
+(Two earlier revisions of this table are superseded. A pre-`tool_order`
+build measured the record-level column at 2.3% / 33.5% / 70.8% / 87.5% /
+97.8%; the rise is expected rather than noise, since the any-alert rate is
+family-wise and `tool_order_inversions` takes the battery from m ≈ 300 to
+m ≈ 336 primaries. Separately, every cell here was previously printed as
+the *centre* of its Wilson interval rather than the observed `k/n`. The
+centre is shrunk toward one half, so 0/100 read as 1.8% and 197/200 as
+97.6%. The counts above are the measurements.)
 
 At the CI scale (12 × 5, 500 runs, σ = 0) the modes measure 16/500
 (3.2%, upper 5.1%) off and 19/500 (3.8%, upper 5.9%) auto — consistent
