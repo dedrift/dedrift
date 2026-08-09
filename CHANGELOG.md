@@ -1,20 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Added `benchmark/`: a reproducible null-calibration study measuring false-alarm
-  rates of seven drift-detection configurations (folk-threshold PSI with and
-  without the validity guard, Evidently 0.7.21 DataDriftPreset at defaults
-  pooled and per family, naive uncontrolled two-sample KS, and dedrift's
-  fixed-sample and anytime-valid paths) on 500 seeded stable-agent histories at
-  two canary scales. `make benchmark` regenerates the results JSONs, the
-  `web/benchmark/` page table, and the paper's validity-scale table.
-  `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded
-  with checkable reasons; the page and paper carry a standing
-  right-of-reply invitation to measured tools' maintainers (optional
-  notification drafts are held locally in `benchmark/OUTREACH.md`,
-  git-ignored).
-
 ## 0.4.0
 
 Independent-audit release: every defect the external audit confirmed is fixed, and both
@@ -43,6 +28,24 @@ Fixed, with regression tests (audit-measured defect in parentheses):
   under degradation; other channels stay suppressed and the verdict remains DEGRADED DATA.
 - Corrected the stale `checks.baseline_kind` schema comment ('dual' | 'anytime').
 
+Validity-scale benchmark:
+
+- Added `benchmark/`: a reproducible null-calibration study measuring false-alarm
+  rates of six drift-detection configurations (folk-threshold PSI, the same index
+  under the validity guard, Evidently 0.7.21 DataDriftPreset at defaults over the
+  pooled signature table, naive uncontrolled two-sample KS, and dedrift's
+  fixed-sample and anytime-valid paths) on 500 seeded stable-agent histories at
+  two canary scales. `make benchmark` regenerates the results JSONs, the
+  `web/benchmark/` page table, and the paper's validity-scale table.
+  A per-canary-family Evidently arm is measured and kept in the results JSON but
+  deliberately not tabled: splitting one report into six and taking any-of is a
+  user's choice rather than a documented default, so its rate would partly be our
+  own multiplicity rather than the tool's calibration.
+  `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded with
+  checkable reasons; the page and paper carry a standing right-of-reply invitation
+  to measured tools' maintainers (optional notification drafts are held locally in
+  `benchmark/OUTREACH.md`, git-ignored).
+
 New detection capability:
 
 - Added `tool_order_inversions` (Kendall-tau inversions of the tool-call name sequence)
@@ -63,9 +66,9 @@ default `"off"` keeps the exact v0.3.1 record-level battery):
   standardized KS (shape; offsets cancel exactly) disjoined with design-effect Welch
   (location), design-effect-inflated rate z, and Student-t cycle-level summaries for
   dispersion and P95. On the audit's sigma ladder the per-check false-alert rate under
-  within-version wobble drops from {36.8%, 70.6%, 88.3%, 97.6%} at sigma = {0.05, 0.10,
-  0.15, 0.25} to {34.4%, 63.7%, 80.6%, 92.9%} with `auto` — and to {7.6%, 31.7%,
-  47.1%, 65.4%} with `auto` + `alert_persistence = 2` — while the exchangeable null
+  within-version wobble drops from {36.5%, 71.0%, 89.0%, 98.5%} at sigma = {0.05, 0.10,
+  0.15, 0.25} to {34.0%, 64.0%, 81.3%, 94.0%} with `auto` — and to {6.0%, 31.0%,
+  47.0%, 66.0%} with `auto` + `alert_persistence = 2` — while the exchangeable null
   stays calibrated (auto at sigma = 0: 3.8% at CI scale, 4.5% [1.4, 7.6] on the
   harness) and gross-swap detection remains 10/10. The correction reduces but does not
   restore calibration at canary scale; the residual is information-theoretic.

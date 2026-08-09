@@ -25,17 +25,17 @@ PAPER = ROOT / "launch" / "paper" / "dedrift_paper.tex"
 CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
     (
         "cycle-effect ladder, record-level (default) column",
-        ("3.0", "36.8", "70.6", "88.3", "97.6"),
+        ("3.0", "36.5", "71.0", "89.0", "98.5"),
         ("docs/statistics.md", "web/index.html"),
     ),
     (
         "cycle-effect ladder, cluster-aware (auto) column",
-        ("4.5", "34.4", "63.7", "80.6", "92.9"),
+        ("3.3", "34.0", "64.0", "81.3", "94.0"),
         ("docs/statistics.md", "web/index.html"),
     ),
     (
         "cycle-effect ladder, auto + alert_persistence=2 column",
-        ("1.8", "7.6", "31.7", "47.1", "65.4"),
+        ("0.0", "6.0", "31.0", "47.0", "66.0"),
         ("docs/statistics.md", "web/index.html"),
     ),
     (
@@ -60,6 +60,11 @@ RETIRED: list[tuple[str, tuple[str, ...], str]] = [
     (
         "pre-tool_order cycle-effect ladder (battery was m~300, now m~336)",
         ("33.5%", "70.8%", "87.5%", "97.8%"),
+        "docs/statistics.md",  # documents the supersession explicitly, once
+    ),
+    (
+        "cycle-effect ladder printed as Wilson centres instead of observed k/n",
+        ("36.8%", "70.6%", "88.3%", "97.6%"),
         "docs/statistics.md",  # documents the supersession explicitly, once
     ),
 ]
