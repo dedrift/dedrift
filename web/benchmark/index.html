@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Null-calibration benchmark — measured false-alarm rates at canary scale · dedrift</title>
-<meta name="description" content="How often do common drift-detection configurations alert on data with no drift? A reproducible validity-scale study: 500 seeded stable-agent histories, seven configurations, Wilson intervals, pinned versions.">
+<meta name="description" content="How often do common drift-detection configurations alert on data with no drift? A reproducible validity-scale study: 500 seeded stable-agent histories, six configurations, Wilson intervals, pinned versions.">
 <meta property="og:title" content="Null-calibration benchmark — false-alarm rates at canary scale">
 <meta property="og:description" content="A reproducible validity-scale study of drift-detection false-alarm rates on stable-agent histories.">
 <meta property="og:url" content="https://dedrift.ai/benchmark/">
@@ -128,7 +128,7 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
   <p class="body">Every drift tool implicitly promises: <b>when I alert, something happened.</b> Agent
   behavioral monitoring runs at canary scale — tens of rows per comparison window, by economic necessity —
   while most general-purpose drift machinery was designed and calibrated for production tables with
-  thousands of rows. This page measures what seven common configurations actually do on data with
+  thousands of rows. This page measures what six common configurations actually do on data with
   <b>no drift and no config change, ever</b>: the probability of at least one false alarm per check, and per
   50-cycle monitored history, because that is how monitoring is used.</p>
   <div class="callout">
