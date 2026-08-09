@@ -1,8 +1,16 @@
 name: CI
 
 on:
+  # Branch pushes are covered by their pull request. Without this filter every
+  # push to a branch with an open PR ran the whole suite twice, once per event.
   push:
+    branches: [main]
   pull_request:
+
+# A new push supersedes the run already in flight for the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -30,8 +38,23 @@ jobs:
         run: mypy
       - name: Unit tests
         run: pytest -m "not calibration and not power"
+
+  calibration:
+    # The simulation gates are the long pole -- 500-run pipeline nulls and the
+    # cycle-effect ladder. Kept in their own job so they run alongside the unit
+    # matrix instead of after it, and so a failure names itself in the checks
+    # list rather than hiding inside "test (3.12)".
+    name: Calibration and power gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
       - name: Calibration & power tests
-        if: matrix.python-version == '3.12'
         run: pytest -m "calibration or power"
 
   package:
