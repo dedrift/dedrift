@@ -1,20 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Added `benchmark/`: a reproducible null-calibration study measuring false-alarm
-  rates of seven drift-detection configurations (folk-threshold PSI with and
-  without the validity guard, Evidently 0.7.21 DataDriftPreset at defaults
-  pooled and per family, naive uncontrolled two-sample KS, and dedrift's
-  fixed-sample and anytime-valid paths) on 500 seeded stable-agent histories at
-  two canary scales. `make benchmark` regenerates the results JSONs, the
-  `web/benchmark/` page table, and the paper's validity-scale table.
-  `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded
-  with checkable reasons; the page and paper carry a standing
-  right-of-reply invitation to measured tools' maintainers (optional
-  notification drafts are held locally in `benchmark/OUTREACH.md`,
-  git-ignored).
-
 ## 0.4.0
 
 Independent-audit release: every defect the external audit confirmed is fixed, and both
@@ -42,6 +27,24 @@ Fixed, with regression tests (audit-measured defect in parentheses):
   alerts, so an error storm masked any drift. The error-rate channel itself now alerts
   under degradation; other channels stay suppressed and the verdict remains DEGRADED DATA.
 - Corrected the stale `checks.baseline_kind` schema comment ('dual' | 'anytime').
+
+Validity-scale benchmark:
+
+- Added `benchmark/`: a reproducible null-calibration study measuring false-alarm
+  rates of six drift-detection configurations (folk-threshold PSI, the same index
+  under the validity guard, Evidently 0.7.21 DataDriftPreset at defaults over the
+  pooled signature table, naive uncontrolled two-sample KS, and dedrift's
+  fixed-sample and anytime-valid paths) on 500 seeded stable-agent histories at
+  two canary scales. `make benchmark` regenerates the results JSONs, the
+  `web/benchmark/` page table, and the paper's validity-scale table.
+  A per-canary-family Evidently arm is measured and kept in the results JSON but
+  deliberately not tabled: splitting one report into six and taking any-of is a
+  user's choice rather than a documented default, so its rate would partly be our
+  own multiplicity rather than the tool's calibration.
+  `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded with
+  checkable reasons; the page and paper carry a standing right-of-reply invitation
+  to measured tools' maintainers (optional notification drafts are held locally in
+  `benchmark/OUTREACH.md`, git-ignored).
 
 New detection capability:
 
