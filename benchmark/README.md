@@ -72,6 +72,8 @@ every published number in place.
   both appear.
 - No method is tuned. Where a default is ambiguous, the resolution follows
   the tool's own documentation and is recorded in `benchmark/methods.py`.
-- The measured tools' maintainers were offered right of reply before
-  publication; the drafts live in `benchmark/OUTREACH.md`, which is
-  deliberately git-ignored — held by the owner, sent by the owner.
+- Maintainers of measured tools are invited to respond (a standing
+  invitation, carried on the page and in the paper); optional
+  notification drafts live in `benchmark/OUTREACH.md`, which is
+  deliberately git-ignored — held by the owner, sent only if the owner
+  chooses to.
