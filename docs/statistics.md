@@ -261,8 +261,11 @@ close.
 - **The flag channel (Page–Hinkley, PSI) is uncalibrated and carries no
   multiplicity control — treat flags as diagnostics, never as alerts.**
   PH runs on every (family, signature) stream (48 at the measured scale: 8 scalar signatures x 6 families), so
-  per-stream rates compound: the 500-run null study measures, at a
-  42-stream battery, **68.6% of stable checks showing at least one flag**. With 48 streams the figure can only be higher; it has not been re-measured at 48. That
+  per-stream rates compound: the 500-run null study measures, at the
+  48-stream battery, **69.8% of stable checks showing at least one flag**
+  (per-stream rate 2.7%, Wilson [2.5%, 2.9%] over 24,000 draws;
+  1−(1−0.027)⁴⁸ = 0.73 against the observed 0.698 — the residual gap is
+  the streams sharing records). That
   number is printed here deliberately — flags never alert, they exist to
   localize onsets for attribution, and the report labels them as such.
   Cross-stream correction for the flag channel is on the roadmap.

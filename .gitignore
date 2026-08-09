@@ -40,3 +40,6 @@ launch/
 
 # Local agent settings (never publish - may reference private tooling)
 .claude/
+
+# Maintainer right-of-reply drafts are held locally by the owner until sent
+benchmark/OUTREACH.md
