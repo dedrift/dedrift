@@ -202,11 +202,13 @@ smoothed over):
 
 The gross swap is certain under either battery; moderate single-channel
 shifts are where the cluster-aware battery pays. Tool-call order reversal
-is the order channel's own measurement: **5/10 first-check channel
-alerts** in the same harness — at a scale where "detected" means half of
-first checks — while a battery without the channel measures **0/30**,
-blind to order by construction. That hole is what the channel exists to
-close.
+is the order channel's own measurement: **8/20 first-check channel
+alerts** in the same harness — at a scale where "detected" means about
+two first checks in five — while a battery without the channel measures
+**0/30**, blind to order by construction. That hole is what the channel
+exists to close. (This probe was rerun at 20 replicates for the full
+adversarial matrix; the 5/10 published with the 0.4.0 release notes was
+the earlier 10-replicate run and is superseded.)
 
 ## Fine print, stated plainly
 

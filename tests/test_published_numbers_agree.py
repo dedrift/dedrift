@@ -53,6 +53,11 @@ CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
         ("89/100",),
         ("docs/anytime.md", "README.md", "CHANGELOG.md"),
     ),
+    (
+        "tool-order channel, first-check alerts with and without the channel",
+        ("8/20", "0/30"),
+        ("docs/statistics.md", "web/index.html"),
+    ),
 ]
 
 #: values superseded by a re-measurement, with the one file allowed to cite them
@@ -65,6 +70,11 @@ RETIRED: list[tuple[str, tuple[str, ...], str]] = [
     (
         "cycle-effect ladder printed as Wilson centres instead of observed k/n",
         ("36.8%", "70.6%", "88.3%", "97.6%"),
+        "docs/statistics.md",  # documents the supersession explicitly, once
+    ),
+    (
+        "tool-order first-check alerts from the earlier 10-replicate run",
+        ("5/10",),
         "docs/statistics.md",  # documents the supersession explicitly, once
     ),
 ]
