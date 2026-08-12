@@ -58,6 +58,11 @@ CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
         ("8/20", "0/30"),
         ("docs/statistics.md", "web/index.html"),
     ),
+    (
+        "anytime harness cross-check at 60 cycles (independent harness scale)",
+        ("0/40", "1/30"),
+        ("docs/anytime.md",),
+    ),
 ]
 
 #: values superseded by a re-measurement, with the one file allowed to cite them
@@ -76,6 +81,11 @@ RETIRED: list[tuple[str, tuple[str, ...], str]] = [
         "tool-order first-check alerts from the earlier 10-replicate run",
         ("5/10",),
         "docs/statistics.md",  # documents the supersession explicitly, once
+    ),
+    (
+        "anytime harness cross-check at the wrong denominators (was 0/60, 1/40)",
+        ("0/60", "1/40"),
+        "docs/anytime.md",  # documents the supersession explicitly, once
     ),
 ]
 

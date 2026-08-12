@@ -181,11 +181,15 @@ that limit is information-theoretic: a per-cycle offset at these sample
 sizes *is* a real distributional change, not noise a record-level test can
 see through. The 16/500 headline is measured at σ = 0 and describes that
 regime only. Pinned or self-hosted models: leave the default `off`. For
-wobble-prone hosted models the valid default is [anytime-valid
-mode](anytime.md), which stays within its lifetime budget under iid wobble
-up to σ = 0.25 (measured 8/500; persistent AR(1) offsets at σ = 0.25,
-φ = 0.9 exceed it at 7.2% — the published boundary). `auto` + persistence
-is the fixed-path option, at the rates above.
+mildly wobble-prone hosted models the better option is [anytime-valid
+mode](anytime.md), whose observed ever-alert rate stays within its
+lifetime budget under iid wobble up to σ = 0.25 (measured 8/500;
+persistent AR(1) offsets at σ = 0.25, φ = 0.9 exceed it at 7.2% — the
+published boundary). But its *guarantee* lapses earlier than its alert
+rate does — the e-value property is already unresolved at σ = 0.10 — so
+above that magnitude neither path is covered by a bound, and `auto` +
+`alert_persistence = 2` is the configuration whose behaviour is measured
+there, at the rates above.
 
 The correction is bought with power — detection within 3 post-drift
 checks, drift injected at cycle 5, audit harness (record-level cells at
