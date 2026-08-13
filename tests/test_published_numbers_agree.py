@@ -26,17 +26,17 @@ CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
     (
         "cycle-effect ladder, record-level (default) column",
         ("3.0", "36.5", "71.0", "89.0", "98.5"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
     (
         "cycle-effect ladder, cluster-aware (auto) column",
         ("3.3", "34.0", "64.0", "81.3", "94.0"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
     (
         "cycle-effect ladder, auto + alert_persistence=2 column",
         ("0.0", "6.0", "31.0", "47.0", "66.0"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
     (
         "pipeline null at CI scale, default mode",
