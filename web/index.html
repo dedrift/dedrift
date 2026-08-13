@@ -344,7 +344,7 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 </nav>
 
 <header class="hero wrap" id="home">
-  <div class="chip"><b>●</b> v0.4.0 <span class="sep">·</span> AGPL-3.0 <span class="sep">·</span> zero ML dependencies</div>
+  <div class="chip"><b>●</b> <a href="https://github.com/dedrift/dedrift/blob/main/CHANGELOG.md">v0.4.0</a> <span class="sep">·</span> AGPL-3.0 <span class="sep">·</span> zero ML dependencies</div>
   <h1>Agents don't throw errors when they degrade.<br><span class="grad">dedrift catches it.</span></h1>
   <p class="sub">
     Silent model updates, prompt edits, and RAG refreshes change how your agent behaves
@@ -393,7 +393,7 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
 <section id="product" class="wrap" aria-labelledby="product-h">
   <div class="kicker">The problem</div>
   <h2 id="product-h">Observability catches crashes.<br>dedrift catches character changes.</h2>
-  <p class="lead">LLM systems fail differently: outputs stay well-formed while length, refusals, tool use, latency tails, and meaning quietly shift. Nothing throws — so nothing pages you.</p>
+  <p class="lead">LLM systems fail differently: outputs stay well-formed while length, refusals, tool use and call order, latency tails, and meaning quietly shift. Nothing throws — so nothing pages you.</p>
   <div class="cards3">
     <div class="card rv"><span class="ic">model@v2 → model@v3</span><h3>Silent model updates</h3><p>The API alias stays the same. The model behind it doesn't. Nobody emails you.</p></div>
     <div class="card rv"><span class="ic">git diff prompt.txt</span><h3>Prompt &amp; tool-schema edits</h3><p>A colleague "improves" the system prompt. Refusal behavior shifts overnight. No test fails.</p></div>
@@ -436,48 +436,6 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
   </div>
 </section>
 
-<section id="whats-new" class="wrap" aria-labelledby="whatsnew-h">
-  <div class="kicker">What's new</div>
-  <h2 id="whatsnew-h">v0.4.0 — the audited release</h2>
-  <p class="lead">The independent audit's own harness re-confirms this build — every finding locked behind a regression test. Then there's the new reach.</p>
-  <div class="cards2">
-    <div class="card rv"><span class="tag">new channel</span><h3>Tool-order drift</h3>
-      <p>A new <code>tool_order_inversions</code> signature detects tool-call-order drift — agents calling the
-      right tools in the wrong order, a channel most monitors never test. It flags the drift on the first
-      post-drift check (5/10 harness runs; a battery without the channel measures 0/30, blind by construction).
-      The battery grows to m≈336 primaries.</p></div>
-    <div class="card rv"><span class="tag">stronger anytime</span><h3>Pooled SAFE rate processes</h3>
-      <p>Anytime mode runs two-sample SAFE rate processes, plus one pooled e-process per rate signature
-      (battery 24 → 28). Broad drift detection roughly doubles: a +20pp refusal shift is caught in
-      <b>100/100 runs, median 17 cycles</b>; +10pp in <b>89/100, median 50</b>.</p></div>
-    <div class="card rv"><span class="tag">hosted-model wobble</span><h3>Cycle-effect correction + persistence</h3>
-      <p>Hosted models wobble cycle to cycle. <code>cycle_effect="auto"</code> and <code>alert_persistence=2</code>
-      reduce the false-alert rate — honestly, they don't eliminate it:</p>
-      <div class="tbl-wrap" style="margin-top:14px">
-        <table class="ladder">
-          <thead><tr><th scope="col">wobble σ</th><th scope="col">record-level battery (default)</th><th scope="col">cluster-aware (auto)</th><th scope="col">auto + persist=2</th></tr></thead>
-          <tbody>
-            <tr><td>0.00</td><td>3.0%</td><td>3.3%</td><td>0.0%</td></tr>
-            <tr><td>0.05</td><td>36.5%</td><td>34.0%</td><td>6.0%</td></tr>
-            <tr><td>0.10</td><td>71.0%</td><td>64.0%</td><td>31.0%</td></tr>
-            <tr><td>0.15</td><td>89.0%</td><td>81.3%</td><td>47.0%</td></tr>
-            <tr><td>0.25</td><td>98.5%</td><td>94.0%</td><td>66.0%</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p style="margin-top:12px">Per-check false-alert rate, stable agent + latent per-cycle offset. The correction reduces but does not
-      restore calibration; persistence halves it again; neither reaches nominal at canary scale — at these
-      sample sizes a per-cycle offset <em>is</em> a real distributional change. Pinned/self-hosted: leave it off.
-      Hosted with wobble: anytime mode (valid there) or auto + persistence, with these numbers in front of you.
-      <a href="/docs/statistics/">The full ladder and intervals →</a></p></div>
-    <div class="card rv"><span class="tag">audit-hardened</span><h3>Every audit finding, regression-tested</h3>
-      <p>Streams mask to observed cycles, attribution events are labeled relative to onset, degradation can
-      never mask drift — each a regression-tested answer to a finding from the independent audit, re-confirmed
-      by the auditors' own harness.
-      The battery's m-dependence is published wherever the headline null rate appears.</p></div>
-  </div>
-</section>
-
 <section id="case-study" class="wrap" aria-labelledby="case-h">
   <div class="split">
     <div class="fig-panel rv">
@@ -515,7 +473,8 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
         <li>Every p-valued detector calibration-tested against a documented band, on every commit</li>
         <li>Pipeline null: <b>16/500</b> stable checks alerted (3.2%, Wilson upper 5.1%), family-wise over m≈336 primaries</li>
         <li>Anytime-valid mode: <b>2/500</b> stable runs ever alerted over 2,000 cycles (Wilson upper 1.5%)</li>
-        <li>The edge of the guarantee, published: σ=0.25 wobble with persistent AR(1) offsets → <b>7.2% ever-alert vs the 5% budget</b> (Wilson upper 9.8%) — the measured boundary, in the docs, not the fine print</li>
+        <li>The guarantee's edge, published too: the e-value property is <b>already unresolved at σ=0.10</b> wobble — before the alert rate shows anything is wrong</li>
+        <li>Cross-implementation validation: two audit harnesses, built independently by different AI coding agents with no sight of our simulator, re-measure this build. Every finding they returned is locked behind a regression test</li>
         <li>Vendor cross-check: raw PSI flags 92.5% of stable windows at the conventional threshold — dedrift's guard emits none</li>
       </ul>
       <a class="btn btn-primary" href="/docs/statistics/">Read the statistics</a>
@@ -537,13 +496,30 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
       shifts this battery will likely miss. Overclaiming is just drift of another kind.</p></div>
     <div class="card rv"><span class="ic">P(ever) ≤ α, boundary published</span><h3>A guarantee with a measured edge</h3>
       <p>Anytime-valid mode bounds the whole watch horizon, not each check: 2 of 500 stable runs over 2,000
-      cycles. Where the assumptions break — σ=0.25 wobble with persistent AR(1) offsets — the measured 7.2%
-      ever-alert rate against the 5% budget is published as the boundary of the guarantee.
+      cycles. And the edge is published as carefully as the claim: the e-value property is already unresolved
+      at σ=0.10 wobble, well before the alert rate shows anything — it stays inside budget to σ=0.25, breaching
+      only at 7.2% with persistent AR(1) offsets. Watching the alert rate alone would miss that.
       <a href="/docs/anytime/">The trade-off, quantified</a>.</p></div>
   </div>
   <p style="text-align:center;margin-top:26px;color:var(--dim);font-size:.92rem">
     Don't take our word for any of it — <a href="/docs/statistics/">audit the statistics</a>.
   </p>
+
+  <!-- PAPER BAND — activate when the arXiv ID lands: delete this comment line and the
+       closing one below, then replace both PENDING markers with the real identifier.
+       tests/test_site_has_no_placeholders.py fails if PENDING ever reaches a live block.
+  <div class="card rv" style="margin-top:48px">
+    <span class="ic">preprint</span>
+    <h3>The method, in full</h3>
+    <p>Every number on this page is derived, replicated and bounded in the paper —
+    including the regimes where the guarantees stop holding.</p>
+    <p style="font-family:var(--mono);font-size:.82rem;color:var(--dim);margin-top:12px">
+      Ali Mahmoudi. <em>Calibrated, Anytime-Valid Detection of Behavioral Drift in LLM Agents.</em>
+      arXiv:PENDING, 2026.
+    </p>
+    <p style="margin-top:12px"><a href="https://arxiv.org/abs/PENDING">Read the paper →</a></p>
+  </div>
+  END PAPER BAND -->
 </section>
 
 <section id="pricing" class="wrap" aria-labelledby="pricing-h">

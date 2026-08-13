@@ -51,7 +51,10 @@ New detection capability:
 - Added `tool_order_inversions` (Kendall-tau inversions of the tool-call name sequence)
   to the Tier-1 scalar battery. The audit measured tool-call ORDER drift as completely
   invisible (0/30 by construction — counts and schema were never the question); the new
-  channel catches full workflow reversals in 5/10 first-check projects at canary scale.
+  channel catches full workflow reversals in 8/20 first-check projects at canary scale.
+  (These notes originally carried the earlier 10-replicate run of the same probe; it was
+  rerun at 20 replicates for the full adversarial matrix, and the supersession is
+  recorded on the statistics page.)
 - Refusal alerts now carry an inline semantics note: the signature is pattern-matched
   phrasing, and a model that paraphrases its refusals can move the measured rate DOWN
   while true refusals rise (audit-confirmed wrong-direction alerts).

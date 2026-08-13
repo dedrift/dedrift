@@ -316,9 +316,11 @@ def render_macros(docs: dict[tuple[str, str], dict[str, Any]]) -> str:
     chi.sort(key=lambda kv: -kv[1])
     body = ", ".join(f"${100 * rate:.1f}\\%$" for _, rate in chi[:3])
     out.append(_macro("benchEvChiSuite", body))
-    # The same sentence contrasts those with the columns Evidently routes to
-    # a p-value test. Deriving the ceiling keeps the contrast honest if a
-    # re-run moves it; hand-typing a range is how a claim goes stale.
+    # The same sentence contrasts those with the columns Evidently routes
+    # somewhere other than chi-square -- K-S and Z-test at this table shape.
+    # Every column gets a p-value; the contrast is which test produces it.
+    # Deriving the ceiling keeps the contrast honest if a re-run moves it;
+    # hand-typing a range is how a claim goes stale.
     pval_max = max(
         (
             cell["rate"]

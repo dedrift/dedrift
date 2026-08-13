@@ -26,17 +26,17 @@ CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
     (
         "cycle-effect ladder, record-level (default) column",
         ("3.0", "36.5", "71.0", "89.0", "98.5"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
     (
         "cycle-effect ladder, cluster-aware (auto) column",
         ("3.3", "34.0", "64.0", "81.3", "94.0"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
     (
         "cycle-effect ladder, auto + alert_persistence=2 column",
         ("0.0", "6.0", "31.0", "47.0", "66.0"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
     (
         "pipeline null at CI scale, default mode",
@@ -53,6 +53,16 @@ CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
         ("89/100",),
         ("docs/anytime.md", "README.md", "CHANGELOG.md"),
     ),
+    (
+        "tool-order channel, first-check alerts with and without the channel",
+        ("8/20", "0/30"),
+        ("docs/statistics.md", "web/index.html"),
+    ),
+    (
+        "anytime harness cross-check at 60 cycles (independent harness scale)",
+        ("0/40", "1/30"),
+        ("docs/anytime.md",),
+    ),
 ]
 
 #: values superseded by a re-measurement, with the one file allowed to cite them
@@ -66,6 +76,16 @@ RETIRED: list[tuple[str, tuple[str, ...], str]] = [
         "cycle-effect ladder printed as Wilson centres instead of observed k/n",
         ("36.8%", "70.6%", "88.3%", "97.6%"),
         "docs/statistics.md",  # documents the supersession explicitly, once
+    ),
+    (
+        "tool-order first-check alerts from the earlier 10-replicate run",
+        ("5/10",),
+        "docs/statistics.md",  # documents the supersession explicitly, once
+    ),
+    (
+        "anytime harness cross-check at the wrong denominators (was 0/60, 1/40)",
+        ("0/60", "1/40"),
+        "docs/anytime.md",  # documents the supersession explicitly, once
     ),
 ]
 

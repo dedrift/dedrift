@@ -134,12 +134,27 @@ reference-anchored alternative that would avoid the stall was implemented
 and **rejected**: it is not an e-value when the reference posterior misses
 the true rate (measured E[E] up to 5.8 under the null).
 
-**The validity boundary, measured.** Validity rests on the iid-block null.
-Under iid cycle wobble the ever-alert rate stays within the α = 0.05
-budget up to σ = 0.25 (8/500 = 1.6%, Wilson upper 3.1%); the persistent
-AR(1) regime σ = 0.25, φ = 0.9 measures **36/500 = 7.2% (upper 9.8%) —
-above the 5% budget**, published as the measured boundary of the
-guarantee. Details under [Robustness to provider-side
+**The validity boundary, measured.** Validity rests on the iid-block null,
+and two different things fail at two different points.
+
+The **e-value property itself** — E[E_t | F_{t-1}] ≤ 1, without which
+Ville's inequality has no premise — is what fails first. Under a shared
+per-cycle offset it is **already unresolved against 1 at σ = 0.10**
+(E[M_T] = 1.10 over 45,000 replicated trajectories) and **clearly fails by
+σ = 0.25**. Canary heterogeneity is safe in the other direction: unequal
+fixed rates within a family make the block Poisson-binomial, which is
+underdispersed relative to the binomial the null assumes, so the
+construction only gets more conservative.
+
+The **observed alert rate** lags that failure, which is why watching it is
+not enough: under iid cycle wobble it stays within the α = 0.05 budget up
+to σ = 0.25 (8/500 = 1.6%, Wilson upper 3.1%) — a regime in which the
+guarantee has already lapsed. The persistent AR(1) regime σ = 0.25,
+φ = 0.9 measures **36/500 = 7.2% (upper 9.8%) — above the 5% budget**.
+
+So: if your endpoint wobbles at σ ≳ 0.10, do not read the anytime bound as
+covering you, whatever the alert rate looks like. Details under
+[Robustness to provider-side
 wobble](#robustness-to-provider-side-wobble).
 
 ## How the budget decomposes
@@ -311,8 +326,10 @@ its ladder is on [the statistics page](statistics.md#cycle-effects)):
 | 0.10 | 0.90 | 4/500 |
 | 0.25 | 0.90 | **36/500 — 7.2%, Wilson upper 9.8%** |
 
-Harness cross-checks at a 60-cycle horizon agree at small n: 0/60 with no
-wobble (upper 6.0%), 1/40 at σ = 0.15 (upper 12.9%).
+Harness cross-checks at a 60-cycle horizon agree at small n: 0/40 with no
+wobble (upper 8.8%), 1/30 at σ = 0.15 (upper 16.7%). (Published here at
+first as 0/60 and 1/40; those denominators did not match the run the
+figure and the paper report, and are superseded.)
 
 Read the last row against its matched controls. At σ = 0.25 the rate goes
 8/500 (φ = 0) → 36/500 (φ = 0.90): monotone in persistence at fixed
@@ -320,9 +337,12 @@ magnitude, which is what the theory predicts if the causal condition is
 what binds — persistent offsets are exactly the configuration in which
 unobserved provider-side state can correlate streams through time. And
 7.2% **exceeds the α = 0.05 budget**. That is the measured boundary of the
-guarantee, published rather than smoothed over: the lifetime claim holds
-under memoryless wobble up to σ = 0.25, and does not hold under strongly
-persistent wobble of that magnitude.
+guarantee, published rather than smoothed over: the observed rate stays
+inside budget under memoryless wobble up to σ = 0.25, and does not under
+strongly persistent wobble of that magnitude. Read that alongside the
+validity boundary above — the observed rate staying inside α up to
+σ = 0.25 is not the same as the guarantee holding there, and it does not:
+the e-value property is already unresolved at σ = 0.10.
 
 Why persistence and not just magnitude: an offset redrawn independently each
 cycle has no past, so however large it is it cannot violate a condition

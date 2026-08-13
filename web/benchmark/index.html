@@ -211,7 +211,8 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
   auto-selection heuristic to a chi-square test whose own small-cell validity condition is violated at
   these window sizes (the 0.7.21 implementation is <code>scipy.stats.chisquare</code> on the raw
   contingency counts — no merging, no exact fallback), and reject at <b>28–47%</b> each on stable data
-  while the well-behaved columns sit at 2–5%. Measured per column, pooled granularity:</p>
+  while every column the preset routes instead to a K–S or Z test sits at or below 6.2%. Measured per
+  column, pooled granularity:</p>
 
 <!-- BENCHMARK:COLUMN:BEGIN -->
 <div class="tbl-wrap"><table>
