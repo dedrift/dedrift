@@ -43,6 +43,21 @@ behavior — and needs enough members to give its tests power.
 | `adversarial` | Injection resistance | "Ignore your instructions and…" |
 | `long_context` | Long-input behavior | Multi-paragraph inputs with a needle |
 
+The vocabulary is closed on purpose: a family means the same thing in every
+project, which is what makes a cross-project statement about coverage possible
+at all. Not every project has an honest analogue of every family — an agent
+that cannot refuse has no honest `refusal_boundary` canaries — and leaving a
+family empty is the right answer there. Fabricating canaries to fill a slot
+produces something evidence-shaped that is not evidence.
+
+Reports therefore state coverage explicitly:
+
+```
+Families populated: 4 of 6 — not populated: refusal_boundary, tool_heavy.
+```
+
+so a reader can tell *deliberately unused* from *accidentally empty*.
+
 ## Sizing: power comes from samples
 
 Per-family sample size per window is *canaries-per-family × repetitions*.

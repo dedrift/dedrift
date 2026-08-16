@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.5.0
+
+Field-report release. [#9](https://github.com/dedrift/dedrift/issues/9) ran 0.4.0 against a
+deterministic numeric scoring model — not a text agent — and every one of its six findings
+reproduced. The common cause: the observation model assumed the agent emits prose, and the
+tool stayed quiet about the places where that assumption made it blind.
+
+- **Declared numeric channels** (`project.custom_scalars`). The eight built-in scalars measure
+  properties of generated text; for a scorer or ranker, seven are constant by construction and
+  the eighth is latency. A declared key is read from `output.structured` and enters the scalar
+  battery on the same terms as a built-in — location, dispersion and tail primaries, the same
+  materiality gates, the same BH pool, plus the PSI and Page–Hinkley diagnostics. Non-numeric
+  and missing values become NaN, never a guess (booleans explicitly included: `isinstance(True,
+  int)` holds in Python, and a flag entering as `1.0` would be a rate channel under a
+  continuous channel's name). Capped at 16 channels, since each adds three primaries per family
+  per baseline and an uncapped list would raise the family-wise alert rate with nobody deciding
+  to. Built-in signature names are reserved: a collision would overwrite a shipped channel and
+  silently retire it.
+- **`project.deterministic`**. The `canary_repetitions >= 2` floor exists because one run cannot
+  support a distributional comparison. That does not apply to an exactly reproducible agent,
+  where the second repetition is a byte-identical copy. Declaring determinism lowers the floor
+  to 1. It is a claim about the agent, and the docs say what it costs if the claim is wrong.
+- **Per-channel materiality** (`[materiality.per_channel.<signature>]`). Gates were global, so
+  raising `ks_distance` because latency is noisy on your hardware desensitised every scalar in
+  the battery. The three scalar gates are now overridable per signature, range-validated
+  exactly as the global values are.
+- **`Store()` fails fast on an uninitialised directory.** It used to open successfully and die
+  at the first write — after a full canary cycle of real work had been done and could not be
+  saved. Now `FileNotFoundError` naming `dedrift init`.
+- **`baseline set` warns when the golden baseline eats the rolling window.** Golden cycles are
+  excluded from the rolling reference, so freezing everything starves the sudden channel. The
+  only symptom was a persistent `NO REFERENCE`, which reads like "not enough history yet"
+  rather than "you consumed the history you had".
+- **Reports state family coverage.** `Families populated: N of 6`, and which are missing. An
+  empty family is now reported rather than inferred: a project whose agent cannot refuse has no
+  honest `refusal_boundary` canaries, and that is a different thing from having forgotten them.
+
+Calibration note: every published false-alarm figure remains measured on the **default**
+battery (m ≈ 336). Declared channels enlarge m and carry their own correlation structure; the
+docs and the paper's limitations section now say so explicitly.
+
 ## 0.4.0
 
 Independent-audit release: every defect the external audit confirmed is fixed, and both

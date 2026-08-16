@@ -10,6 +10,8 @@ values outside the domains below stop the command with exit code 1 instead of be
 name = "my-agent"
 canary_repetitions = 7        # N runs per canary per cycle
 rolling_window_cycles = 5     # K cycles in the rolling reference
+deterministic = false         # true only if the agent is exactly reproducible
+custom_scalars = []           # numeric channels read from output.structured
 
 [detection]
 fdr_q = 0.05                  # Benjamini–Hochberg level over primary tests
@@ -33,6 +35,10 @@ dispersion_ratio = 1.5        # dispersion gate on the ROBUST scale the test
                               # not the sample variance
 p95_relative = 0.10           # tail gate: min relative P95 shift
 embedding_mmd2_floor = -1.0   # -1 = auto-calibrate; 0 = off; >0 = explicit
+
+# per-channel overrides; unlisted channels keep the defaults above
+[materiality.per_channel.latency_ms]
+ks_distance = 0.35
 
 [embeddings]
 model = ""                    # set via `dedrift embedder pin`, not by hand
@@ -58,6 +64,68 @@ each N buys; cost grows linearly.
 This project value is authoritative for both `dedrift canary run` and
 `dedrift sim`. A legacy `--repetitions N` argument is accepted only when it
 matches the project value; edit `config.toml` to change the experiment design.
+
+### `deterministic`
+
+The floor of `canary_repetitions >= 2` exists because a single run cannot
+support a distributional comparison. That reasoning does not apply to an agent
+that is exactly reproducible at fixed inputs — a temperature-0 model with a
+pinned seed, or a non-LLM scorer — where the second repetition is a
+byte-identical copy that costs storage and buys nothing. Setting
+`deterministic = true` lowers the floor to 1.
+
+It is a claim about your agent, not a convenience switch. If the agent is in
+fact stochastic, `N = 1` removes the within-cycle variation the tests are
+built on, and the drift you are looking for will be indistinguishable from the
+sampling noise you stopped measuring.
+
+### `custom_scalars`
+
+The eight built-in scalar signatures measure properties of generated text. For
+an agent whose output is a number — a scorer, a ranker, a classifier emitting a
+calibrated probability — seven of them are constant by construction and the
+eighth is latency, so the battery observes everything except the quantity that
+matters.
+
+Listing a key here promotes it from `output.structured` into the scalar
+battery, where it gets the same location, dispersion and tail primaries, the
+same materiality gates, and the same BH adjudication as a built-in signature:
+
+```toml
+[project]
+custom_scalars = ["score", "top_prob"]
+```
+
+Values must be real numbers. A missing key, a string, a boolean, or a nested
+object becomes NaN rather than a guess — booleans deliberately included, since
+`isinstance(True, int)` holds in Python and a flag silently entering the scalar
+battery as `1.0` would be a rate channel wearing a continuous channel's name.
+
+Two constraints follow from what the battery is. Names must be valid Python
+identifiers and cannot repeat. And the list is capped at **16** channels:
+each one adds three primaries per family per baseline, so an uncapped list
+raises the family-wise alert rate without anyone deciding to. Note also that
+every calibration figure published for dedrift is measured on the default
+battery (m ≈ 336); channels of your own enlarge m, and their correlation
+structure is yours, not ours.
+
+### `materiality.per_channel`
+
+Materiality gates are global by default, which makes retuning one channel
+expensive: raising `ks_distance` because latency is noisy on your hardware
+desensitises every scalar in the battery. A `per_channel` table overrides a
+gate for one signature and leaves the rest alone:
+
+```toml
+[materiality.per_channel.latency_ms]
+ks_distance = 0.35
+p95_relative = 0.50
+```
+
+Only the three scalar gates — `ks_distance`, `p95_relative`,
+`dispersion_ratio` — are overridable, and overrides are range-validated
+exactly like the global values. Rate gates stay global: they are expressed in
+percentage points of a rate and are already per-signature by construction.
 
 ### `fdr_q`
 

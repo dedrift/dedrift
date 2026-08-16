@@ -246,6 +246,11 @@ class CheckResult:
             off).
         overall_verdict: Conservative aggregate status for CLI/report use.
         n_alerts: Convenience count of alerting tests.
+        families_present: Families this project actually populates. Reported
+            against the fixed vocabulary so a reader can tell a deliberately
+            unused family from an accidentally empty one -- an agent that
+            cannot refuse has no honest ``refusal_boundary`` canaries, and
+            leaving it empty is correct rather than a gap in coverage.
     """
 
     ts: str
@@ -257,6 +262,7 @@ class CheckResult:
     permutations_requested: int
     permutations_effective: int
     primary_family_upper_bound: int
+    families_present: tuple[str, ...]
     verdict_sudden: str
     verdict_cumulative: str
     degraded: bool
@@ -394,13 +400,17 @@ def _test_seed(base_seed: int, *parts: str) -> int:
     return int.from_bytes(hashlib.blake2b(key, digest_size=4).digest(), "big") % (2**31)
 
 
-def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
+def _material_scalar(test: TestOutcome, cfg: ProjectConfig, signature: str) -> bool:
     m = cfg.materiality
+    # Gates resolve per signature: the defaults are shaped for text channels,
+    # and a project whose only live scalar is latency on shared hardware has
+    # to raise them without desensitising every other channel at once.
     if test.test == "levene":
+        ratio = m.scalar_threshold("dispersion_ratio", signature)
         r = test.effect_size
-        return bool(r >= m.dispersion_ratio or r <= 1 / m.dispersion_ratio)
+        return bool(r >= ratio or r <= 1 / ratio)
     if test.test == "p95_perm":
-        return bool(abs(test.effect_size) >= m.p95_relative)
+        return bool(abs(test.effect_size) >= m.scalar_threshold("p95_relative", signature))
     if test.test == "ks":
         # KS detects ANY distributional change; a shape shift with equal
         # means has Cohen's d ~ 0 and is still real drift. Gate on the KS
@@ -411,7 +421,7 @@ def _material_scalar(test: TestOutcome, cfg: ProjectConfig) -> bool:
         # always after BH tightening) significance is the stricter filter
         # and this gate is a large-n guard against trivially significant D,
         # not the operative filter. Documented in docs/statistics.md.
-        return bool(test.statistic >= m.ks_distance)
+        return bool(test.statistic >= m.scalar_threshold("ks_distance", signature))
     return bool(abs(test.effect_size) >= m.scalar_cohen_d)
 
 
@@ -675,7 +685,7 @@ def _run_check_snapshot(
     if not records:
         msg = "no finalized canary cycles; finish and finalize a canary cycle first"
         raise ValueError(msg)
-    frame = signatures_frame(records)
+    frame = signatures_frame(records, custom_scalars=tuple(cfg.custom_scalars))
     cycles = _ordered_cycles(frame)
     current = cycles[-1]
     history = cycles[:-1]
@@ -692,8 +702,10 @@ def _run_check_snapshot(
         embeddings = embed_records(store, records)
         _add_semantic_displacement(frame, records, embeddings, get_golden_baseline(store))
 
-    scalar_signatures = tuple(SCALAR_SIGNATURES) + (
-        ("semantic_displacement",) if embeddings is not None else ()
+    scalar_signatures = (
+        tuple(SCALAR_SIGNATURES)
+        + tuple(cfg.custom_scalars)
+        + (("semantic_displacement",) if embeddings is not None else ())
     )
 
     cur_frame = frame[frame["cycle_id"] == current]
@@ -1090,7 +1102,7 @@ def _run_check_snapshot(
                 abs(t.outcome.effect_raw) >= cfg.materiality.rate_threshold(t.signature)
             )
         else:
-            material = _material_scalar(t.outcome, cfg)
+            material = _material_scalar(t.outcome, cfg, t.signature)
         gated.append(
             TestRecord(
                 baseline=t.baseline,
@@ -1146,6 +1158,12 @@ def _run_check_snapshot(
     # Families with a composition issue are skipped here too — diagnostics
     # computed on a known-broken design would only manufacture noise.
     composition_bad = {i.family for i in issues}
+    # Declared numeric channels are scalars like any other and get the same
+    # diagnostics. The semantic channel stays out, as it always has: its
+    # per-record displacement is defined against a reference centroid, so a
+    # PSI bin table or a Page-Hinkley running mean over it would be tracking
+    # the reference as much as the agent.
+    flag_signatures = tuple(SCALAR_SIGNATURES) + tuple(cfg.custom_scalars)
     if golden:
         golden_frame = frame[frame["cycle_id"].isin(golden)]
         for family in families:
@@ -1155,9 +1173,12 @@ def _run_check_snapshot(
             c_fam = cur_frame[cur_frame["family"] == family]
             if g_fam.empty or c_fam.empty:
                 continue
-            for sig in SCALAR_SIGNATURES:
+            for sig in flag_signatures:
                 g_vals = g_fam[sig].to_numpy(dtype=float)
                 c_vals = c_fam[sig].to_numpy(dtype=float)
+                # A declared channel the agent did not emit is NaN, not zero.
+                if not (np.isfinite(g_vals).all() and np.isfinite(c_vals).all()):
+                    continue
                 # Domain-of-validity guard: PSI's null expectation is
                 # ~(B-1)*(1/n_ref + 1/n_cur); at canary scale this alone can
                 # exceed the folk thresholds (measured: PSI flagged 100% of
@@ -1192,8 +1213,10 @@ def _run_check_snapshot(
         present = set(fam_frame["cycle_id"].unique())
         fam_cycles = [c for c in cycles if c in present]
         fam_frame_by_cycle = fam_frame.groupby("cycle_id")
-        for sig in SCALAR_SIGNATURES:
+        for sig in flag_signatures:
             means = fam_frame_by_cycle[sig].mean().reindex(fam_cycles).to_numpy()
+            if not np.isfinite(means).all():
+                continue
             ph: PageHinkleyResult = page_hinkley(means, lambda_=cfg.ph_lambda, delta=cfg.ph_delta)
             if ph.alarm:
                 onset = fam_cycles[ph.change_index] if ph.change_index is not None else None
@@ -1254,6 +1277,7 @@ def _run_check_snapshot(
         permutations_requested=cfg.permutations,
         permutations_effective=effective_permutations,
         primary_family_upper_bound=primary_family_upper_bound,
+        families_present=tuple(families),
         verdict_sudden=verdicts["rolling"],
         verdict_cumulative=verdicts["golden"],
         degraded=degraded,

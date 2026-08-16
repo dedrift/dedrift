@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import math
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from dedrift.signatures.structural import RATE_SIGNATURES, SCALAR_SIGNATURES
 
 if sys.version_info >= (3, 11):  # noqa: UP036 - fallback kept for 3.10 dev sandboxes
     import tomllib
@@ -16,7 +19,15 @@ else:  # pragma: no cover
 
 _TOP_LEVEL_KEYS = frozenset({"project", "detection", "materiality", "embeddings", "anytime"})
 _TABLE_KEYS = {
-    "project": frozenset({"name", "canary_repetitions", "rolling_window_cycles"}),
+    "project": frozenset(
+        {
+            "name",
+            "canary_repetitions",
+            "rolling_window_cycles",
+            "deterministic",
+            "custom_scalars",
+        }
+    ),
     "detection": frozenset(
         {
             "fdr_q",
@@ -41,6 +52,7 @@ _TABLE_KEYS = {
             "variance_ratio",  # v0.2 compatibility alias
             "p95_relative",
             "embedding_mmd2_floor",
+            "per_channel",
         }
     ),
     "embeddings": frozenset({"model"}),
@@ -110,6 +122,66 @@ def _toml_float(table: dict[str, Any], key: str, default: float, *, section: str
     return float(value)
 
 
+def _custom_scalar_names(raw: Any) -> tuple[str, ...]:
+    """Coerce ``project.custom_scalars`` from TOML, rejecting non-strings.
+
+    Fail-closed: a list of numbers must be an error naming the key, not an
+    ``AttributeError`` from deep inside validation.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("project.custom_scalars must be an array of channel names")
+    for entry in raw:
+        if not isinstance(entry, str):
+            raise ValueError(f"project.custom_scalars entry {entry!r} must be a string")
+    return tuple(raw)
+
+
+def _per_channel_table(raw: Any) -> dict[str, dict[str, float]]:
+    """Coerce ``[materiality.per_channel.<signature>]`` tables from TOML.
+
+    Value ranges and the set of overridable gates are checked in
+    :meth:`Materiality.__post_init__`; this only enforces the shape.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("materiality.per_channel must be a table of per-signature tables")
+    table: dict[str, dict[str, float]] = {}
+    for signature, gates in raw.items():
+        if not isinstance(gates, dict):
+            raise ValueError(f"materiality.per_channel.{signature} must be a table of gates")
+        resolved: dict[str, float] = {}
+        for gate, value in gates.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"materiality.per_channel.{signature}.{gate} must be a number, got {value!r}"
+                )
+            resolved[gate] = float(value)
+        table[signature] = resolved
+    return table
+
+
+#: Cap on user-declared scalar channels; see ProjectConfig.custom_scalars.
+#: Each adds three primaries per family per baseline to the BH pool.
+MAX_CUSTOM_SCALARS = 16
+
+#: Column names a declared channel may not take. Built-in signatures plus the
+#: semantic channel and the frame's own index columns: a declared channel
+#: writes its own column, so a collision would replace a built-in channel with
+#: the user's value and retire the built-in one without saying so.
+RESERVED_SIGNATURE_NAMES: frozenset[str] = frozenset(
+    {
+        *SCALAR_SIGNATURES,
+        *RATE_SIGNATURES,
+        "semantic_displacement",
+        "canary_id",
+        "cycle_id",
+        "family",
+        "repetition",
+    }
+)
+
+
 @dataclass(frozen=True)
 class Materiality:
     """Effect-size (materiality) gates per signature channel (principle 2).
@@ -159,6 +231,7 @@ class Materiality:
     dispersion_ratio: float = 1.5
     p95_relative: float = 0.10
     embedding_mmd2_floor: float = -1.0
+    per_channel: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Reject impossible or non-finite effect-size gates."""
@@ -169,6 +242,43 @@ class Materiality:
         _require_range("materiality.dispersion_ratio", self.dispersion_ratio, minimum=1.0)
         _require_range("materiality.p95_relative", self.p95_relative, minimum=0.0)
         _require_range("materiality.embedding_mmd2_floor", self.embedding_mmd2_floor, minimum=-1.0)
+        bounds = {
+            "ks_distance": (0.0, 1.0),
+            "dispersion_ratio": (1.0, None),
+            "p95_relative": (0.0, None),
+        }
+        for signature, gates in self.per_channel.items():
+            for gate, value in gates.items():
+                if gate not in bounds:
+                    msg = (
+                        f"materiality.per_channel.{signature}.{gate} is not an "
+                        f"overridable scalar gate; choose from {sorted(bounds)}"
+                    )
+                    raise ValueError(msg)
+                low, high = bounds[gate]
+                _require_range(
+                    f"materiality.per_channel.{signature}.{gate}", value, minimum=low, maximum=high
+                )
+
+    def scalar_threshold(self, gate: str, signature: str) -> float:
+        """Return a scalar gate's threshold for one signature.
+
+        The global value applies unless ``[materiality.per_channel.<signature>]``
+        overrides it. Per-channel gates exist because the defaults are shaped
+        for text signatures: a project whose only live scalar is ``latency_ms``
+        on shared hardware must raise its gates, and before this existed the
+        only way to do that was to raise them globally and desensitise every
+        other channel at the same time.
+
+        Args:
+            gate: One of ``ks_distance``, ``dispersion_ratio``, ``p95_relative``.
+            signature: The scalar signature being gated.
+
+        Returns:
+            The threshold in force for that (gate, signature) pair.
+        """
+        override = self.per_channel.get(signature, {}).get(gate)
+        return float(override) if override is not None else float(getattr(self, gate))
 
     def rate_threshold(self, signature: str) -> float:
         """Return the pp threshold for a rate signature (in [0,1] units)."""
@@ -316,6 +426,8 @@ class ProjectConfig:
 
     name: str = "default"
     canary_repetitions: int = 7
+    deterministic: bool = False
+    custom_scalars: tuple[str, ...] = ()
     rolling_window_cycles: int = 5
     fdr_q: float = 0.05
     permutations: int = 500
@@ -334,7 +446,35 @@ class ProjectConfig:
         """Validate project, detector, and inference settings."""
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("project.name must be a non-empty string")
-        _require_int("project.canary_repetitions", self.canary_repetitions, minimum=2)
+        floor = 1 if self.deterministic else 2
+        _require_int("project.canary_repetitions", self.canary_repetitions, minimum=floor)
+        if self.canary_repetitions < 2 and not self.deterministic:  # pragma: no cover
+            msg = "canary_repetitions may be 1 only when project.deterministic = true"
+            raise ValueError(msg)
+        seen: set[str] = set()
+        for name in self.custom_scalars:
+            if not name.isidentifier():
+                msg = f"project.custom_scalars entry {name!r} is not a valid identifier"
+                raise ValueError(msg)
+            if name in seen:
+                msg = f"project.custom_scalars lists {name!r} twice"
+                raise ValueError(msg)
+            if name in RESERVED_SIGNATURE_NAMES:
+                msg = (
+                    f"project.custom_scalars entry {name!r} is a built-in signature name. "
+                    f"A declared channel writes its own column, so reusing the name would "
+                    f"overwrite the built-in channel with your value and silently retire it."
+                )
+                raise ValueError(msg)
+            seen.add(name)
+        if len(self.custom_scalars) > MAX_CUSTOM_SCALARS:
+            msg = (
+                f"project.custom_scalars declares {len(self.custom_scalars)} channels; "
+                f"the cap is {MAX_CUSTOM_SCALARS}. Each one adds three primaries per "
+                f"family per baseline to the BH pool, so an undeclared-growth battery "
+                f"would quietly raise the family-wise alert rate."
+            )
+            raise ValueError(msg)
         _require_int("project.rolling_window_cycles", self.rolling_window_cycles, minimum=1)
         _require_range(
             "detection.fdr_q",
@@ -443,10 +583,16 @@ class ProjectConfig:
             embedding_mmd2_floor=_toml_float(
                 materiality_raw, "embedding_mmd2_floor", -1.0, section="materiality"
             ),
+            per_channel=_per_channel_table(materiality_raw.get("per_channel", {})),
         )
+        deterministic = project.get("deterministic", False)
+        if not isinstance(deterministic, bool):
+            raise ValueError("project.deterministic must be true or false")
         return cls(
             name=_toml_string(project, "name", "default", section="project"),
             canary_repetitions=_toml_int(project, "canary_repetitions", 7, section="project"),
+            deterministic=deterministic,
+            custom_scalars=_custom_scalar_names(project.get("custom_scalars", [])),
             rolling_window_cycles=_toml_int(project, "rolling_window_cycles", 5, section="project"),
             fdr_q=_toml_float(detection, "fdr_q", 0.05, section="detection"),
             permutations=_toml_int(detection, "permutations", 500, section="detection"),

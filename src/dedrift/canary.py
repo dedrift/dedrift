@@ -332,9 +332,18 @@ class CanaryRunner:
         agent_fn: AgentFn,
         agent_config: AgentConfig,
         repetitions: int = 7,
+        deterministic: bool = False,
     ) -> None:
-        if repetitions < 2:
-            msg = "repetitions must be >= 2: single runs cannot support distributional comparison"
+        if repetitions < 2 and not deterministic:
+            msg = (
+                "repetitions must be >= 2: single runs cannot support distributional "
+                "comparison. Set deterministic=True if the agent is exactly reproducible "
+                "at fixed inputs, in which case the second repetition is a byte-identical "
+                "copy that adds storage rather than information."
+            )
+            raise ValueError(msg)
+        if repetitions < 1:
+            msg = "repetitions must be >= 1"
             raise ValueError(msg)
         self.suite = suite
         self.agent_fn = agent_fn

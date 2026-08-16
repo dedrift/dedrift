@@ -250,6 +250,7 @@ def signatures_frame(
     records: list[InteractionRecord],
     expected_by_canary: dict[str, dict[str, Any]] | None = None,
     refusal_patterns: tuple[str, ...] = DEFAULT_REFUSAL_PATTERNS,
+    custom_scalars: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Extract signatures for many records into a flat DataFrame.
 
@@ -259,6 +260,13 @@ def signatures_frame(
             fields. Record-local CanaryRunner metadata is used automatically;
             an explicit map entry takes precedence.
         refusal_patterns: See :func:`extract_record_signature`.
+        custom_scalars: Declared user channel names, read per record from
+            ``output.structured``. The built-in scalars describe a text
+            agent, and for agents whose outputs are numeric the quantities
+            that move first are the model's own continuous outputs; these
+            let such a project register them and have them tested by the
+            same battery. A record missing the key, or carrying a
+            non-numeric value, contributes NaN rather than a guess.
 
     Returns:
         One row per record; ``tool_usage`` is kept as a dict column.
@@ -274,7 +282,21 @@ def signatures_frame(
         )
         for r in records
     ]
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    for name in custom_scalars:
+        frame[name] = [_custom_scalar(r, name) for r in records]
+    return frame
+
+
+def _custom_scalar(record: InteractionRecord, name: str) -> float:
+    """Read one declared custom channel from a record's structured output."""
+    structured = record.output.structured
+    if not isinstance(structured, dict):
+        return float("nan")
+    value = structured.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float("nan")
+    return float(value)
 
 
 def _aggregate(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
@@ -292,7 +314,20 @@ def _aggregate(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     pieces: list[pd.DataFrame] = []
     grouped = frame.groupby(keys, dropna=False)
 
-    agg_spec: dict[str, list[Any]] = {col: ["mean", "var", p95] for col in SCALAR_SIGNATURES}
+    # Declared channels (signatures_frame(custom_scalars=...)) are scalars and
+    # aggregate like scalars; discovering them keeps `dedrift signatures` from
+    # showing a numeric agent only the columns that cannot move.
+    known = set(SCALAR_SIGNATURES) | set(RATE_SIGNATURES) | set(keys) | {"repetition"}
+    extras = [
+        col
+        for col in frame.columns
+        if col not in known
+        and pd.api.types.is_numeric_dtype(frame[col])
+        and not pd.api.types.is_bool_dtype(frame[col])
+    ]
+    agg_spec: dict[str, list[Any]] = {
+        col: ["mean", "var", p95] for col in (*SCALAR_SIGNATURES, *extras)
+    }
     scalars = grouped.agg(agg_spec)
     scalars.columns = [
         f"{col}_{stat if isinstance(stat, str) else 'p95'}" for col, stat in scalars.columns
