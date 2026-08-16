@@ -5,8 +5,7 @@ method would have surfaced on it. Two entry points:
 
 * :func:`run_percheck` — methods whose natural unit is one comparison of a
   current window against a reference window: folk-threshold PSI, dedrift's
-  validity-guarded PSI, Evidently's default DataDriftPreset (pooled and
-  per-family), and naive per-check two-sample KS testing without
+  validity-guarded PSI, and naive per-check two-sample KS testing without
   multiplicity control.
 * :func:`run_dedrift_trajectory` — dedrift's own two shipped paths, run as
   they are actually used in monitoring: one fixed-sample check and one
@@ -18,9 +17,7 @@ the resolution is documented on the function. No method is tuned.
 
 from __future__ import annotations
 
-import json
 import tempfile
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +35,7 @@ from dedrift.signatures.structural import RATE_SIGNATURES, SCALAR_SIGNATURES
 from dedrift.sim import SimAgent, SimConfig
 from dedrift.store import Store
 
-#: The signature columns shared by the table-based methods (PSI, Evidently,
+#: The signature columns shared by the table-based methods (PSI,
 #: naive KS): the full structural battery, scalar channels first.
 COLUMNS: tuple[str, ...] = tuple(SCALAR_SIGNATURES) + tuple(RATE_SIGNATURES)
 
@@ -58,21 +55,6 @@ def _frames(history: History) -> tuple[pd.DataFrame, pd.DataFrame, list[str], li
     families = sorted(str(f) for f in frame["family"].unique())
     usable = [c for c in COLUMNS if ref_f[c].notna().any() and cur_f[c].notna().any()]
     return ref_f, cur_f, families, usable
-
-
-def _as_evidently_table(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    """Cast a signature frame to the table Evidently consumes.
-
-    Boolean/rate columns are cast to float so Evidently applies its own
-    binary/categorical test-selection logic (0/1 numerical resolves to its
-    proportion z-test in v0.7.x). This is the documented route for tabular
-    drift over per-record descriptors.
-    """
-    table = frame[columns].copy()
-    for col in table.columns:
-        if table[col].dtype == bool or table[col].dtype == object:
-            table[col] = table[col].astype(float)
-    return table.reset_index(drop=True)
 
 
 def _psi_arm(ref_f: pd.DataFrame, cur_f: pd.DataFrame, families: list[str]) -> dict[str, int]:
@@ -148,54 +130,6 @@ def _naive_ks_arm(
     return {"ks_tests": tests, "ks_rejections": rejections, "ks_per_column": per_column}
 
 
-def _evidently_counts(ref: pd.DataFrame, cur: pd.DataFrame) -> dict[str, Any]:
-    """One default DataDriftPreset report, reduced to its drift decisions.
-
-    A column is drifted when Evidently's auto-selected per-column test
-    decision fires (the report's per-column ValueDrift: test p-value below
-    the default 0.05 threshold — every test the preset auto-selects at these
-    column types and sizes is p-value-based; the selected test names are
-    recorded so the claim stays checkable). The dataset-level verdict follows
-    Evidently's own convention: drift when the share of drifted columns
-    reaches the DriftedColumnsCount threshold (default 0.5).
-    """
-    from evidently import Report
-    from evidently.presets import DataDriftPreset
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        report = Report([DataDriftPreset()])
-        result = report.run(reference_data=ref, current_data=cur)
-    data = json.loads(result.json())
-    n_cols = 0
-    n_drifted = 0
-    share = float("nan")
-    share_threshold = 0.5
-    per_column: dict[str, dict[str, Any]] = {}
-    for metric in data["metrics"]:
-        cfg = metric.get("config", {})
-        mtype = str(cfg.get("type", ""))
-        if mtype.endswith("ValueDrift"):
-            n_cols += 1
-            threshold = float(cfg.get("threshold", 0.05))
-            drifted = bool(float(metric["value"]) < threshold)
-            n_drifted += int(drifted)
-            per_column[str(cfg.get("column", "?"))] = {
-                "drifted": drifted,
-                "method": str(cfg.get("method", "?")),
-            }
-        elif mtype.endswith("DriftedColumnsCount"):
-            share = float(metric["value"]["share"])
-            share_threshold = float(cfg.get("drift_share", 0.5))
-    return {
-        "columns": n_cols,
-        "drifted": n_drifted,
-        "share": share,
-        "dataset_drift": bool(share >= share_threshold),
-        "per_column": per_column,
-    }
-
-
 def run_percheck(seed: int, scale: str) -> dict[str, Any]:
     """Run every per-comparison method on one seeded stable history.
 
@@ -204,8 +138,8 @@ def run_percheck(seed: int, scale: str) -> dict[str, Any]:
         scale: Key of :data:`benchmark.histories.SCALES`.
 
     Returns:
-        Per-run measurements for the PSI arms, naive KS, and Evidently at
-        both granularities. All flags are false alarms by construction.
+        Per-run measurements for the PSI arms and naive KS. All flags are
+        false alarms by construction.
     """
     history = make_history(seed, scale, PER_CHECK_CYCLES)
     ref_f, cur_f, families, usable = _frames(history)
@@ -213,24 +147,6 @@ def run_percheck(seed: int, scale: str) -> dict[str, Any]:
     out.update(_psi_arm(ref_f, cur_f, families))
     out.update(_naive_ks_arm(ref_f, cur_f, families, usable))
 
-    pooled = _evidently_counts(
-        _as_evidently_table(ref_f, usable), _as_evidently_table(cur_f, usable)
-    )
-    out["ev_pooled"] = pooled
-
-    fam_reports = []
-    for family in families:
-        rf = _as_evidently_table(ref_f[ref_f["family"] == family], usable)
-        cf = _as_evidently_table(cur_f[cur_f["family"] == family], usable)
-        if rf.empty or cf.empty:
-            continue
-        fam_reports.append(_evidently_counts(rf, cf))
-    out["ev_family"] = {
-        "reports": len(fam_reports),
-        "drifted_total": sum(r["drifted"] for r in fam_reports),
-        "columns_total": sum(r["columns"] for r in fam_reports),
-        "any_drifted": any(r["drifted"] > 0 for r in fam_reports),
-    }
     return out
 
 

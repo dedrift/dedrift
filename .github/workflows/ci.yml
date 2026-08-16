@@ -18,14 +18,17 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          # One interpreter, and it is the floor `requires-python` promises.
+          # The matrix bought little: the package is pure Python with no
+          # version-conditional code paths, so a second interpreter mostly
+          # re-ran the same assertions at twice the cost. Testing the floor is
+          # what catches accidental use of newer syntax or stdlib, which is
+          # the failure a version matrix actually exists to prevent.
+          python-version: "3.11"
           cache: pip
       - name: Install
         run: pip install -e ".[dev]"
@@ -34,7 +37,6 @@ jobs:
       - name: Format check (ruff)
         run: ruff format --check .
       - name: Types (mypy)
-        if: matrix.python-version == '3.12'
         run: mypy
       - name: Unit tests
         run: pytest -m "not calibration and not power"
@@ -50,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
       - name: Install
         run: pip install -e ".[dev]"
@@ -64,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
       - name: Build wheel and source distribution
         run: |

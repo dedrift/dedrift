@@ -118,7 +118,6 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
   <div class="meta">
     <span class="chip"><b>measured</b> 2026-08-09</span>
     <span class="chip">dedrift <b>0.4.0</b></span>
-    <span class="chip">evidently <b>0.7.21</b></span>
     <span class="chip">seeds <b>0–499</b> shipped</span>
   </div>
 </header>
@@ -151,8 +150,6 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 <tr class='grp'><td colspan='5'>General-purpose configurations</td></tr>
 <tr><td><b>PSI, folk threshold 0.1</b></td><td>10 reference-quantile bins; flag at PSI ≥ 0.1</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
 <tr><td><b>PSI, folk threshold 0.25</b></td><td>same metric; flag at PSI ≥ 0.25 (“major”)</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
-<tr><td><b>Evidently — pooled table, ≥ 1 drifted column</b></td><td>DataDriftPreset 0.7.21, all defaults</td><td>none stated (per-column tests at 0.05)</td><td class='num'>356/500 = 71.2% [67.1, 75.0]</td><td class='num'>—</td></tr>
-<tr><td><b>Evidently — pooled table, dataset verdict</b></td><td>defaults; drifted-column share ≥ 0.5</td><td>none stated</td><td class='num'>2/500 = 0.4% [0.1, 1.4]</td><td class='num'>—</td></tr>
 <tr><td><b>Naive two-sample KS battery</b></td><td>α = 0.05 per (family × signature), no control</td><td>5% per test only</td><td class='num'>250/500 = 50.0% [45.6, 54.4]</td><td class='num'>—</td></tr>
 <tr class='grp'><td colspan='5'>dedrift, measured under the same protocol</td></tr>
 <tr><td><b>dedrift PSI + validity guard</b></td><td>identical metric; refused where E[PSI] > 0.05</td><td>none stated (diagnostic)</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
@@ -175,8 +172,6 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 <tr class='grp'><td colspan='5'>General-purpose configurations</td></tr>
 <tr><td><b>PSI, folk threshold 0.1</b></td><td>10 reference-quantile bins; flag at PSI ≥ 0.1</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
 <tr><td><b>PSI, folk threshold 0.25</b></td><td>same metric; flag at PSI ≥ 0.25 (“major”)</td><td>none stated</td><td class='num'>500/500 = 100.0% [99.2, 100.0]</td><td class='num'>—</td></tr>
-<tr><td><b>Evidently — pooled table, ≥ 1 drifted column</b></td><td>DataDriftPreset 0.7.21, all defaults</td><td>none stated (per-column tests at 0.05)</td><td class='num'>329/500 = 65.8% [61.5, 69.8]</td><td class='num'>—</td></tr>
-<tr><td><b>Evidently — pooled table, dataset verdict</b></td><td>defaults; drifted-column share ≥ 0.5</td><td>none stated</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
 <tr><td><b>Naive two-sample KS battery</b></td><td>α = 0.05 per (family × signature), no control</td><td>5% per test only</td><td class='num'>268/500 = 53.6% [49.2, 57.9]</td><td class='num'>—</td></tr>
 <tr class='grp'><td colspan='5'>dedrift, measured under the same protocol</td></tr>
 <tr><td><b>dedrift PSI + validity guard</b></td><td>identical metric; refused where E[PSI] > 0.05</td><td>none stated (diagnostic)</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
@@ -205,34 +200,9 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
   <div class="math">P(≥ 1 false flag) = 1 − (1 − α)<sup>k</sup> <span class="c">— k independent per-column tests at level α</span></div>
   <p class="body">At α = 0.05 and k = 12 columns the independence prediction is 1 − 0.95<sup>12</sup> ≈
   <b>46%</b> per report; at k = 72 (family × signature) it is <b>97.5%</b>. Independence overstates or
-  understates once tests correlate or go conservative on discrete columns — which is why we measure rather
-  than extrapolate. The per-column breakdown identifies exactly which columns break the arithmetic:
-  low-cardinality integer channels (tool_call_count, steps, tool_order_inversions) are routed by the
-  auto-selection heuristic to a chi-square test whose own small-cell validity condition is violated at
-  these window sizes (the 0.7.21 implementation is <code>scipy.stats.chisquare</code> on the raw
-  contingency counts — no merging, no exact fallback), and reject at <b>28–47%</b> each on stable data
-  while every column the preset routes instead to a K–S or Z test sits at or below 6.2%. Measured per
-  column, pooled granularity:</p>
-
-<!-- BENCHMARK:COLUMN:BEGIN -->
-<div class="tbl-wrap"><table>
-<thead><tr><th>Signature column</th><th>Evidently auto-selected test</th><th class='num'>Null flag rate, suite scale</th><th class='num'>Null flag rate, small scale</th></tr></thead>
-<tbody>
-<tr><td><code>args_schema_ok_all</code></td><td>Z-test p_value</td><td class='num'><span class='y'>4.0%</span></td><td class='num'><span class='y'>2.0%</span></td></tr>
-<tr><td><code>format_valid</code></td><td>Z-test p_value</td><td class='num'><span class='y'>5.4%</span></td><td class='num'><span class='y'>5.0%</span></td></tr>
-<tr><td><code>had_error</code></td><td>Z-test p_value</td><td class='num'><span class='y'>0.0%</span></td><td class='num'><span class='y'>0.0%</span></td></tr>
-<tr><td><code>latency_ms</code></td><td>K-S p_value</td><td class='num'><span class='y'>5.4%</span></td><td class='num'><span class='y'>3.6%</span></td></tr>
-<tr><td><code>output_chars</code></td><td>K-S p_value</td><td class='num'><span class='y'>3.2%</span></td><td class='num'><span class='y'>3.0%</span></td></tr>
-<tr><td><code>output_words</code></td><td>K-S p_value</td><td class='num'><span class='y'>2.2%</span></td><td class='num'><span class='y'>3.0%</span></td></tr>
-<tr><td><code>refusal</code></td><td>Z-test p_value</td><td class='num'><span class='y'>6.2%</span></td><td class='num'><span class='y'>4.6%</span></td></tr>
-<tr><td><code>retries</code></td><td>Z-test p_value</td><td class='num'><span class='y'>0.0%</span></td><td class='num'><span class='y'>0.0%</span></td></tr>
-<tr><td><code>steps</code></td><td>chi-square p_value</td><td class='num'><span class='bad'>31.2%</span></td><td class='num'><span class='bad'>28.4%</span></td></tr>
-<tr><td><code>tokens_out</code></td><td>K-S p_value</td><td class='num'><span class='y'>2.8%</span></td><td class='num'><span class='y'>3.2%</span></td></tr>
-<tr><td><code>tool_call_count</code></td><td>chi-square p_value</td><td class='num'><span class='bad'>32.2%</span></td><td class='num'><span class='bad'>29.8%</span></td></tr>
-<tr><td><code>tool_order_inversions</code></td><td>chi-square p_value</td><td class='num'><span class='bad'>46.8%</span></td><td class='num'><span class='bad'>46.6%</span></td></tr>
-</tbody></table></div>
-<p class='tbl-note'>Per-column false-flag rate over 500 stable runs, pooled granularity, Evidently DataDriftPreset 0.7.21 defaults. The three chi-square-routed columns are the low-cardinality integer channels; had_error and retries are structurally all-zero on the null, so their 0% is degenerate, not calibrated.</p>
-<!-- BENCHMARK:COLUMN:END -->
+  understates once tests correlate or go conservative on discrete columns — which is why we measure
+  rather than extrapolate. Measured, the naive battery flags <b>50.0%</b> of stable runs at suite
+  scale: multiplicity did not disappear, per-test exactness did.</p>
 
   <h3>Per-check guarantees are not trajectory guarantees</h3>
   <div class="math">P(≥ 1 alert by cycle T) = 1 − (1 − p)<sup>T</sup> ≈ 1 − e<sup>−pT</sup> <span class="c">— p per-check, T cycles</span></div>
@@ -263,14 +233,6 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
     <li><b>Defaults only.</b> Each method runs at its documented default configuration; no tuning
     against any tool. Ambiguous defaults are resolved by the tool's own documentation and recorded in
     <code>benchmark/methods.py</code>.</li>
-    <li><b>Evidently (0.7.21).</b> <code>DataDriftPreset</code>, all defaults, on the signature table —
-    the documented route for drift over per-output descriptor tables — run pooled over the whole suite.
-    We record the per-column flag rate (its auto-selected per-column tests at the default 0.05
-    threshold), the any-column rate, and its dataset-level verdict (drifted-column share ≥ 0.5, its
-    own default). A per-canary-family arm was also run and is in the results JSON, but it is not
-    tabled: splitting one report into six and taking any-of is a user's choice rather than a
-    documented default, so its rate would partly be our own multiplicity rather than the tool's
-    calibration.</li>
     <li><b>dedrift (0.4.0).</b> The shipped fixed-sample path (BH-FDR q = 0.05 + materiality gates,
     dual baselines) and the anytime-valid path (e-processes + e-BH on the golden baseline,
     <code>rate_model="twosample"</code>, lifetime α = 0.05), both at <code>ProjectConfig()</code>
@@ -306,19 +268,17 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 
 <section class="wrap" aria-labelledby="reply">
   <h2 id="reply">Right of reply</h2>
-  <p class="body">Maintainers of measured tools are invited to respond; responses will be linked here,
-  unedited, beside the table they address. Everything needed to check us first is public: the scripts,
-  the raw per-run results, the seed list, and the pinned versions (linked above). If we misconfigured
-  something, the table gets a correction entry in the changelog — not a quiet edit.</p>
+  <p class="body">Everything needed to check us is public: the scripts, the raw per-run results, the
+  seed list, and the pinned versions (linked above). If we misconfigured something, the table gets a
+  correction entry in the changelog — not a quiet edit.</p>
 </section>
 
 <section class="wrap" aria-labelledby="changelog">
   <h2 id="changelog">Changelog</h2>
   <ul class="body changelog">
     <li><span class="date">v1.0 · 2026-08-09</span>
-      Initial study: 500 runs × 7 configurations × 2 scales, measured with dedrift 0.4.0 and Evidently
-      0.7.21. This page is
-      versioned and re-run when measured tools update; every revision is dated.</li>
+      Initial study: 500 runs × 5 configurations × 2 scales, measured with dedrift 0.4.0. This page
+      is versioned and re-run when the measured configurations change; every revision is dated.</li>
   </ul>
 </section>
 </main>

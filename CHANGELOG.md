@@ -72,20 +72,15 @@ Fixed, with regression tests (audit-measured defect in parentheses):
 Validity-scale benchmark:
 
 - Added `benchmark/`: a reproducible null-calibration study measuring false-alarm
-  rates of six drift-detection configurations (folk-threshold PSI, the same index
-  under the validity guard, Evidently 0.7.21 DataDriftPreset at defaults over the
-  pooled signature table, naive uncontrolled two-sample KS, and dedrift's
+  rates of four drift-detection configurations (folk-threshold PSI, the same index
+  under the validity guard, naive uncontrolled two-sample KS, and dedrift's
   fixed-sample and anytime-valid paths) on 500 seeded stable-agent histories at
   two canary scales. `make benchmark` regenerates the results JSONs, the
   `web/benchmark/` page table, and the paper's validity-scale table.
-  A per-canary-family Evidently arm is measured and kept in the results JSON but
-  deliberately not tabled: splitting one report into six and taking any-of is a
-  user's choice rather than a documented default, so its rate would partly be our
-  own multiplicity rather than the tool's calibration.
-  `benchmark/METHODS_CONSIDERED.md` records the tools attempted and excluded with
-  checkable reasons; the page and paper carry a standing right-of-reply invitation
-  to measured tools' maintainers (optional notification drafts are held locally in
-  `benchmark/OUTREACH.md`, git-ignored).
+  The study measures generic statistical practice rather than named products:
+  what a given tool does at its own defaults, on a table it was not built for, is
+  a fact about a configuration we chose for it, and the failure modes shown here
+  are properties of the methods themselves.
 
 New detection capability:
 

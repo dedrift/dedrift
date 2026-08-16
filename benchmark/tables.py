@@ -86,25 +86,6 @@ def _rows(scale: str, docs: dict[tuple[str, str], dict[str, Any]]) -> list[dict[
             "history": None,
         },
         {
-            "name": "Evidently — pooled table, ≥ 1 drifted column",
-            "config": "DataDriftPreset 0.7.21, all defaults",
-            "nominal": "none stated (per-column tests at 0.05)",
-            "percheck": pc["evidently_pooled"]["runs_any_drifted_column"],
-            "history": None,
-        },
-        {
-            "name": "Evidently — pooled table, dataset verdict",
-            "config": "defaults; drifted-column share ≥ 0.5",
-            "nominal": "none stated",
-            "percheck": pc["evidently_pooled"]["runs_dataset_drift"],
-            "history": None,
-        },
-        # The per-family arm is deliberately NOT tabled. Running one report
-        # per family and taking any-of is a user's choice, not a documented
-        # default, so its rate is partly our own multiplicity rather than the
-        # tool's calibration. It stays in the results JSON; it does not belong
-        # in a table that reads as "what the defaults do".
-        {
             "name": "Naive two-sample KS battery",
             "config": "α = 0.05 per (family × signature), no control",
             "nominal": "5% per test only",
@@ -286,12 +267,6 @@ def render_macros(docs: dict[tuple[str, str], dict[str, Any]]) -> str:
             _macro(f"benchKsReconciled{tag}", f"${100 * (1 - (1 - per_test) ** k_med):.1f}\\%$")
         )
         out.append(
-            _macro(f"benchEvPoolAny{tag}", kn(pc["evidently_pooled"]["runs_any_drifted_column"]))
-        )
-        out.append(
-            _macro(f"benchEvPoolData{tag}", kn(pc["evidently_pooled"]["runs_dataset_drift"]))
-        )
-        out.append(
             _macro(f"benchDdPerCheck{tag}", kn(dd["dedrift_fixed_percheck"]["runs_any_alert"]))
         )
         out.append(_macro(f"benchDdFlag{tag}", kn(dd["dedrift_fixed_percheck"]["runs_any_flag"])))
@@ -304,65 +279,8 @@ def render_macros(docs: dict[tuple[str, str], dict[str, Any]]) -> str:
         out.append(
             _macro(f"benchAtEver{tag}", kn(dd["dedrift_anytime"]["runs_ever_alerted_50_cycles"]))
         )
-    # The chi-square mechanism sentence needs the three worst columns'
-    # measured rates at suite scale.
-    chi = [
-        (col, cell["rate"])
-        for col, cell in docs[("percheck", "suite")]["methods"]["evidently_pooled"][
-            "per_column"
-        ].items()
-        if any("chi" in m.lower() for m in cell["methods"])
-    ]
-    chi.sort(key=lambda kv: -kv[1])
-    body = ", ".join(f"${100 * rate:.1f}\\%$" for _, rate in chi[:3])
-    out.append(_macro("benchEvChiSuite", body))
-    # The same sentence contrasts those with the columns Evidently routes
-    # somewhere other than chi-square -- K-S and Z-test at this table shape.
-    # Every column gets a p-value; the contrast is which test produces it.
-    # Deriving the ceiling keeps the contrast honest if a re-run moves it;
-    # hand-typing a range is how a claim goes stale.
-    pval_max = max(
-        (
-            cell["rate"]
-            for cell in docs[("percheck", "suite")]["methods"]["evidently_pooled"][
-                "per_column"
-            ].values()
-            if not any("chi" in m.lower() for m in cell["methods"])
-        ),
-        default=0.0,
-    )
-    out.append(_macro("benchEvPvalMaxSuite", f"${100 * pval_max:.1f}\\%$"))
     out.append("")
     return "\n".join(out)
-
-
-def render_column_html(docs: dict[tuple[str, str], dict[str, Any]]) -> str:
-    """Render the per-column Evidently mechanism table for the web page."""
-    suite = docs[("percheck", "suite")]["methods"]["evidently_pooled"]["per_column"]
-    small = docs[("percheck", "small")]["methods"]["evidently_pooled"]["per_column"]
-    parts = [
-        '<div class="tbl-wrap"><table>',
-        "<thead><tr><th>Signature column</th><th>Evidently auto-selected test</th>"
-        "<th class='num'>Null flag rate, suite scale</th>"
-        "<th class='num'>Null flag rate, small scale</th></tr></thead>",
-        "<tbody>",
-    ]
-    for col in suite:
-        method = suite[col]["methods"][0] if suite[col]["methods"] else "?"
-        cls = "bad" if "chi" in method.lower() else "y"
-        parts.append(
-            f"<tr><td><code>{col}</code></td><td>{method}</td>"
-            f"<td class='num'><span class='{cls}'>{100 * suite[col]['rate']:.1f}%</span></td>"
-            f"<td class='num'><span class='{cls}'>{100 * small[col]['rate']:.1f}%</span></td></tr>"
-        )
-    parts.append("</tbody></table></div>")
-    parts.append(
-        "<p class='tbl-note'>Per-column false-flag rate over 500 stable runs, pooled granularity, "
-        "Evidently DataDriftPreset 0.7.21 defaults. The three chi-square-routed columns are the "
-        "low-cardinality integer channels; had_error and retries are structurally all-zero on the "
-        "null, so their 0% is degenerate, not calibrated.</p>"
-    )
-    return "\n".join(parts)
 
 
 def sync(path: Path, begin: str, end: str, fragment: str) -> None:
@@ -390,12 +308,6 @@ def main() -> None:
         raise SystemExit(f"missing results for: {missing}; run python -m benchmark.run first")
     for scale, (begin, end) in MARKERS.items():
         sync(WEB_PAGE, begin, end, render_html(docs, scale))
-    sync(
-        WEB_PAGE,
-        "<!-- BENCHMARK:COLUMN:BEGIN -->",
-        "<!-- BENCHMARK:COLUMN:END -->",
-        render_column_html(docs),
-    )
     (PAPER_DIR / "benchmark_table.tex").write_text(render_tex(docs, "suite"))
     (PAPER_DIR / "benchmark_table_small.tex").write_text(render_tex(docs, "small"))
     (PAPER_DIR / "benchmark_macros.tex").write_text(render_macros(docs))

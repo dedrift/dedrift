@@ -88,8 +88,9 @@ pydocstyle.convention = "google"
 
 [tool.mypy]
 # 3.12, not 3.11: recent numpy stubs use PEP 695 `type` statements, which mypy
-# refuses to parse at python_version 3.11. Runtime 3.11 support is exercised by
-# the pytest matrix; type checking runs once at 3.12 semantics.
+# refuses to parse at python_version 3.11. This is the semantics mypy analyses
+# under, not the interpreter it runs on -- CI runs everything on 3.11, the floor
+# `requires-python` promises, and type checking analyses at 3.12 semantics there.
 python_version = "3.12"
 strict = true
 packages = ["dedrift"]
