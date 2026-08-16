@@ -8,7 +8,6 @@
 numpy==2.5.1
 pandas==3.0.5
 scipy==1.18.0
-evidently==0.7.21
 
 # Considered and NOT measured — see benchmark/METHODS_CONSIDERED.md:
 # driftbase==0.15.1        (public write API is disconnected from the read

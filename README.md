@@ -63,6 +63,24 @@ e-processes and e-BH targeting lifetime rather than per-check control, with
 per-epoch semantics, persisted exactly-once process state, and explicit
 coverage status. Rate channel only so far — run both modes.
 
+### Agents that don't emit text
+
+The eight built-in scalar signatures measure properties of generated text. If your agent
+returns a number — a scorer, a ranker, a classifier emitting a calibrated probability —
+seven of them are constant by construction and the eighth is latency. Declare your own
+numeric channels and they enter the same battery as a built-in signature, with the same
+gates and the same BH adjudication:
+
+```toml
+[project]
+custom_scalars = ["score", "top_prob"]   # read from output.structured; max 16
+deterministic = true                      # exactly reproducible ⇒ N = 1 is honest
+```
+
+Published false-alarm rates are measured on the **default** battery; your own channels
+enlarge m and bring their own correlation structure. See
+[configuration](https://dedrift.ai/configuration/).
+
 ## Install
 
 ```bash

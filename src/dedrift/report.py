@@ -7,6 +7,7 @@ import numpy.typing as npt
 from jinja2 import Environment
 
 from dedrift.attribution import Attribution, attribute
+from dedrift.canary import FAMILIES
 from dedrift.check import CheckResult
 from dedrift.schema import Source
 from dedrift.signatures import signatures_frame
@@ -38,6 +39,11 @@ isolated permutation result can reach the first BH threshold.
 {% for a in r.assessments -%}
 | {{ a.baseline }} | **{{ a.coverage_status }}** | {{ a.n_families_tested }}/{{ a.n_families_total }} | {{ a.n_valid_primary_tests }} | {{ a.n_undefined_primary_tests }} | {{ a.power_status }} |
 {% endfor %}
+{% set unused = family_vocabulary | reject('in', r.families_present) | list -%}
+Families populated: {{ r.families_present | length }} of {{ family_vocabulary | length }}{% if unused %} — not populated: {{ unused | join(', ') }}. An empty family is
+reported, not inferred: a project whose agent cannot refuse has no honest
+`refusal_boundary` canaries, and that is different from having forgotten
+them{% endif %}.
 
 `OK` is possible only with full family coverage and at least one finite
 primary test. **Power is not assessed:** a defined test is not evidence that
@@ -487,4 +493,5 @@ def render_report(store: Store, result: CheckResult) -> str:
         non_alerts=non_alerts,
         degraded_pct=20,
         correctness=correctness,
+        family_vocabulary=FAMILIES,
     )

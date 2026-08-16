@@ -29,13 +29,12 @@ deliberately uncalibrated diagnostic flag channel.
 |---|--------|---------------|------------------|
 | 1 | PSI, folk thresholds | 10 reference-quantile bins; flag at PSI ≥ 0.1 (also ≥ 0.25) | per-comparison and per-run flag rates |
 | 2 | Validity-guarded PSI | identical metric under dedrift's `psi_null_expectation` guard | emission and flag rates |
-| 3 | Evidently 0.7.21 | `DataDriftPreset`, **all defaults**, on the per-record signature table; pooled and per-family | per-column flag rate, any-column rate, dataset verdict (drifted share ≥ 0.5) |
-| 4 | Naive per-check KS | `scipy.stats.ks_2samp` per (family, signature), α = 0.05, no multiplicity control | per-test and per-run rejection rates, per-column breakdown |
-| 5 | dedrift fixed-sample path | `ProjectConfig()` defaults: BH-FDR + materiality, dual baselines | per-check alert rate; cumulative any-alert over 50 cycles; the uncalibrated PSI/Page–Hinkley flag rate |
-| 6 | dedrift anytime-valid path | defaults: e-processes + e-BH, golden baseline, `rate_model="twosample"`, lifetime α = 0.05 | ever-alerted rate over 50 cycles; per-fold alert rate |
+| 3 | Naive per-check KS | `scipy.stats.ks_2samp` per (family, signature), α = 0.05, no multiplicity control | per-test and per-run rejection rates, per-column breakdown |
+| 4 | dedrift fixed-sample path | `ProjectConfig()` defaults: BH-FDR + materiality, dual baselines | per-check alert rate; cumulative any-alert over 50 cycles; the uncalibrated PSI/Page–Hinkley flag rate |
+| 5 | dedrift anytime-valid path | defaults: e-processes + e-BH, golden baseline, `rate_model="twosample"`, lifetime α = 0.05 | ever-alerted rate over 50 cycles; per-fold alert rate |
 
-Method 1–4 run one comparison per run (reference = cycles 0–2, current =
-cycle 5). Methods 5–6 run as monitoring is actually used: one check per
+Method 1–3 run one comparison per run (reference = cycles 0–2, current =
+cycle 5). Methods 4–5 run as monitoring is actually used: one check per
 cycle over the 50 post-golden cycles of the same history prefix. Tools that
 were attempted and excluded are documented, with the checkable reason, in
 `METHODS_CONSIDERED.md`.

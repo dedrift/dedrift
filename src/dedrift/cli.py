@@ -70,7 +70,7 @@ def embedder_pin(
     """Pin the project's embedder FOREVER (enables Tier-2 semantic signatures)."""
     from dedrift.embeddings import EmbedderMismatchError, pin_embedder, resolve_embedder
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -90,7 +90,7 @@ def embedder_show(
     """Show the pinned embedder."""
     from dedrift.embeddings import get_pinned_embedder
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     pinned = get_pinned_embedder(store)
     typer.echo(pinned or "No embedder pinned (Tier-2 semantic signatures disabled).")
 
@@ -102,7 +102,7 @@ def init(
     ),
 ) -> None:
     """Initialize a dedrift project (.dedrift/ directory)."""
-    store = Store(path)
+    store = Store(path, require_project=False)
     if store.exists():
         typer.echo(f"Project already initialized at {store.project_dir}")
         raise typer.Exit(code=0)
@@ -132,7 +132,7 @@ def log(
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
     """Ingest agent interaction records from a JSONL file."""
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -194,7 +194,7 @@ def cycle_finalize(
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
     """Finalize a streamed canary cycle so checks may consume it."""
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -228,7 +228,7 @@ def sim(
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
     """Generate synthetic agent logs (with an optional scripted config change)."""
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -342,7 +342,7 @@ def canary_run(
     """Run the canary suite N times per canary against your agent."""
     from dedrift.canary import CanaryRunner, CanarySuite
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -370,6 +370,7 @@ def canary_run(
         agent_fn,  # type: ignore[arg-type]
         agent_config,
         repetitions=effective_repetitions,
+        deterministic=_load_project_config(store).deterministic,
     )
     try:
         with store:
@@ -399,7 +400,7 @@ def signatures(
         signatures_frame,
     )
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -408,7 +409,8 @@ def signatures(
     if not records:
         typer.echo("No canary records with cycle IDs found.")
         raise typer.Exit(code=0)
-    frame = signatures_frame(records)
+    custom = _load_project_config(store).custom_scalars
+    frame = signatures_frame(records, custom_scalars=tuple(custom))
     if by == "canary":
         table = aggregate_by_canary_cycle(frame)
     elif by == "family":
@@ -427,6 +429,9 @@ def signatures(
         "latency_ms_p95",
         "refusal_rate",
         "format_valid_rate",
+        # Declared channels last: for a numeric agent they are the only
+        # columns above that can move, so they must not be cut off.
+        *[f"{name}_{stat}" for name in custom for stat in ("mean", "p95")],
     ]
     with pd.option_context("display.max_rows", 200, "display.width", 200):
         typer.echo(table[show].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
@@ -450,7 +455,7 @@ def baseline_set(
     from dedrift.check import get_golden_baseline, set_golden_baseline
     from dedrift.signatures import signatures_frame
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -478,7 +483,32 @@ def baseline_set(
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             typer.echo(f"Could not set golden baseline: {exc}", err=True)
             raise typer.Exit(code=1) from exc
-        typer.echo(f"Golden baseline frozen: {get_golden_baseline(store)}")
+        frozen = get_golden_baseline(store)
+        typer.echo(f"Golden baseline frozen: {frozen}")
+        # Golden cycles are excluded from the rolling reference, so freezing
+        # everything starves the sudden channel. Its only symptom is a
+        # persistent "NO REFERENCE", which reads like "not enough history yet"
+        # rather than "you consumed the history you had".
+        try:
+            records, _ = store.read_finalized_canary_snapshot()
+            completed = list(dict.fromkeys(signatures_frame(records)["cycle_id"]))
+        except (OSError, RuntimeError, ValueError, sqlite3.Error, KeyError):
+            completed = []
+        remaining = [c for c in completed if c not in set(frozen)]
+        if completed and not remaining:
+            typer.echo(
+                f"WARNING: the golden baseline now holds all {len(completed)} completed "
+                f"cycles, so the rolling window has none left to compare against and the "
+                f"sudden channel will report NO REFERENCE until new cycles arrive.",
+                err=True,
+            )
+        elif completed and len(remaining) < 2:
+            typer.echo(
+                f"WARNING: only {len(remaining)} completed cycle(s) remain outside the "
+                f"golden baseline; the rolling window needs more before the sudden "
+                f"channel becomes informative.",
+                err=True,
+            )
 
 
 @app.command()
@@ -499,7 +529,7 @@ def check(
     """Run the gated drift check for the latest cycle (dual baselines)."""
     from dedrift.check import run_check
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)
@@ -609,7 +639,7 @@ def report(
     from dedrift.check import run_check
     from dedrift.report import render_anytime_report, render_report
 
-    store = Store(path)
+    store = Store(path, require_project=False)
     if not store.exists():
         typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
         raise typer.Exit(code=1)

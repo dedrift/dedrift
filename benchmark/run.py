@@ -7,9 +7,8 @@ Usage:
     python -m benchmark.run --all --quick         # smoke run (20 seeds)
 
 Legs:
-    ``percheck``: PSI (folk and validity-guarded), naive uncontrolled KS,
-        and Evidently's default DataDriftPreset at pooled and per-family
-        granularity — one comparison per run, on the 6-cycle history.
+    ``percheck``: PSI (folk and validity-guarded) and naive uncontrolled
+        KS — one comparison per run, on the 6-cycle history.
     ``dedrift``: dedrift's fixed-sample and anytime-valid paths, run
         cycle-by-cycle over the 50-cycle monitored history, at the shipped
         default configuration.
@@ -60,12 +59,6 @@ def _versions() -> dict[str, str]:
         "scipy": scipy.__version__,
         "python": platform.python_version(),
     }
-    try:
-        import evidently
-
-        versions["evidently"] = evidently.__version__
-    except ImportError:
-        versions["evidently"] = "not installed"
     return versions
 
 
@@ -108,10 +101,6 @@ def aggregate_percheck(rows: list[dict[str, Any]]) -> dict[str, Any]:
     guard_flagged = sum(r["psi_guarded_flagged"] for r in rows)
     ks_tests = sum(r["ks_tests"] for r in rows)
     ks_rej = sum(r["ks_rejections"] for r in rows)
-    ev_pool_cols = sum(r["ev_pooled"]["columns"] for r in rows)
-    ev_pool_drifted = sum(r["ev_pooled"]["drifted"] for r in rows)
-    ev_fam_cols = sum(r["ev_family"]["columns_total"] for r in rows)
-    ev_fam_drifted = sum(r["ev_family"]["drifted_total"] for r in rows)
 
     per_column: dict[str, list[int]] = {}
     for r in rows:
@@ -120,17 +109,6 @@ def aggregate_percheck(rows: list[dict[str, Any]]) -> dict[str, Any]:
             slot[0] += rej
             slot[1] += tests
 
-    ev_columns: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        for col, cell in r["ev_pooled"]["per_column"].items():
-            slot = ev_columns.setdefault(col, {"drifted": 0, "n": 0, "methods": set()})
-            slot["drifted"] += int(cell["drifted"])
-            slot["n"] += 1
-            slot["methods"].add(cell["method"])
-    ev_per_column = {
-        col: {**rate_row(slot["drifted"], slot["n"]), "methods": sorted(slot["methods"])}
-        for col, slot in sorted(ev_columns.items())
-    }
     ks_per_run = sorted(r["ks_tests"] for r in rows)
     k_median = ks_per_run[n // 2]
     return {
@@ -159,24 +137,6 @@ def aggregate_percheck(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "per_column": {
                 col: rate_row(rej, tests) for col, (rej, tests) in sorted(per_column.items())
             },
-        },
-        "evidently_pooled": {
-            "description": "DataDriftPreset, all defaults, one report over the pooled table",
-            "columns": ev_pool_cols,
-            "per_column_flag": rate_row(ev_pool_drifted, ev_pool_cols),
-            "runs_any_drifted_column": rate_row(
-                sum(r["ev_pooled"]["drifted"] > 0 for r in rows), n
-            ),
-            "runs_dataset_drift": rate_row(sum(r["ev_pooled"]["dataset_drift"] for r in rows), n),
-            "per_column": ev_per_column,
-        },
-        "evidently_family": {
-            "description": "DataDriftPreset, all defaults, one report per canary family",
-            "columns": ev_fam_cols,
-            "per_column_flag": rate_row(ev_fam_drifted, ev_fam_cols),
-            "runs_any_drifted_column": rate_row(
-                sum(r["ev_family"]["any_drifted"] for r in rows), n
-            ),
         },
     }
 

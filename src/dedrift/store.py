@@ -305,13 +305,32 @@ class Store:
             directory. Defaults to the current working directory.
     """
 
-    def __init__(self, root: Path | str = ".") -> None:
+    def __init__(self, root: Path | str = ".", *, require_project: bool = True) -> None:
+        """Open a store rooted at ``root``.
+
+        Args:
+            root: Directory containing (or to contain) the ``.dedrift`` project.
+            require_project: Fail here if the project does not exist yet.
+                Opening an uninitialised directory used to succeed and then
+                fail at the first *write*, by which time a full cycle of real
+                work could already have been done and lost. Only
+                :meth:`init_project` passes ``False``.
+
+        Raises:
+            FileNotFoundError: If ``require_project`` and no project is present.
+        """
         self.root = Path(root)
         self.project_dir = self.root / PROJECT_DIR
         self.records_path = self.project_dir / LOGS_DIR / RECORDS_FILE
         self.index_path = self.project_dir / INDEX_FILE
         self.config_path = self.project_dir / CONFIG_FILE
         self._conn: sqlite3.Connection | None = None
+        if require_project and not self.records_path.parent.is_dir():
+            msg = (
+                f"no dedrift project at {self.root}: run `dedrift init` there, "
+                f"or call Store.init_project({str(self.root)!r}) to create one"
+            )
+            raise FileNotFoundError(msg)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -325,7 +344,7 @@ class Store:
         Returns:
             An open store for the new project.
         """
-        store = cls(root)
+        store = cls(root, require_project=False)
         store.project_dir.mkdir(parents=True, exist_ok=True, mode=_PRIVATE_DIR_MODE)
         store.records_path.parent.mkdir(exist_ok=True, mode=_PRIVATE_DIR_MODE)
         _harden_permissions(store.project_dir, _PRIVATE_DIR_MODE)
