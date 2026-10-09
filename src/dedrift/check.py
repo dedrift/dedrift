@@ -69,7 +69,12 @@ from dedrift.embeddings import embed_records, get_pinned_embedder
 from dedrift.schema import InteractionRecord
 from dedrift.signatures import signatures_frame
 from dedrift.signatures.structural import RATE_SIGNATURES, SCALAR_SIGNATURES
-from dedrift.store import Store, _atomic_private_writer, _harden_permissions
+from dedrift.store import (
+    FinalizedSnapshotChangedError,
+    Store,
+    _atomic_private_writer,
+    _harden_permissions,
+)
 
 BASELINE_FILE = "baseline.json"
 
@@ -81,6 +86,10 @@ RHO_CAP = 0.15
 #: Fraction of errored records in the current cycle above which the check
 #: refuses to interpret drift and reports DEGRADED DATA instead.
 DEGRADED_ERROR_FRACTION = 0.2
+
+#: Bump whenever the fixed-path candidate/persistence semantics change. Old
+#: check rows then fail closed instead of completing a streak under new rules.
+FIXED_PERSISTENCE_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -219,6 +228,8 @@ class CheckResult:
         current_cycle: Cycle under test.
         rolling_cycles: Cycle IDs in the rolling reference.
         golden_cycles: Cycle IDs in the golden baseline.
+        declared_golden_cycles: Exact file-backed baseline declaration read
+            before computation. Persistence verifies it is still current.
         fdr_q: FDR level used.
         seed: Seed used for all resampling.
         permutations_requested: Configured Monte Carlo permutation count.
@@ -244,6 +255,9 @@ class CheckResult:
         persistence_demoted: Significant+material first-time alerts held by
             the alert_persistence gate at this check (0 when the gate is
             off).
+        persistence_fingerprint: Identity of the detector configuration,
+            golden baseline, suite, embedder, and active agent configuration.
+            Candidate streaks never cross a fingerprint boundary.
         overall_verdict: Conservative aggregate status for CLI/report use.
         n_alerts: Convenience count of alerting tests.
         families_present: Families this project actually populates. Reported
@@ -257,6 +271,7 @@ class CheckResult:
     current_cycle: str
     rolling_cycles: list[str]
     golden_cycles: list[str]
+    declared_golden_cycles: list[str]
     fdr_q: float
     seed: int
     permutations_requested: int
@@ -273,7 +288,9 @@ class CheckResult:
     mmd_floors: list[MmdFloorAssessment] = field(default_factory=list)
     cycle_effects: list[dict[str, Any]] = field(default_factory=list)
     persistence_demoted: int = 0
+    persistence_fingerprint: str = ""
     snapshot_log_offset: int = 0
+    snapshot_finalized_revision: int = 0
     snapshot_record_ids: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -425,19 +442,60 @@ def _material_scalar(test: TestOutcome, cfg: ProjectConfig, signature: str) -> b
     return bool(abs(test.effect_size) >= m.scalar_cohen_d)
 
 
+def _persistence_fingerprint(
+    cfg: ProjectConfig,
+    declared_golden: list[str],
+    current_records: list[InteractionRecord],
+    pinned_embedder: str | None,
+) -> str:
+    """Hash every stable input that gives a candidate channel its meaning."""
+    suite = sorted(
+        {
+            (
+                record.canary_id,
+                json.dumps(
+                    record.input.model_dump(mode="json"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ),
+            )
+            for record in current_records
+        }
+    )
+    payload = json.dumps(
+        {
+            "version": FIXED_PERSISTENCE_VERSION,
+            "detector_config": asdict(cfg),
+            "golden_cycles": sorted(declared_golden),
+            "pinned_embedder": pinned_embedder or "",
+            "agent_configs": sorted({record.config_fingerprint for record in current_records}),
+            "suite": suite,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+
 def _add_semantic_displacement(
     frame: pd.DataFrame,
     records: list[InteractionRecord],
     embeddings: dict[str, npt.NDArray[np.float64]],
-    golden_cycles: list[str],
+    reference_cycles: list[str],
 ) -> None:
     """Add a per-record semantic_displacement column to the signature frame.
 
     Displacement = cosine distance from each record's embedding to the
-    centroid of the SAME canary's reference outputs (golden cycles when set,
-    else all cycles — mildly contaminated by the current cycle, which the
-    docs note as a reason to set a golden baseline). A scalar per record, so
-    it flows through the ordinary scalar battery — KS/AD/Levene/P95 apply.
+    centroid of the SAME canary's explicitly selected reference outputs. The
+    caller selects the filtered golden window when one was declared, or a
+    prior rolling/history window otherwise. The current cycle must never be
+    part of this centroid: doing so lets the sample under test move its own
+    null target and attenuates real semantic drift. An empty reference list
+    deliberately produces only NaNs rather than silently falling back to all
+    records. A scalar per record, so it flows through the ordinary scalar
+    battery — KS/AD/Levene/P95 apply.
 
     Reference records are scored **leave-one-out**
     ---------------------------------------------
@@ -457,18 +515,16 @@ def _add_semantic_displacement(
     recomputing ``n`` means. Canaries with a single reference record cannot
     be scored leave-one-out and yield NaN, which the battery already drops.
     """
-    ref_cycle_set = set(golden_cycles)
+    ref_cycle_set = set(reference_cycles)
     by_canary: dict[str, list[npt.NDArray[np.float64]]] = {}
     for r in records:
-        in_ref = r.cycle_id in ref_cycle_set if ref_cycle_set else True
+        in_ref = r.cycle_id in ref_cycle_set
         if r.canary_id is not None and in_ref:
             by_canary.setdefault(r.canary_id, []).append(embeddings[r.id])
     centroids = {c: np.mean(np.stack(v), axis=0) for c, v in by_canary.items() if v}
     counts = {c: len(v) for c, v in by_canary.items() if v}
     reference_ids = {
-        r.id
-        for r in records
-        if r.canary_id is not None and ((r.cycle_id in ref_cycle_set) if ref_cycle_set else True)
+        r.id for r in records if r.canary_id is not None and r.cycle_id in ref_cycle_set
     }
 
     def _cosine_distance(vec: npt.NDArray[np.float64], centroid: npt.NDArray[np.float64]) -> float:
@@ -657,8 +713,22 @@ def run_check(store: Store, config: ProjectConfig | None = None) -> CheckResult:
     no writer lock; finalization makes the selected cycle contents immutable.
     """
     cfg = config or ProjectConfig.load(store.project_dir)
-    records, snapshot_offset = store.read_finalized_canary_snapshot()
-    return _run_check_snapshot(store, cfg, records, snapshot_offset)
+    for attempt in range(3):
+        records, snapshot_offset, snapshot_revision = (
+            store.read_finalized_canary_snapshot_with_revision()
+        )
+        try:
+            return _run_check_snapshot(
+                store,
+                cfg,
+                records,
+                snapshot_offset,
+                snapshot_revision,
+            )
+        except FinalizedSnapshotChangedError:
+            if attempt == 2:
+                raise
+    raise AssertionError("unreachable")
 
 
 def _run_check_snapshot(
@@ -666,6 +736,7 @@ def _run_check_snapshot(
     cfg: ProjectConfig,
     records: list[InteractionRecord],
     snapshot_offset: int,
+    snapshot_revision: int,
 ) -> CheckResult:
     """Run the full gated drift check for the latest cycle.
 
@@ -674,6 +745,7 @@ def _run_check_snapshot(
         cfg: Validated project configuration.
         records: Immutable finalized-record snapshot.
         snapshot_offset: Committed JSONL offset recorded with the check.
+        snapshot_revision: Finalized-cycle watermark captured with the records.
 
     Returns:
         The complete check result. Also persisted to the ``checks`` and
@@ -689,8 +761,16 @@ def _run_check_snapshot(
     cycles = _ordered_cycles(frame)
     current = cycles[-1]
     history = cycles[:-1]
-    golden = [c for c in get_golden_baseline(store) if c in cycles and c != current]
+    declared_golden = get_golden_baseline(store)
+    golden = [c for c in declared_golden if c in cycles and c != current]
     rolling = [c for c in history if c not in golden][-cfg.rolling_window_cycles :]
+    pinned_embedder = get_pinned_embedder(store)
+    persistence_fingerprint = _persistence_fingerprint(
+        cfg,
+        declared_golden,
+        [record for record in records if record.cycle_id == current],
+        pinned_embedder,
+    )
 
     # Tier 2 (optional): embeddings via the pinned embedder. When pinned, a
     # per-record semantic_displacement scalar joins the ordinary scalar
@@ -698,9 +778,15 @@ def _run_check_snapshot(
     # materiality floor is auto-calibrated per (family, baseline) from
     # reference-cycle pairs (known-same distribution) unless overridden.
     embeddings: dict[str, Any] | None = None
-    if get_pinned_embedder(store) is not None:
+    if pinned_embedder is not None:
         embeddings = embed_records(store, records)
-        _add_semantic_displacement(frame, records, embeddings, get_golden_baseline(store))
+        # A declared baseline is authoritative even when none of its cycle
+        # IDs survive snapshot filtering (for example, it names only the
+        # current cycle). Falling back in that case would silently change the
+        # reference contract. With no declared golden baseline, use only
+        # prior rolling/history cycles; current is never admitted.
+        semantic_reference = golden if declared_golden else (rolling or history)
+        _add_semantic_displacement(frame, records, embeddings, semantic_reference)
 
     scalar_signatures = (
         tuple(SCALAR_SIGNATURES)
@@ -865,6 +951,12 @@ def _run_check_snapshot(
                             if len(parts) == 2
                             else (parts[0] if parts else ks_out.p_value)
                         )
+                        # ``auto`` is a robustness correction, never a way
+                        # to manufacture stronger evidence than the exact
+                        # record-level path. The approximate cluster-aware
+                        # member can occasionally be numerically smaller;
+                        # retain the larger (more conservative) p-value.
+                        p_comp = max(ks_out.p_value, p_comp)
                         # Gating needs both members' effects in D units:
                         # D_shape misses pure location shifts, so add the
                         # KS distance that a pure location shift of the
@@ -876,11 +968,12 @@ def _run_check_snapshot(
                             else 0.0
                         )
                         d_shape = ks_std.statistic if ks_std is not None else 0.0
+                        d_corrected = max(d_shape, d_loc)
                         ks_out = replace(
                             ks_out,
-                            statistic=d_shape,
+                            statistic=d_corrected,
                             p_value=p_comp,
-                            effect_size=max(d_shape, d_loc),
+                            effect_size=d_corrected,
                             effect_raw=math.exp(delta) - 1.0 if positive else delta,
                         )
                     ref_mads = per_cycle_statistic(wnull, null_cyc, "mad")
@@ -910,7 +1003,11 @@ def _run_check_snapshot(
                             ratio = cur_mad / mean_ref_mad if mean_ref_mad > 0 else float("inf")
                         lev_out = replace(
                             lev_out,
-                            p_value=p_lev if np.isfinite(p_lev) else lev_out.p_value,
+                            p_value=(
+                                max(lev_out.p_value, p_lev)
+                                if np.isfinite(lev_out.p_value)
+                                else p_lev
+                            ),
                             effect_size=ratio,
                         )
                     ref_p95s = per_cycle_statistic(wnull, null_cyc, "p95")
@@ -936,7 +1033,11 @@ def _run_check_snapshot(
                             )
                         p95_out = replace(
                             p95_out,
-                            p_value=p_p95 if np.isfinite(p_p95) else p95_out.p_value,
+                            p_value=(
+                                max(p95_out.p_value, p_p95)
+                                if np.isfinite(p95_out.p_value)
+                                else p_p95
+                            ),
                             effect_size=rel,
                         )
                     cycle_notes.append(
@@ -1119,35 +1220,56 @@ def _run_check_snapshot(
             )
         )
 
-    # Alert persistence gate: with alert_persistence > 1, a channel alerts
-    # only if it also alerted at the previous check on a DIFFERENT current
-    # cycle. Wobble-induced alerts are transient; drift persists. First-time
-    # significant+material channels are demoted to the appendix (they remain
-    # visible) and fire only if they persist. Measured numbers and the
-    # trade-off are in docs/statistics.md#cycle-effects.
+    # Alert persistence gate: with alert_persistence=N, a channel alerts
+    # only after it is a candidate on N distinct consecutive checked cycles
+    # (current plus N-1 prior cycles). Re-running a check on the same current
+    # cycle cannot advance the streak. Wobble-induced alerts are transient;
+    # drift persists. Candidates held by the gate remain visible in the
+    # appendix. Measured numbers and the trade-off are in
+    # docs/statistics.md#cycle-effects.
     demoted = 0
     if cfg.alert_persistence > 1:
-        prev_row = (
-            store.connect()
-            .execute(
-                "SELECT params_json FROM checks WHERE baseline_kind = 'dual' AND "
-                "json_extract(params_json, '$.current_cycle') != ? "
-                "ORDER BY id DESC LIMIT 1",
-                (current,),
-            )
-            .fetchone()
+        required_prior = cfg.alert_persistence - 1
+        # These are the actual cycles immediately before current, not merely
+        # the latest cycles on which somebody happened to run a check. A
+        # skipped cycle breaks the streak because its candidacy is unknown.
+        expected_prior_cycles = list(reversed(history[-required_prior:]))
+        expected_prior_set = set(expected_prior_cycles)
+        rows = store.connect().execute(
+            "SELECT params_json FROM checks WHERE baseline_kind = 'dual' ORDER BY id DESC"
         )
-        # The gate compares against the previous check's CANDIDATE channels
-        # (primary & significant & material), persisted in params_json —
-        # referencing only fired alerts would self-extinguish the gate.
-        prev_channels: set[tuple[str, str, str]] = set()
-        if prev_row is not None:
-            prev_params = json.loads(prev_row[0])
-            for base_, fam_, sig_ in prev_params.get("candidate_channels", []):
-                prev_channels.add((str(base_), str(fam_), str(sig_)))
+        latest_candidates: dict[str, set[tuple[str, str, str]]] = {}
+        for row in rows:
+            params = json.loads(row[0])
+            if params.get("persistence_fingerprint") != persistence_fingerprint:
+                continue
+            prior_cycle = params.get("current_cycle")
+            if (
+                not isinstance(prior_cycle, str)
+                or prior_cycle not in expected_prior_set
+                or prior_cycle in latest_candidates
+            ):
+                continue
+            latest_candidates[prior_cycle] = {
+                (str(base_), str(fam_), str(sig_))
+                for base_, fam_, sig_ in params.get("candidate_channels", [])
+            }
+            if len(latest_candidates) == required_prior:
+                break
+
+        # The gate compares against CANDIDATE channels (primary &
+        # significant & material), persisted in params_json. Referencing
+        # only fired alerts would self-extinguish a streak before it reached
+        # N. Missing prior distinct cycles make the eligible set empty.
+        persistent_channels: set[tuple[str, str, str]] = set()
+        if len(expected_prior_cycles) == required_prior and all(
+            cycle in latest_candidates for cycle in expected_prior_cycles
+        ):
+            prior_candidate_sets = [latest_candidates[cycle] for cycle in expected_prior_cycles]
+            persistent_channels = set.intersection(*prior_candidate_sets)
         new_gated: list[TestRecord] = []
         for t in gated:
-            if t.alert and (t.baseline, t.family, t.signature) not in prev_channels:
+            if t.alert and (t.baseline, t.family, t.signature) not in persistent_channels:
                 demoted += 1
                 new_gated.append(replace(t, alert=False))
             else:
@@ -1272,6 +1394,7 @@ def _run_check_snapshot(
         current_cycle=current,
         rolling_cycles=rolling,
         golden_cycles=golden,
+        declared_golden_cycles=declared_golden,
         fdr_q=cfg.fdr_q,
         seed=cfg.seed,
         permutations_requested=cfg.permutations,
@@ -1288,7 +1411,9 @@ def _run_check_snapshot(
         mmd_floors=sorted(mmd_floors.values(), key=lambda item: (item.baseline, item.family)),
         cycle_effects=cycle_notes,
         persistence_demoted=demoted,
+        persistence_fingerprint=persistence_fingerprint,
         snapshot_log_offset=snapshot_offset,
+        snapshot_finalized_revision=snapshot_revision,
         snapshot_record_ids=tuple(record.id for record in records),
     )
     _persist(store, result)
@@ -1301,6 +1426,11 @@ def _persist(store: Store, result: CheckResult) -> None:
         raise RuntimeError("check persistence requires ownership of the SQLite transaction")
     conn.execute("BEGIN IMMEDIATE")
     try:
+        store.assert_finalized_revision(result.snapshot_finalized_revision)
+        if get_golden_baseline(store) != result.declared_golden_cycles:
+            raise FinalizedSnapshotChangedError(
+                "golden baseline changed during the check snapshot; retry"
+            )
         cursor = conn.execute(
             "INSERT INTO checks "
             "(ts, baseline_kind, params_json, verdict, snapshot_offset, "
@@ -1313,6 +1443,7 @@ def _persist(store: Store, result: CheckResult) -> None:
                         "current_cycle": result.current_cycle,
                         "rolling": result.rolling_cycles,
                         "golden": result.golden_cycles,
+                        "declared_golden": result.declared_golden_cycles,
                         "fdr_q": result.fdr_q,
                         "seed": result.seed,
                         "permutations_requested": result.permutations_requested,
@@ -1323,13 +1454,17 @@ def _persist(store: Store, result: CheckResult) -> None:
                         "mmd_floors": [asdict(item) for item in result.mmd_floors],
                         "cycle_effects": result.cycle_effects,
                         "persistence_demoted": result.persistence_demoted,
+                        "persistence_fingerprint": result.persistence_fingerprint,
                         # Channels that earned an alert this check, whether
                         # or not the persistence gate fired them; the gate
                         # reads this at the next check.
                         "candidate_channels": [
                             [t.baseline, t.family, t.signature]
                             for t in result.tests
-                            if t.primary and t.significant and t.material
+                            if t.primary
+                            and t.significant
+                            and t.material
+                            and (not result.degraded or t.signature == "had_error")
                         ],
                         "composition_issues": [
                             {
@@ -1344,14 +1479,15 @@ def _persist(store: Store, result: CheckResult) -> None:
                             for i in result.composition_issues
                         ],
                         "snapshot_log_offset": result.snapshot_log_offset,
-                        "snapshot_record_ids": result.snapshot_record_ids,
+                        "snapshot_finalized_revision": result.snapshot_finalized_revision,
+                        "snapshot_record_count": len(result.snapshot_record_ids),
                     }
                 ),
                 f"sudden={result.verdict_sudden};cumulative={result.verdict_cumulative}"
                 + f";overall={result.overall_verdict}"
                 + (";DEGRADED" if result.degraded else ""),
                 result.snapshot_log_offset,
-                json.dumps(result.snapshot_record_ids),
+                None,
             ),
         )
         check_id = cursor.lastrowid

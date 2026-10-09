@@ -1,37 +1,18 @@
-"""e-BH: FDR control from e-values, under arbitrary dependence.
+"""e-BH utility for fixed-collection FDR control from e-values.
 
 Wang & Ramdas (*False discovery rate control with e-values*, JRSS-B 84(3),
 2022; arXiv:2009.02824). Sort e-values decreasing, find the largest ``k``
 with ``E_(k) >= m / (alpha * k)``, reject the top ``k``. FDR <= alpha for
-**any** dependence structure among the e-values — which is why this
-replaces Benjamini-Hochberg here rather than sitting beside it: our battery
-shares the current cycle across baselines and the golden sample across
-channels, and the PRDS condition BH needs was only ever asserted.
+**any** dependence structure among a fixed collection of e-values.
 
 The subtlety we do not paper over
 ---------------------------------
-e-BH's guarantee is stated for a *fixed* collection of e-values. Applying
-it at every cycle to running e-processes is a different object. Per
-*Anytime-valid FDR control with the stopped e-BH procedure*
-(arXiv:2502.08539, Stat. & Prob. Letters 2025): adaptively stopped
-e-processes are e-values, so e-BH may be applied at every step, and the
-stopped procedure controls FDR at all stopping times **if the streams are
-independent** — which ours are not. In general each stopped e-process is an
-e-value only for stopping times in its own local filtration, while the
-procedure stops with respect to the global filtration, which can leak
-information across time. The paper gives a causal condition (no unobserved
-confounding from the past) under which local e-processes are global ones
-and the guarantee is restored.
-
-Our streams plausibly satisfy it — every stream is a function of the same
-observable cycle history, and cross-sectional dependence within a cycle is
-exactly what e-BH already tolerates. But it is an assumption, not a
-theorem we have proved for this battery, and the honest reading of the
-candidate violation is unobserved provider-side state (rolling
-deployments, load) correlating streams through time. Whether that is
-excluded is close to being the definition of the null. Accordingly:
-anything the docs say about trajectory-level FDR must be labelled as
-assumption-plus-measurement, never as established.
+e-BH's guarantee is stated for a *fixed* collection of e-values. Reapplying
+it after every cycle to dependent running e-processes needs additional
+stopped-e-BH conditions that this package has not established. The production
+monitor therefore uses a predeclared, fixed pool with Ville--Bonferroni family-
+wise control. This function remains available for fixed-collection analysis;
+it is not the production sequential decision rule.
 """
 
 from __future__ import annotations

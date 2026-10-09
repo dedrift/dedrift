@@ -44,21 +44,24 @@ silent updates — all shift agent behavior without a single error in your logs.
     run in CI on every commit — and inside the release pipeline. A release
     cannot ship if the statistics fail their own audit.
 
--   :material-filter-check:{ .lg .middle } **Two gates before any alert**
+-   :material-filter-check:{ .lg .middle } **Fixed-sample alerts: two gates**
 
     ---
 
-    Benjamini–Hochberg adjustment across every primary test in the check, then an observed
-    materiality gate on effect size. Statistically significant but
-    practically trivial? You don't get paged.
+    The default fixed-sample path applies Benjamini–Hochberg adjustment across
+    every primary test, then an observed materiality gate on effect size.
+    Statistically significant but practically trivial? You don't get paged.
+    Anytime mode instead uses golden-only e-processes; its tilts target power
+    but do not impose this observed-effect gate.
 
 -   :material-bird:{ .lg .middle } **Frozen canaries, N repetitions**
 
     ---
 
     LLM outputs are random, so single-run comparisons are meaningless.
-    Canaries run N times per cycle; dedrift compares distributions —
-    against a rolling window *and* a frozen golden baseline.
+    Canaries run N times per cycle; the fixed-sample path compares
+    distributions against a rolling window *and* a frozen golden baseline.
+    Anytime mode deliberately uses only the frozen golden reference.
 
 -   :material-source-branch:{ .lg .middle } **Attribution, honestly framed**
 
@@ -89,9 +92,9 @@ silent updates — all shift agent behavior without a single error in your logs.
 <div class="dd-section-title">Watch it catch a real one</div>
 <p class="dd-section-sub">
 A scripted silent model swap — same prompt, same canaries, nothing
-announced. The first post-swap check fired on both baselines: 124 gated
-alerts, 21 co-shifting signature groups, attributed to the config
-fingerprint change at onset.
+announced. The gross-swap regression fires on both baselines and attributes
+the co-shift to the config fingerprint change; exact counts and effects must
+be regenerated for the installed build.
 </p>
 
 [![A scripted silent model swap, caught](assets/fig1_the_catch.png)](case-study.md)
@@ -109,9 +112,10 @@ full pipeline's null alert rate: 16 of 500 stable-agent checks (3.2%,
 Wilson 95% upper bound 5.1%), measured at m ≈ 336 primaries — the
 any-alert rate is family-wise and grows with battery size even under
 valid per-test FDR, so the headline number is always stated at its
-battery size. Opt-in wobble-robust modes for hosted models are measured
-in both directions. The parts that aren't calibrated — the diagnostic flag
-channel — carry their measured rate too, because honesty is the product.
+battery size. Opt-in cycle-effect/anytime modes are experimental and require
+deployment-specific calibration; their prior tables are retracted in 0.5.1.
+The parts that aren't calibrated — the diagnostic flag channel — carry their
+measured rate too, because honesty is the product.
 </p>
 
 [![Measured null false-alarm rates per detector](assets/fig2_calibration.png)](statistics.md)
@@ -139,7 +143,7 @@ dedrift check
 Current cycle: cycle-0007<br>
 Sudden (vs rolling 4 cycles): <span class="a">DRIFT DETECTED</span><br>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span><br>
-Alerts: 168 (BH-adjusted equality tests q=0.05, observed-effect gated)<br>
+Alerts: multiple (build-specific BH-adjusted, observed-effect-gated results)<br>
 &nbsp;&nbsp;[golden] adversarial/refusal two_proportion_z: effect=<span class="a">+21.0 pp</span>, p_adj=0.0009<br>
 &nbsp;&nbsp;[golden] adversarial/format_valid two_proportion_z: effect=<span class="a">-21.9 pp</span>, p_adj=0.0023<br>
 &nbsp;&nbsp;[golden] edge_case/output_words ks: effect=<span class="a">D=0.71</span>, p_adj=1.4e-20<br>

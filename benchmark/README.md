@@ -23,6 +23,12 @@ domain of validity, and nothing warns the user. dedrift is measured under
 identical conditions and reported with the same scrutiny, including its
 deliberately uncalibrated diagnostic flag channel.
 
+> **0.5.1 correction:** the stored 0.4 anytime results used the withdrawn
+> `twosample` prior-predictive ratio, dependent pooled products, and repeated
+> e-BH. Those results are retracted and excluded from current tables. The
+> corrected `frozen_cp` + persistent Ville–Bonferroni path has not yet been
+> rerun by this study; no replacement performance claim is made here.
+
 ## Methods measured
 
 | # | Method | Configuration | What is recorded |
@@ -31,7 +37,7 @@ deliberately uncalibrated diagnostic flag channel.
 | 2 | Validity-guarded PSI | identical metric under dedrift's `psi_null_expectation` guard | emission and flag rates |
 | 3 | Naive per-check KS | `scipy.stats.ks_2samp` per (family, signature), α = 0.05, no multiplicity control | per-test and per-run rejection rates, per-column breakdown |
 | 4 | dedrift fixed-sample path | `ProjectConfig()` defaults: BH-FDR + materiality, dual baselines | per-check alert rate; cumulative any-alert over 50 cycles; the uncalibrated PSI/Page–Hinkley flag rate |
-| 5 | dedrift anytime-valid path | defaults: e-processes + e-BH, golden baseline, `rate_model="twosample"`, lifetime α = 0.05 | ever-alerted rate over 50 cycles; per-fold alert rate |
+| 5 | dedrift anytime-valid path | 0.5.1 defaults: frozen Clopper–Pearson e-processes + persistent Ville–Bonferroni, golden baseline, `rate_model="frozen_cp"`, per-epoch lifetime α = 0.05 | intended: ever-alerted rate over 50 cycles; no corrected result published yet |
 
 Method 1–3 run one comparison per run (reference = cycles 0–2, current =
 cycle 5). Methods 4–5 run as monitoring is actually used: one check per

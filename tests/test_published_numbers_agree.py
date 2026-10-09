@@ -24,44 +24,14 @@ PAPER = ROOT / "launch" / "paper" / "dedrift_paper.tex"
 #: quantity -> (values that must all appear, artifacts that must carry them)
 CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
     (
-        "cycle-effect ladder, record-level (default) column",
-        ("3.0", "36.5", "71.0", "89.0", "98.5"),
-        ("docs/statistics.md",),
-    ),
-    (
-        "cycle-effect ladder, cluster-aware (auto) column",
-        ("3.3", "34.0", "64.0", "81.3", "94.0"),
-        ("docs/statistics.md",),
-    ),
-    (
-        "cycle-effect ladder, auto + alert_persistence=2 column",
-        ("0.0", "6.0", "31.0", "47.0", "66.0"),
-        ("docs/statistics.md",),
-    ),
-    (
         "pipeline null at CI scale, default mode",
         ("16/500",),
         ("docs/statistics.md", "README.md"),
     ),
     (
-        "anytime null, measured boundary at sigma=0.25, phi=0.9",
-        ("36/500",),
-        ("docs/anytime.md", "CHANGELOG.md"),
-    ),
-    (
-        "anytime power, +10pp within 400 cycles",
-        ("89/100",),
-        ("docs/anytime.md", "README.md", "CHANGELOG.md"),
-    ),
-    (
         "tool-order channel, first-check alerts with and without the channel",
         ("8/20", "0/30"),
         ("docs/statistics.md", "web/index.html"),
-    ),
-    (
-        "anytime harness cross-check at 60 cycles (independent harness scale)",
-        ("0/40", "1/30"),
-        ("docs/anytime.md",),
     ),
 ]
 
@@ -121,11 +91,10 @@ def test_quantity_is_consistent(
         if body is None:
             continue
         missing = [v for v in values if v not in body]
-        if missing and len(missing) < len(values):
+        if missing:
             pytest.fail(
-                f"{rel} carries part of '{quantity}' but is missing {missing}. "
-                f"A partially-updated table means the artifact describes a build "
-                f"that no longer exists; re-run the study or update every file."
+                f"{rel} is required to carry '{quantity}' but is missing {missing}. "
+                "Re-run the study or update every required artifact."
             )
 
 

@@ -9,6 +9,7 @@ trajectory-level behaviour in ``test_evalues_anytime.py``.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,11 +28,12 @@ from dedrift.check import run_check, set_golden_baseline
 from dedrift.cli import app
 from dedrift.config import AnytimeConfig, ProjectConfig
 from dedrift.embeddings import pin_embedder
+from dedrift.evalues import EValueOutcome, PriorState
 from dedrift.evalues.rates import per_process_gamma
 from dedrift.report import render_anytime_report
 from dedrift.schema import InteractionInput, InteractionRecord, Source
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
-from dedrift.store import Store
+from dedrift.store import FinalizedSnapshotChangedError, Store
 
 runner = CliRunner()
 
@@ -65,10 +67,15 @@ def make_records(*, cycles: int = 6, change_cycle: int | None = None) -> list[In
 
 
 def store_records(tmp_path: Path, records: list[InteractionRecord]) -> Store:
+    """Create a store whose anytime epoch predates all non-golden records."""
     store = Store.init_project(tmp_path)
-    store.append_many(records)
     ids = list(dict.fromkeys(r.cycle_id for r in records if r.cycle_id is not None))
+    golden = set(ids[:3])
+    store.append_many([record for record in records if record.cycle_id in golden])
     set_golden_baseline(store, ids[:3])
+    declaration = run_anytime_check(store)
+    assert declaration.processed_cycles == ()
+    store.append_many([record for record in records if record.cycle_id not in golden])
     return store
 
 
@@ -84,7 +91,7 @@ class TestBudgetArithmetic:
     """The error that would misstate the guarantee five-fold."""
 
     def test_gamma_is_split_across_the_pool(self) -> None:
-        """e-BH needs every input valid, so coverage failures union-bound.
+        """Coverage failures union-bound across the frozen process pool.
 
         ``alpha = alpha' + gamma`` is the per-process statement. Battery-wide
         it is ``alpha' + sum_i gamma_i``, so the total must be divided by the
@@ -110,16 +117,39 @@ class TestBudgetArithmetic:
 
 
 class TestStatePersistence:
-    def test_all_unseen_cycles_are_folded_once_and_recheck_is_read_only(
+    def test_only_cycles_after_declaration_are_folded_once_and_recheck_is_read_only(
         self, tmp_path: Path
     ) -> None:
         store = project(tmp_path)
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+        assert declaration.verdict == "NO CURRENT OBSERVATION"
+        assert all(state.cycles == 0 for state in load_states(store).values())
+
+        future = make_records(cycles=9)
+        store.append_many(
+            [
+                record
+                for record in future
+                if record.cycle_id in {"cycle-0006", "cycle-0007", "cycle-0008"}
+            ]
+        )
         first = run_anytime_check(store)
         saved = load_states(store)
         assert len(saved) == first.n_processes
-        assert first.processed_cycles == ("cycle-0003", "cycle-0004", "cycle-0005")
+        assert first.processed_cycles == ("cycle-0006", "cycle-0007", "cycle-0008")
         assert load_processed_cycles(store, first.fingerprint) == set(first.processed_cycles)
         assert all(s.cycles == 3 for s in saved.values())
+        compact = (
+            store.connect()
+            .execute(
+                "SELECT params_json, snapshot_record_ids_json FROM checks "
+                "WHERE baseline_kind = 'anytime' ORDER BY id DESC LIMIT 1"
+            )
+            .fetchone()
+        )
+        assert compact[1] is None
+        assert '"snapshot_record_ids"' not in str(compact[0])
         checks_before = (
             store.connect()
             .execute("SELECT COUNT(*) FROM checks WHERE baseline_kind = 'anytime'")
@@ -140,6 +170,175 @@ class TestStatePersistence:
         assert checks_after == checks_before
         assert {path: path.read_bytes() for path in db_files if path.exists()} == db_before
         assert second.n_processes == first.n_processes
+        store.close()
+
+    def test_cycle_open_before_declaration_is_never_replayed_after_finalization(
+        self, tmp_path: Path
+    ) -> None:
+        records = make_records(cycles=5)
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+
+        preexisting_open = [record for record in records if record.cycle_id == "cycle-0003"]
+        store.append_many(preexisting_open, finalize_cycles=False)
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+
+        store.finalize_cycle("cycle-0003")
+        after_finalization = run_anytime_check(store)
+        assert after_finalization.processed_cycles == ()
+        assert all(state.cycles == 0 for state in load_states(store).values())
+
+        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        future = run_anytime_check(store)
+        assert future.processed_cycles == ("cycle-0004",)
+        assert all(state.cycles == 1 for state in load_states(store).values())
+        store.close()
+
+    def test_post_declaration_cycles_wait_for_contiguous_open_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = make_records(cycles=5)
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        assert run_anytime_check(store).processed_cycles == ()
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(0.0, True, "neutral scripted evidence"),
+        )
+
+        store.append_many(
+            [record for record in records if record.cycle_id == "cycle-0003"],
+            finalize_cycles=False,
+        )
+        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        deferred = run_anytime_check(store)
+
+        assert deferred.current_cycle == "cycle-0004"
+        assert deferred.processed_cycles == ()
+        assert deferred.coverage_status == "NO OBSERVATION"
+        assert deferred.verdict == "NO CURRENT OBSERVATION"
+        assert all(state.cycles == 0 for state in load_states(store).values())
+
+        store.finalize_cycle("cycle-0003")
+        folded = run_anytime_check(store)
+
+        assert folded.current_cycle == "cycle-0003"
+        assert folded.processed_cycles == ("cycle-0003", "cycle-0004")
+        assert load_processed_cycles(store, folded.fingerprint) == {
+            "cycle-0003",
+            "cycle-0004",
+        }
+        assert all(state.cycles == 2 for state in load_states(store).values())
+        store.close()
+
+    def test_crash_tail_observation_is_inside_the_declaration_watermark(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = make_records(cycles=4)
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        crash_tail = [record for record in records if record.cycle_id == "cycle-0003"]
+        original_index_record = Store._index_record
+
+        def fail_after_fsync(target: Store, conn: object, record: InteractionRecord) -> None:
+            del target, conn, record
+            raise RuntimeError("simulated index failure after JSONL fsync")
+
+        monkeypatch.setattr(Store, "_index_record", fail_after_fsync)
+        with pytest.raises(RuntimeError, match="after JSONL fsync"):
+            store.append_many(crash_tail, finalize_cycles=False)
+        monkeypatch.setattr(Store, "_index_record", original_index_record)
+
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+        store.close()
+
+        with Store(tmp_path) as reopened:
+            reopened.finalize_cycle("cycle-0003")
+            result = run_anytime_check(reopened)
+            assert result.processed_cycles == ()
+            assert all(state.cycles == 0 for state in load_states(reopened).values())
+
+    def test_legacy_epoch_boundary_migrates_to_observation_sequence(self, tmp_path: Path) -> None:
+        records = make_records(cycles=5)
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id != "cycle-0004"])
+        set_golden_baseline(store, ["cycle-0000", "cycle-0001", "cycle-0002"])
+        declaration = run_anytime_check(store)
+        assert declaration.current_cycle == "cycle-0003"
+        index_path = store.index_path
+        store.close()
+
+        with sqlite3.connect(index_path) as legacy:
+            legacy.execute("ALTER TABLE anytime_epochs DROP COLUMN start_after_open_seq")
+
+        with Store(tmp_path) as migrated:
+            boundary = (
+                migrated.connect()
+                .execute(
+                    "SELECT e.start_after_open_seq, c.open_seq "
+                    "FROM anytime_epochs AS e JOIN canary_cycles AS c "
+                    "ON c.cycle_id = e.start_after_cycle"
+                )
+                .fetchone()
+            )
+            assert boundary[0] == boundary[1]
+            migrated.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+            result = run_anytime_check(migrated)
+            assert result.processed_cycles == ("cycle-0004",)
+
+    def test_concurrent_golden_change_uses_the_snapshot_retry_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = project(tmp_path)
+        original = anytime_module.get_golden_baseline
+        calls = 0
+
+        def racing_read(target: Store) -> list[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                (target.project_dir / "baseline.json").write_text(
+                    '{"golden_cycles":["cycle-0000","cycle-0001"]}',
+                    encoding="utf-8",
+                )
+            return original(target)
+
+        monkeypatch.setattr(anytime_module, "get_golden_baseline", racing_read)
+        result = run_anytime_check(store)
+        store.close()
+
+        assert calls >= 4
+        assert result.processed_cycles == ()
+        assert result.resets
+
+    def test_stale_snapshot_cannot_mix_with_newer_process_state(self, tmp_path: Path) -> None:
+        store = project(tmp_path, cycles=5)
+        records, offset, revision = store.read_finalized_canary_snapshot_with_revision()
+        all_records = make_records(cycles=6)
+        store.append_many([r for r in all_records if r.cycle_id == "cycle-0005"])
+        before = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
+
+        with pytest.raises(FinalizedSnapshotChangedError, match="snapshot changed"):
+            anytime_module._run_anytime_check_snapshot(
+                store,
+                ProjectConfig.load(store.project_dir),
+                records,
+                offset,
+                revision,
+            )
+
+        after = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
+        assert after == before
+        assert load_states(store) == {}
         store.close()
 
     def test_epoch_resets_when_the_golden_baseline_changes(self, tmp_path: Path) -> None:
@@ -173,7 +372,9 @@ class TestStatePersistence:
 
 
 class TestProductionStateGuards:
-    def test_degraded_cycle_is_neutral_and_does_not_train_the_prior(self, tmp_path: Path) -> None:
+    def test_degraded_cycle_is_evaluated_without_outcome_dependent_skipping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         records = make_records(cycles=4)
         current = records[-1].cycle_id
         degraded = [
@@ -184,6 +385,12 @@ class TestProductionStateGuards:
         ]
         store = store_records(tmp_path, degraded)
 
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(0.25, True, "scripted evidence"),
+        )
+
         result = run_anytime_check(store)
         states = load_states(store)
         store.close()
@@ -191,15 +398,283 @@ class TestProductionStateGuards:
         assert result.verdict == "DEGRADED DATA"
         assert result.processed_cycles == (current,)
         assert all(state.cycles == 1 for state in states.values())
-        assert all(state.log_wealth == 0.0 for state in states.values())
-        assert all(state.bets_placed == 0 for state in states.values())
-        assert all(state.prior.n_cycles == 0 for state in states.values())
-        assert all(state.prior.successes == 0 for state in states.values())
-        assert all(state.prior.trials == 0 for state in states.values())
+        assert all(state.log_wealth == pytest.approx(0.25) for state in states.values())
+        assert all(state.bets_placed == 1 for state in states.values())
+        assert all(state.prior.n_cycles == 1 for state in states.values())
+        assert all(state.prior.trials > 0 for state in states.values())
 
-    def test_composition_suppression_is_neutral_for_only_the_bad_family(
+    def test_degraded_cycle_does_not_hide_an_earlier_persistent_crossing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A later degraded loss cannot erase a prior valid alert."""
+        records = make_records(cycles=5)
+        current = records[-1].cycle_id
+        degraded = [
+            record.model_copy(update={"errors": ["forced collection failure"]})
+            if record.cycle_id == current
+            else record
+            for record in records
+        ]
+
+        def crossing_evalue(
+            successes: int,
+            trials: int,
+            prior: PriorState,
+            **_kwargs: object,
+        ) -> EValueOutcome:
+            del successes, trials
+            return EValueOutcome(
+                8.0 if prior.n_cycles == 0 else -8.0,
+                True,
+                "scripted crossing then loss",
+            )
+
+        monkeypatch.setattr(anytime_module, "rate_evalue", crossing_evalue)
+        store = store_records(tmp_path, degraded)
+        result = run_anytime_check(store)
+        store.close()
+
+        assert result.degraded
+        assert result.n_alerts > 0
+        assert result.verdict == "DRIFT DETECTED"
+        assert all(process.crossed_at == 1 for process in result.alerts())
+
+    def test_degraded_backlog_cycle_is_not_hidden_by_a_healthy_latest_cycle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = make_records(cycles=5)
+        degraded_cycle = "cycle-0003"
+        with_errors = [
+            record.model_copy(update={"errors": ["forced collection failure"]})
+            if record.cycle_id == degraded_cycle
+            else record
+            for record in records
+        ]
+        store = store_records(tmp_path, with_errors)
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(0.0, True, "neutral scripted evidence"),
+        )
+
+        result = run_anytime_check(store)
+        repeated = run_anytime_check(store)
+        repeated_report = render_anytime_report(repeated)
+        store.close()
+
+        assert result.current_cycle == "cycle-0004"
+        assert result.processed_cycles == ("cycle-0003", "cycle-0004")
+        assert result.degraded_cycles == (degraded_cycle,)
+        assert result.degraded
+        assert result.verdict == "DEGRADED DATA"
+        assert repeated.processed_cycles == ()
+        assert repeated.degraded_cycles == (degraded_cycle,)
+        assert repeated.verdict == "DEGRADED DATA"
+        assert degraded_cycle in repeated_report
+
+    def test_degraded_epoch_history_survives_a_later_healthy_cycle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = make_records(cycles=5)
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        degraded_cycle = "cycle-0003"
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        assert run_anytime_check(store).processed_cycles == ()
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(0.0, True, "neutral scripted evidence"),
+        )
+
+        degraded_records = [
+            record.model_copy(update={"errors": ["forced collection failure"]})
+            for record in records
+            if record.cycle_id == degraded_cycle
+        ]
+        store.append_many(degraded_records)
+        first = run_anytime_check(store)
+        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        second = run_anytime_check(store)
+        repeated = run_anytime_check(store)
+        report = render_anytime_report(repeated)
+        store.close()
+
+        assert first.processed_cycles == (degraded_cycle,)
+        assert first.degraded_cycles == (degraded_cycle,)
+        assert first.verdict == "DEGRADED DATA"
+        assert second.processed_cycles == ("cycle-0004",)
+        assert second.degraded_cycles == (degraded_cycle,)
+        assert second.degraded
+        assert second.verdict == "DEGRADED DATA"
+        assert repeated.processed_cycles == ()
+        assert repeated.degraded_cycles == (degraded_cycle,)
+        assert repeated.verdict == "DEGRADED DATA"
+        assert degraded_cycle in report
+
+    def test_late_finalized_excluded_cycle_cannot_hide_eligible_suite_change(
         self, tmp_path: Path
     ) -> None:
+        records = [
+            stamp_suite(
+                record,
+                "sha256:suite-b" if record.cycle_id == "cycle-0004" else "sha256:suite-a",
+            )
+            for record in make_records(cycles=5)
+        ]
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        store.append_many(
+            [record for record in records if record.cycle_id == "cycle-0003"],
+            finalize_cycles=False,
+        )
+        assert run_anytime_check(store).processed_cycles == ()
+        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        store.finalize_cycle("cycle-0003")
+        before_states = load_states(store)
+        before_ledger = (
+            store.connect().execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0]
+        )
+        before_checks = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
+
+        with pytest.raises(ValueError, match="backlog spans a canary-suite boundary") as exc:
+            run_anytime_check(store)
+
+        assert "cycle-0004" in str(exc.value)
+        assert load_states(store) == before_states
+        assert (
+            store.connect().execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0]
+            == before_ledger
+        )
+        assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == before_checks
+        store.close()
+
+    def test_excluded_suite_change_cannot_block_eligible_golden_suite_cycle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = [
+            stamp_suite(
+                record,
+                "sha256:suite-b" if record.cycle_id == "cycle-0003" else "sha256:suite-a",
+            )
+            for record in make_records(cycles=5)
+        ]
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        store.append_many(
+            [record for record in records if record.cycle_id == "cycle-0003"],
+            finalize_cycles=False,
+        )
+        declaration = run_anytime_check(store)
+        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        store.finalize_cycle("cycle-0003")
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(0.0, True, "neutral scripted evidence"),
+        )
+
+        result = run_anytime_check(store)
+        store.close()
+
+        assert result.fingerprint == declaration.fingerprint
+        assert result.current_cycle == "cycle-0003"
+        assert result.processed_cycles == ("cycle-0004",)
+        assert result.coverage_status == "NO OBSERVATION"
+        assert result.verdict == "NO CURRENT OBSERVATION"
+
+    def test_excluded_suite_families_do_not_contaminate_epoch_composition(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = make_records(cycles=5)
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        selected = [
+            stamp_suite(
+                record,
+                "sha256:suite-b" if record.cycle_id == "cycle-0003" else "sha256:suite-a",
+            )
+            for record in records
+            if (
+                record.cycle_id == "cycle-0003"
+                and record.input.metadata.get("family") == "edge_case"
+            )
+            or (
+                record.cycle_id != "cycle-0003"
+                and record.input.metadata.get("family") == "happy_path"
+            )
+        ]
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in selected if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        store.append_many(
+            [record for record in selected if record.cycle_id == "cycle-0003"],
+            finalize_cycles=False,
+        )
+        assert run_anytime_check(store).processed_cycles == ()
+        store.append_many([record for record in selected if record.cycle_id == "cycle-0004"])
+        store.finalize_cycle("cycle-0003")
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(0.0, True, "neutral scripted evidence"),
+        )
+
+        result = run_anytime_check(store)
+        store.close()
+
+        assert result.current_cycle == "cycle-0003"
+        assert result.processed_cycles == ("cycle-0004",)
+        assert result.coverage_status == "NO OBSERVATION"
+        assert result.verdict == "NO CURRENT OBSERVATION"
+        assert all(process.key[1] == "happy_path" for process in result.processes)
+
+    @pytest.mark.parametrize(
+        ("log_e", "expected_verdict", "expect_alert"),
+        [(0.0, "NO CURRENT OBSERVATION", False), (8.0, "DRIFT DETECTED", True)],
+    )
+    def test_late_finalized_excluded_current_cycle_is_not_green(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        log_e: float,
+        expected_verdict: str,
+        expect_alert: bool,
+    ) -> None:
+        records = [stamp_suite(record, "sha256:suite-a") for record in make_records(cycles=5)]
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in golden_ids])
+        set_golden_baseline(store, sorted(golden_ids))
+        store.append_many(
+            [record for record in records if record.cycle_id == "cycle-0003"],
+            finalize_cycles=False,
+        )
+        assert run_anytime_check(store).processed_cycles == ()
+        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        store.finalize_cycle("cycle-0003")
+        monkeypatch.setattr(
+            anytime_module,
+            "rate_evalue",
+            lambda *_args, **_kwargs: EValueOutcome(log_e, True, "scripted evidence"),
+        )
+
+        result = run_anytime_check(store)
+        states = load_states(store)
+        store.close()
+
+        assert result.current_cycle == "cycle-0003"
+        assert result.processed_cycles == ("cycle-0004",)
+        assert result.coverage_status == "NO OBSERVATION"
+        assert result.verdict == expected_verdict
+        assert bool(result.n_alerts) is expect_alert
+        assert all(state.cycles == 1 for state in states.values())
+
+    def test_composition_mismatch_fails_closed_without_state_mutation(self, tmp_path: Path) -> None:
         records = [stamp_suite(record, "sha256:suite-a") for record in make_records(cycles=4)]
         current = records[-1].cycle_id
         bad_family = "happy_path"
@@ -211,41 +686,76 @@ class TestProductionStateGuards:
             )
         ]
         store = store_records(tmp_path, incomplete)
+        before_states = load_states(store)
+        before_checks = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
 
-        run_anytime_check(store)
-        states = load_states(store)
+        with pytest.raises(ValueError, match="Refusing to choose E_t=1"):
+            run_anytime_check(store)
+
+        assert load_states(store) == before_states
+        assert (
+            store.connect().execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0]
+            == 0
+        )
+        assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == before_checks
         store.close()
-
-        bad = [state for key, state in states.items() if key[1] == bad_family]
-        good = [state for key, state in states.items() if key[1] != bad_family]
-        assert bad
-        assert all(state.log_wealth == 0.0 for state in bad)
-        assert all(state.bets_placed == 0 for state in bad)
-        assert all(state.prior.n_cycles == 0 for state in bad)
-        assert all(state.prior.successes == 0 for state in bad)
-        assert all(state.prior.trials == 0 for state in bad)
-        assert any(state.bets_placed == 1 for state in good)
 
     def test_mixed_suite_backlog_is_rejected_without_state_mutation(self, tmp_path: Path) -> None:
         records = make_records(cycles=6)
         changed = [
             stamp_suite(
                 record,
-                "sha256:suite-b" if record.cycle_id == "cycle-0005" else "sha256:suite-a",
+                "sha256:suite-b" if record.cycle_id == "cycle-0004" else "sha256:suite-a",
             )
             for record in records
         ]
         store = store_records(tmp_path, changed)
+        before_states = load_states(store)
+        before_checks = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
 
         with pytest.raises(ValueError, match="backlog spans a canary-suite boundary"):
             run_anytime_check(store)
 
-        assert load_states(store) == {}
+        assert load_states(store) == before_states
         assert (
             store.connect().execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0]
             == 0
         )
-        assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == 0
+        assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == before_checks
+        store.close()
+
+    def test_partially_stamped_cycle_is_rejected_without_state_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        records = make_records(cycles=4)
+        golden_ids = {"cycle-0000", "cycle-0001", "cycle-0002"}
+        golden = [
+            stamp_suite(record, "sha256:suite-a")
+            for record in records
+            if record.cycle_id in golden_ids
+        ]
+        current = [record for record in records if record.cycle_id == "cycle-0003"]
+        partially_stamped = [
+            record if index == 0 else stamp_suite(record, "sha256:suite-a")
+            for index, record in enumerate(current)
+        ]
+        store = Store.init_project(tmp_path)
+        store.append_many(golden)
+        set_golden_baseline(store, sorted(golden_ids))
+        assert run_anytime_check(store).processed_cycles == ()
+        store.append_many(partially_stamped)
+        before_states = load_states(store)
+        before_checks = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
+
+        with pytest.raises(ValueError, match="mixes records with and without"):
+            run_anytime_check(store)
+
+        assert load_states(store) == before_states
+        assert (
+            store.connect().execute("SELECT COUNT(*) FROM anytime_processed_cycles").fetchone()[0]
+            == 0
+        )
+        assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == before_checks
         store.close()
 
     def test_actual_pinned_embedder_not_config_text_defines_epoch(self, tmp_path: Path) -> None:
@@ -308,6 +818,10 @@ class TestBothPathsOnIdenticalLogs:
     def test_stable_agent_is_quiet_on_both_paths(self, tmp_path: Path) -> None:
         store = project(tmp_path, change_cycle=None)
         fixed = run_check(store, config=ProjectConfig(permutations=200))
+        declaration = run_anytime_check(store)
+        assert declaration.verdict == "NO CURRENT OBSERVATION"
+        future = make_records(cycles=7, change_cycle=None)
+        store.append_many([record for record in future if record.cycle_id == "cycle-0006"])
         anytime = run_anytime_check(store)
         assert fixed.n_alerts == 0
         assert anytime.n_alerts == 0
@@ -321,16 +835,16 @@ class TestBothPathsOnIdenticalLogs:
         accumulate past log(1/alpha'). Slower on purpose — the trade bought
         is a guarantee that survives repeated looking.
         """
-        store = project(tmp_path, cycles=8, change_cycle=7)
+        records = make_records(cycles=8, change_cycle=7)
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id != "cycle-0007"])
+        set_golden_baseline(store, ["cycle-0000", "cycle-0001", "cycle-0002"])
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+        store.append_many([record for record in records if record.cycle_id == "cycle-0007"])
         anytime = run_anytime_check(store)
         assert anytime.verdict in {"OK", "DRIFT DETECTED"}
-        assert all(p.cycles == 5 for p in anytime.processes)
-        store.close()
-
-    def test_degraded_data_suppresses_alerts_on_the_anytime_path_too(self, tmp_path: Path) -> None:
-        store = project(tmp_path)
-        res = run_anytime_check(store, ProjectConfig())
-        assert res.degraded is False  # sim data is clean; the branch exists and is exercised
+        assert all(p.cycles == 1 for p in anytime.processes)
         store.close()
 
 
@@ -339,10 +853,11 @@ class TestCli:
         store = project(tmp_path)
         store.close()
         out = runner.invoke(app, ["check", "--project", str(tmp_path), "--inference", "anytime"])
-        assert out.exit_code in (0, 2), out.output
+        assert out.exit_code == 3, out.output
         assert "Anytime-valid: alpha=" in out.output
         assert "e-processes" in out.output
         assert "PER EPOCH" in out.output
+        assert "historical cycles were not replayed" in out.output
 
     def test_default_is_the_fixed_path(self, tmp_path: Path) -> None:
         store = project(tmp_path)
@@ -405,7 +920,7 @@ class TestAnytimeReport:
         store = project(tmp_path)
         store.close()
         out = runner.invoke(app, ["report", "--project", str(tmp_path), "--inference", "anytime"])
-        assert out.exit_code == 0, out.output
+        assert out.exit_code == 3, out.output
         assert "anytime-valid" in out.output
         assert "per epoch" in out.output
 
@@ -418,7 +933,7 @@ class TestEpochPool:
 
         The simulator declares no expected answers, so ``exact_match`` is
         entirely absent. Including it would shrink every other process's
-        coverage budget and raise the e-BH threshold for nothing.
+        coverage and crossing budgets for nothing.
         """
         store = project(tmp_path)
         res = run_anytime_check(store)
@@ -488,12 +1003,10 @@ class TestEpochPool:
         assert "Multiplicity spent, and on what" in later
 
 
-class TestTwoSampleRateModel:
-    """The v0.3.2 two-sample SAFE rate process: power and the config switch."""
+class TestProductionRateModel:
+    """The production rate process is valid first and conservative by design."""
 
-    def test_twosample_detects_strong_rate_shift(self, tmp_path: Path) -> None:
-        """The frozen-CP construction could not do this at canary scale: the
-        audit measured 0/30 detections at +20pp over 60 cycles (v0.3.1)."""
+    def test_frozen_cp_detects_strong_rate_shift(self, tmp_path: Path) -> None:
         cfg = SimConfig(
             n_canaries=18,
             repetitions=7,
@@ -504,60 +1017,101 @@ class TestTwoSampleRateModel:
         )
         store = Store.init_project(tmp_path)
         records = SimAgent(cfg).run_cycles(16)
-        store.append_many(records)
         ids = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        store.append_many([record for record in records if record.cycle_id in set(ids[:8])])
         set_golden_baseline(store, ids[:3])
-        result = run_anytime_check(store)  # folds all unseen post-golden cycles
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+        store.append_many([record for record in records if record.cycle_id in set(ids[8:])])
+        result = run_anytime_check(store)
         assert result.n_alerts > 0
         refusal = [p for p in result.processes if p.key[2] == "refusal"]
         assert any(p.rejected for p in refusal)
         store.close()
 
-    def test_twosample_stays_quiet_on_stable(self, tmp_path: Path) -> None:
-        store = project(tmp_path, cycles=10, change_cycle=None)
+    def test_frozen_cp_stays_quiet_on_stable(self, tmp_path: Path) -> None:
+        records = make_records(cycles=10, change_cycle=None)
+        initial_ids = {f"cycle-{index:04d}" for index in range(6)}
+        store = Store.init_project(tmp_path)
+        store.append_many([record for record in records if record.cycle_id in initial_ids])
+        set_golden_baseline(store, ["cycle-0000", "cycle-0001", "cycle-0002"])
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+        store.append_many([record for record in records if record.cycle_id not in initial_ids])
         result = run_anytime_check(store)
         assert result.n_alerts == 0
+        assert result.processed_cycles == (
+            "cycle-0006",
+            "cycle-0007",
+            "cycle-0008",
+            "cycle-0009",
+        )
+        assert all(state.cycles == 4 for state in load_states(store).values())
         store.close()
 
-    def test_frozen_cp_still_available(self, tmp_path: Path) -> None:
+    def test_frozen_cp_is_the_default_and_spends_coverage_budget(self, tmp_path: Path) -> None:
         store = project(tmp_path, cycles=6, change_cycle=None)
         cfg = ProjectConfig.load(store.project_dir)
-        legacy = ProjectConfig(
+        explicit = ProjectConfig(
             name=cfg.name,
             anytime=AnytimeConfig(rate_model="frozen_cp"),
         )
-        result = run_anytime_check(store, config=legacy)
+        assert cfg.anytime.rate_model == "frozen_cp"
+        declaration = run_anytime_check(store, config=explicit)
+        assert declaration.processed_cycles == ()
+        future = make_records(cycles=7, change_cycle=None)
+        store.append_many([record for record in future if record.cycle_id == "cycle-0006"])
+        result = run_anytime_check(store, config=explicit)
         assert result.n_alerts == 0
-        assert result.gamma_per_process > 0  # coverage budget is spent here
+        assert result.gamma_per_process > 0
+        assert result.alpha_prime < result.alpha
+        assert all("worst case over p" in p.detail for p in result.processes)
         store.close()
 
-    def test_twosample_spends_no_coverage_budget(self, tmp_path: Path) -> None:
-        store = project(tmp_path, cycles=6, change_cycle=None)
-        result = run_anytime_check(store)
-        assert result.gamma_per_process == 0.0
-        assert result.alpha_prime == result.alpha
-        store.close()
+    def test_withdrawn_twosample_configuration_fails_closed(self) -> None:
+        with pytest.raises(ValueError, match="withdrawn"):
+            AnytimeConfig(rate_model="twosample")
 
-    def test_twosample_detects_midrate_shift_frozen_cp_missed(self, tmp_path: Path) -> None:
-        """Audit cell: p0=0.30 -> 0.50. The frozen-CP construction's interval
-        contains the alternative at this base rate (measured 0/30 in 60
-        cycles on the audit harness); the two-sample process detects within
-        60 cycles (its per-cycle growth decays ~1/t as the pooled posterior
-        learns the alternative, so mid-rate shifts take tens of cycles —
-        documented in docs/anytime.md)."""
-        cfg = SimConfig(
-            n_canaries=18,
-            repetitions=7,
-            pre=BehaviorProfile(refusal_prob=0.30),
-            post=BehaviorProfile(refusal_prob=0.50),
-            change_cycle=8,
-            seed=43,
-        )
-        store = Store.init_project(tmp_path)
-        records = SimAgent(cfg).run_cycles(60)
-        store.append_many(records)
-        ids = sorted({r.cycle_id for r in records if r.cycle_id is not None})
-        set_golden_baseline(store, ids[:3])
-        result = run_anytime_check(store)
-        assert result.n_alerts > 0
-        store.close()
+    def test_batched_backlog_preserves_a_transient_crossing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A later losing cycle cannot erase an earlier anytime alert."""
+        records = make_records(cycles=5)
+        cycle_ids = list(dict.fromkeys(r.cycle_id for r in records if r.cycle_id is not None))
+
+        def scripted_evalue(
+            successes: int,
+            trials: int,
+            prior: PriorState,
+            **_kwargs: object,
+        ) -> EValueOutcome:
+            del successes, trials
+            return EValueOutcome(8.0 if prior.n_cycles == 0 else -8.0, True, "scripted")
+
+        monkeypatch.setattr(anytime_module, "rate_evalue", scripted_evalue)
+
+        initial = [record for record in records if record.cycle_id in set(cycle_ids[:3])]
+        future = [record for record in records if record.cycle_id in set(cycle_ids[3:])]
+
+        batched = Store.init_project(tmp_path / "batched")
+        batched.append_many(initial)
+        set_golden_baseline(batched, cycle_ids[:3])
+        run_anytime_check(batched)
+        batched.append_many(future)
+        batched_result = run_anytime_check(batched)
+
+        incremental = Store.init_project(tmp_path / "incremental")
+        incremental.append_many(initial)
+        set_golden_baseline(incremental, cycle_ids[:3])
+        run_anytime_check(incremental)
+        incremental.append_many([r for r in records if r.cycle_id == cycle_ids[3]])
+        first = run_anytime_check(incremental)
+        incremental.append_many([r for r in records if r.cycle_id == cycle_ids[4]])
+        second = run_anytime_check(incremental)
+
+        assert first.n_alerts > 0
+        assert batched_result.n_alerts == second.n_alerts == first.n_alerts
+        assert all(p.crossed_at == 1 for p in batched_result.alerts())
+        assert all(p.log_wealth == pytest.approx(0.0) for p in batched_result.alerts())
+        batched.close()
+        incremental.close()

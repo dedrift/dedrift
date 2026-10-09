@@ -21,6 +21,24 @@ dedrift check                                  # exit code 2: DRIFT DETECTED
 dedrift report --out report.md
 ```
 
+If you later enable anytime mode, choose the golden baseline by a rule that
+does not inspect observed outcomes (for example, prospectively designate the
+first three reference cycles). Cherry-picking cycles because their rates look
+good invalidates the anytime coverage and lifetime bounds.
+
+Then declare the anytime epoch **before** collecting monitored cycles:
+
+```bash
+dedrift check --inference anytime  # declaration only; exit 3 is expected
+# collect the next fresh canary cycle
+dedrift canary run --suite canaries.yaml --agent myagent:agent_fn \
+    --model 'provider/model@version'
+dedrift check --inference anytime  # folds that prospective cycle
+```
+
+The declaration intentionally ignores all existing finalized and open cycles.
+It is not a historical backfill command.
+
 The report shows what shifted in plain units, BH-adjusted p-values, and the
 attribution: *"nearest config event: model fingerprint change, 0.0 h before
 onset."*
@@ -118,12 +136,13 @@ failure mode, not a configuration choice.
 forever, that rate compounds — measured 3.2% per check on stable agents,
 about 23 false alerts a month at hourly checks. Two answers ship:
 `detection.alert_persistence = 2` requires an alert to repeat on a fresh
-cycle before it fires (wobble-induced false alerts are transient, drift
-persists), and `--inference anytime` uses lifetime-oriented rate e-processes
-instead (measured: 2 in 500 stable runs of 2000 cycles, Wilson upper 1.5%),
-at a real cost in detection power. Per-process and per-check results are
-proven; the repeated dependent battery relies on a documented causal
-assumption. Read
+cycle before it fires; it is intended to filter one-cycle transients but its
+current false-alert/power tradeoff is not yet republished. `--inference
+anytime` uses lifetime-oriented rate e-processes instead. Version 0.5.1
+supports only the conservative frozen
+Clopper–Pearson construction with persistent Ville–Bonferroni crossings over
+a fixed pool. The former `twosample`/e-BH null and power figures are retracted,
+and no replacement performance table is claimed. Read
 [anytime-valid mode](anytime.md) before switching; `fixed` is the default.
 
 ```bash

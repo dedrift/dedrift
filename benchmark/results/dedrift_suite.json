@@ -93,7 +93,8 @@
       }
     },
     "dedrift_anytime": {
-      "description": "anytime-valid path (e-processes + e-BH, golden, twosample rate model), lifetime alpha=0.05, folded per cycle",
+      "validity": "RETRACTED IN 0.5.1; historical result from the invalid twosample/e-BH decision, not evidence for the current frozen_cp path",
+      "description": "RETRACTED HISTORICAL: anytime path (e-processes + e-BH, golden, twosample rate model), lifetime alpha=0.05, folded per cycle",
       "folds": 25000,
       "per_fold_alert": {
         "k": 0,

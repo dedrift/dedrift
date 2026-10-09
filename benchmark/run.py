@@ -170,8 +170,10 @@ def aggregate_dedrift(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "runs_ever_alerted_50_cycles": rate_row(sum(r["fixed_ever_alerted"] for r in rows), n),
         },
         "dedrift_anytime": {
-            "description": "anytime-valid path (e-processes + e-BH, golden, twosample "
-            "rate model), lifetime alpha=0.05, folded per cycle",
+            "validity": "current 0.5.1 frozen_cp/Ville-Bonferroni result",
+            "description": "anytime-valid path (frozen_cp e-processes + persistent "
+            "Ville-Bonferroni, golden rate model), per-epoch lifetime alpha=0.05, "
+            "folded per cycle",
             "folds": at_folds,
             "per_fold_alert": rate_row(at_alert_folds, at_folds),
             "runs_ever_alerted_50_cycles": rate_row(

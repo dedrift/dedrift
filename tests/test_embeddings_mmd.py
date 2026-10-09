@@ -69,6 +69,63 @@ class TestCache:
             for rid in first:
                 assert np.allclose(first[rid], second[rid])
 
+    def test_record_ids_cannot_collide_with_cache_keys(self, tmp_path: Path) -> None:
+        records = SimAgent(SimConfig(n_canaries=2, repetitions=1, seed=4)).run_cycles(1)
+        records = [
+            record.model_copy(update={"id": reserved_id})
+            for record, reserved_id in zip(records, ["__embedder__", "file"], strict=True)
+        ]
+
+        with Store.init_project(tmp_path) as store:
+            pin_embedder(store, "hash")
+            first = embed_records(store, records)
+            second = embed_records(store, records)
+
+        assert first.keys() == second.keys() == {"__embedder__", "file"}
+        for record_id in first:
+            assert np.allclose(first[record_id], second[record_id])
+        with np.load(tmp_path / ".dedrift" / "embedding_cache.npz", allow_pickle=False) as data:
+            assert str(data["__embedder__"]) == "hash"
+            assert "file" not in data.files
+
+    def test_legacy_cache_is_read_and_migrated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import dedrift.embeddings as embeddings_module
+
+        records = SimAgent(SimConfig(n_canaries=2, repetitions=1, seed=5)).run_cycles(1)
+        records = [
+            record.model_copy(update={"id": record_id})
+            for record, record_id in zip(records, ["legacy", "new"], strict=True)
+        ]
+        legacy_vector = np.arange(64, dtype=np.float64)
+        calls: list[list[str]] = []
+
+        def fake_embedder(_name: str):
+            def encode(texts: list[str]) -> np.ndarray:
+                calls.append(texts)
+                return np.full((len(texts), 64), 2.0)
+
+            return encode
+
+        monkeypatch.setattr(embeddings_module, "resolve_embedder", fake_embedder)
+        with Store.init_project(tmp_path) as store:
+            pin_embedder(store, "hash")
+            np.savez_compressed(
+                store.project_dir / "embedding_cache.npz",
+                **{"__embedder__": np.asarray("hash"), "legacy": legacy_vector},
+            )
+            first = embed_records(store, records)
+            second = embed_records(store, records)
+
+        assert np.array_equal(first["legacy"], legacy_vector)
+        assert np.array_equal(first["new"], np.full(64, 2.0))
+        assert all(np.array_equal(first[record_id], second[record_id]) for record_id in first)
+        assert len(calls) == 1
+        with np.load(tmp_path / ".dedrift" / "embedding_cache.npz", allow_pickle=False) as data:
+            assert "legacy" not in data.files
+            assert "new" not in data.files
+
 
 class TestMMD:
     def test_detects_distribution_swap(self) -> None:
@@ -305,3 +362,88 @@ class TestDisplacementIsLeaveOneOut:
         _add_semantic_displacement(frame, records, emb, golden)
         ref_val = frame[frame["cycle_id"] == "cycle-0000"]["semantic_displacement"].iloc[0]
         assert np.isnan(ref_val)
+
+    def test_empty_reference_scores_nothing(self) -> None:
+        """An explicit but empty reference must not absorb the current cycle."""
+        import pandas as pd
+
+        from dedrift.check import _add_semantic_displacement
+
+        emb, records, _golden = self._embeddings(n_ref=3, dim=8, seed=17)
+        frame = pd.DataFrame(
+            {
+                "record_id": [r.id for r in records],
+                "cycle_id": [r.cycle_id for r in records],
+            }
+        )
+        _add_semantic_displacement(frame, records, emb, [])
+        assert frame["semantic_displacement"].isna().all()
+
+    def test_no_golden_pipeline_selects_prior_cycles_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The implicit reference is prior rolling history, never current."""
+        import dedrift.check as check_module
+
+        store = Store.init_project(tmp_path)
+        pin_embedder(store, "hash")
+        records = SimAgent(SimConfig(n_canaries=12, repetitions=5, seed=43)).run_cycles(3)
+        store.append_many(records)
+        cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+
+        selected: list[str] | None = None
+        original = check_module._add_semantic_displacement
+
+        def capture_reference(
+            frame: object,
+            snapshot: object,
+            embeddings: object,
+            reference_cycles: list[str],
+        ) -> None:
+            nonlocal selected
+            selected = list(reference_cycles)
+            original(frame, snapshot, embeddings, reference_cycles)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(check_module, "_add_semantic_displacement", capture_reference)
+        result = run_check(store)
+
+        assert selected == cycles[:-1]
+        assert result.current_cycle not in (selected or [])
+        assert any(t.signature == "semantic_displacement" for t in result.tests)
+        store.close()
+
+    def test_filtered_empty_declared_golden_does_not_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A declared current-only golden set scores no semantic records."""
+        import dedrift.check as check_module
+
+        store = Store.init_project(tmp_path)
+        pin_embedder(store, "hash")
+        records = SimAgent(SimConfig(n_canaries=12, repetitions=5, seed=47)).run_cycles(2)
+        store.append_many(records)
+        cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        set_golden_baseline(store, [cycles[-1]])
+
+        selected: list[str] | None = None
+        original = check_module._add_semantic_displacement
+
+        def capture_reference(
+            frame: object,
+            snapshot: object,
+            embeddings: object,
+            reference_cycles: list[str],
+        ) -> None:
+            nonlocal selected
+            selected = list(reference_cycles)
+            original(frame, snapshot, embeddings, reference_cycles)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(check_module, "_add_semantic_displacement", capture_reference)
+        result = run_check(store)
+
+        assert selected == []
+        semantic = [t for t in result.tests if t.signature == "semantic_displacement"]
+        assert semantic
+        assert all(t.outcome.n_ref == 0 and t.outcome.n_cur == 0 for t in semantic)
+        assert all(not np.isfinite(t.outcome.p_value) for t in semantic)
+        store.close()

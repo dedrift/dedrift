@@ -1,9 +1,10 @@
-# Demonstration: a silent model swap, caught in one cycle
+# Demonstration workflow: a silent model swap
 
-Simulations prove calibration. This page shows what a check looks like when
-the ground shifts — a scripted silent model swap you can regenerate end to
-end with four commands. Every number below is the output of those commands
-on the current build.
+This page shows the workflow for a scripted silent model swap that you can
+regenerate end to end with four commands. The older exact alert count and
+semantic-displacement values were produced before the 0.5.1 reference-only
+semantic correction and are retracted; run the commands to obtain results for
+the installed build.
 
 ## The setup
 
@@ -35,19 +36,12 @@ Current cycle: cycle-0007
 Overall: DRIFT DETECTED
 Sudden (vs rolling 4 cycles): DRIFT DETECTED
 Cumulative (vs golden 3 cycles): DRIFT DETECTED
-Alerts: 124 (BH-adjusted equality tests q=0.05, observed-effect gated)
-  [golden] adversarial/output_chars ks: effect=+0.762, p_adj=2.42e-14
-  [golden] adversarial/output_words ks: effect=+0.771, p_adj=8.97e-15
-  [golden] adversarial/semantic_displacement ks: effect=+0.390, p_adj=0.002136
-  [golden] adversarial/tokens_out ks: effect=+0.676, p_adj=7.13e-11
-  ...
+Alerts: <build-specific; BH-adjusted and observed-effect gated>
 ```
 
-Both baselines fired on the first post-swap check. Effects are reported on
-the scales they were gated on: output-length KS statistics up to D = 0.93
-(the distributions barely overlap), semantic displacement D ≈ 0.4–0.5 on
-the hash embedder, and latency *dispersion* up ~2.1× on the robust
-mean-absolute-deviation scale.
+The regression suite requires this gross swap to fire on both baselines.
+Effects are reported on the same scales used by their gates; inspect the
+generated report for the current build rather than copying historical values.
 
 !!! note "How these effects are measured — and why MMD is silent here"
     The semantic centroid is fit on reference records alone, so
@@ -74,11 +68,11 @@ events:
 
 > **adversarial / output_words** — drift onset ≈ cycle `cycle-0007`.
 > Nearest preceding config event: model fingerprint change, **0.0 h before
-> onset**. 21 other signature group(s) shifted in the same window.
+> onset**. Other signature groups shifted in the same window.
 
-Twenty-one signature groups co-shifting in one cycle, right after a
-fingerprint change, is what a configuration change looks like — as opposed
-to a single family decaying on its own. The report says *"consistent
+Several signature groups co-shifting after a fingerprint change is what a
+configuration change can look like, as opposed to a single family decaying
+on its own. The report says *"consistent
 with"*, never *"caused by"*; that's a design rule. Events that occur after
 the estimated onset are never described as preceding it — they are labelled
 weak evidence instead.

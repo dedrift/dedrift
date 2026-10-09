@@ -20,9 +20,10 @@ summable allocation (:func:`geometric_allocation`), which spends
 ``alpha * 2**-(e+1)`` on epoch ``e`` so the total is at most ``alpha`` however
 many epochs occur.
 
-Skipped cycles contribute ``E_t = 1`` (log-wealth unchanged). That is the
-exact and correct handling for a suppressed family — not an approximation,
-and importantly not the same as carrying a stale value forward.
+Predictably unavailable observations contribute ``E_t = 1`` (log-wealth
+unchanged). This is valid only when availability is determined independently
+of the current outcome; choosing to skip after observing a cycle is not an
+e-process. Composition mismatches therefore fail closed in the driver.
 """
 
 from __future__ import annotations

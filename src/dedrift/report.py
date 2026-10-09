@@ -18,7 +18,7 @@ SPARK_CHARS = "▁▂▃▄▅▆▇█"
 _TEMPLATE = """\
 # dedrift report — {{ verdict }}
 
-Generated for cycle `{{ r.current_cycle }}` (check ts {{ r.ts }}; seed {{ r.seed }};
+Generated for cycle `{{ r.current_cycle }}` (seed {{ r.seed }};
 BH target q = {{ r.fdr_q }}). Re-rendering this recorded check against the same log
 snapshot reproduces its evidence exactly.
 
@@ -152,7 +152,9 @@ listed in the appendix — deliberately not alerted (principle: alert quality).
 > **Persistence gate:** {{ r.persistence_demoted }} first-time
 > significant+material channel(s) held back at this check
 > (`detection.alert_persistence` > 1): they fire only if still alerting at
-> the next check. Wobble alerts are transient; drift persists.
+> the next distinct finalized current cycle. Re-running this check does not
+> advance the streak. This is intended to filter one-cycle transients; its
+> deployment-specific power and false-alert tradeoff must be calibrated.
 {% endif %}
 
 ## Attribution (correlational — "consistent with", never "caused by")
@@ -220,16 +222,14 @@ the same data); their raw p-values are shown for context and never alert.
 _ANYTIME_TEMPLATE = """\
 # dedrift report (anytime-valid) — {{ r.verdict }}
 
-Cycle `{{ r.current_cycle }}`, epoch fingerprint `{{ r.fingerprint }}`
-(check ts {{ r.ts }}).
+Cycle `{{ r.current_cycle }}`, epoch fingerprint `{{ r.fingerprint }}`.
 
 ## Error-control target and evidence status
 
-The construction targets an **unbounded-horizon** false-alert budget **per epoch**
-budget of **α = {{ r.alpha }}**. Per-process optional-stopping control and
-per-check e-BH control are proven. Repeated e-BH over this dependent battery
-still relies on the causal condition described below, so the package does
-not present the trajectory-wide target as an unconditional theorem.
+The construction targets an **unbounded-horizon** family-wise false-alert
+budget **per epoch** of **α = {{ r.alpha }}**. Each process has an
+optional-stopping bound; a Bonferroni split over the frozen pool makes the
+battery-wide bound valid without assuming independence between processes.
 
 Current rate-channel evidence coverage: **{{ r.coverage_status }}**.
 {% if r.coverage_status != 'FULL' %}
@@ -240,7 +240,8 @@ Current rate-channel evidence coverage: **{{ r.coverage_status }}**.
 | Component | Value | What it pays for |
 |---|---|---|
 | α (lifetime, battery-wide) | {{ r.alpha }} | the whole claim |
-| α′ (e-BH level) | {{ '%.4g' | format(r.alpha_prime) }} | multiplicity across {{ r.n_processes }} e-processes |
+| α′ (crossing budget) | {{ '%.4g' | format(r.alpha_prime) }} | Ville–Bonferroni multiplicity across {{ r.n_processes }} e-processes |
+| α′ per process | {{ '%.2e' | format(r.alpha_prime / r.n_processes) if r.n_processes else '—' }} | persistent crossing level is E ≥ {{ '%.3g' | format(r.n_processes / r.alpha_prime) if r.n_processes else '—' }} |
 | γ total | {{ r.gamma_total }} | nuisance-parameter coverage |
 | γ per process | {{ '%.2e' | format(r.gamma_per_process) }} | {{ 'γ total ÷ ' ~ r.n_processes if r.n_processes else 'no active process' }} |
 
@@ -256,11 +257,14 @@ Pool membership was frozen when this epoch began; only combinations with
 reference data at that moment are in it.
 {% endif %}
 
-γ is divided by the pool size because e-BH requires every input to be a
-valid e-value: a process whose coverage interval misses the truth is not
-one, so coverage failures union-bound across the battery. Using the total
-per process would state {{ r.alpha }} while delivering
-{{ '%.2f' | format(r.alpha_prime + r.n_processes * r.gamma_total) }}.
+γ is divided by the pool size because a process whose coverage interval
+misses the truth is not valid; those coverage failures union-bound across
+the battery. α′ is divided independently for the Ville crossing rule.
+
+The coverage statement also requires the golden cycles to have been selected
+without inspecting their outcomes. Prospectively designate them or use an
+outcome-independent rule such as the first N reference cycles; cherry-picking
+cycles because their rates looked good invalidates this bound.
 
 **"Per epoch" is not a caveat to skim.** An epoch ends when the canary
 suite, embedder, golden baseline or extractor changes — which changes the
@@ -277,23 +281,26 @@ from this cycle.
 {% endfor %}
 {% endif %}
 {% if r.degraded %}
-> **DEGRADED DATA:** too many current-cycle records carry errors. Alerts are
-> suppressed; the cycle was folded with `E_t = 1`, while sufficient
-> statistics and wealth remained unchanged.
+> **DEGRADED DATA:** too many records carry errors in one or more monitored
+> cycles whose evidence was folded into this epoch{% if r.degraded_cycles %} ({{ r.degraded_cycles | join(", ") }}){% endif %}.
+> Rate evidence was still folded because deciding to skip after observing the
+> outcome would invalidate optional-stopping control. Treat non-alerting
+> evidence cautiously; a persistent crossing is never hidden by this label.
 {% endif %}
 
 ## Alerts ({{ alerts | length }})
 
 {% if alerts %}
-Rejected by e-BH at q = {{ '%.4g' | format(r.alpha_prime) }} over the running e-processes.
+These processes crossed their persistent Ville–Bonferroni boundary. A
+crossing remains an alert for the rest of the epoch even if wealth later falls.
 
-| Process | log-wealth | evidence 1/α reached | onset ≈ cycle | crossed at |
+| Process | log-wealth | accumulated wealth M_t | onset ≈ cycle | crossed at |
 |---|---|---|---|---|
 {% for p in alerts -%}
 | {{ p.label }} | {{ '%.2f' | format(p.log_wealth) }} | {{ '%.3g' | format(p.evalue_capped) }} | {{ p.rise_cycle or '—' }} | {{ p.crossed_at or '—' }} |
 {% endfor %}
 {% else %}
-No alerts. Wealth has not accumulated past the e-BH threshold on any
+No alerts. Wealth has not accumulated past the Ville–Bonferroni threshold on any
 process.
 {% endif %}
 
@@ -302,8 +309,9 @@ process.
 Wealth is the accumulated evidence *since the epoch began*. Negative means
 the configured bets have lost; it is **not** affirmative evidence of
 stability. "Bets" counts cycles where a bet was admissible; a
-suppressed or degenerate cycle contributes exactly 1 (log 0) and is not a
-missing update.
+cycle with no available rate observation contributes exactly 1 (log 0), under
+the stated outcome-independent availability assumption, and is not a missing
+update. A composition mismatch fails closed instead of being neutralized.
 
 | Process | log-wealth | epoch | cycles | bets | onset | alert |
 |---|---|---|---|---|---|---|
@@ -318,23 +326,23 @@ placed a bet yet. Combinations with no reference data at epoch start are
 excluded from the pool entirely — they cannot produce evidence, so charging
 the battery's coverage budget for them would be power given away. What
 remains here are processes that are admissible but have had no usable
-current-cycle data yet; they contribute ``E_t = 1`` exactly, which preserves
-the supermartingale rather than skipping an update.
+current-cycle data yet. They contribute ``E_t = 1`` only under the model's
+outcome-independent availability assumption. Composition mismatches fail the
+check without updating state.
 
 ## What is proven, and what is measured
 
-- **Proven, per process:** Ville's inequality bounds the probability of ever
-  crossing at α′, for any stopping rule.
-- **Proven, per check:** e-BH controls FDR under arbitrary dependence among
-  the e-values.
-- **Measured, not proven, over the trajectory:** applying e-BH at every
-  cycle to running e-processes is anytime-valid under a causal condition
-  (no unobserved confounding from the past) that our dependent streams
-  plausibly but not provably satisfy. The realised rate is measured by
-  simulation instead; see the statistics documentation.
+- **Proven under the stated stable-rate model:** Ville's inequality bounds
+  each process at α′/{{ r.n_processes or 1 }} for any stopping rule; a union
+  bound covers the fixed process pool, and the γ budget covers nuisance-
+  interval failures. No cross-family independence assumption is used.
+- **Model boundary:** hidden cycle-level state or overdispersion can violate
+  the fixed-rate Bernoulli model. Robustness outside that model is measured,
+  not presented as a theorem; see the statistics documentation.
 - **Honest about power:** the nuisance worst-casing makes each bet
   conservative, so small shifts accumulate slowly or not at all. Detection
-  delay by effect size is published rather than implied.
+  delay must be measured prospectively for each deployment; 0.5.1 does not
+  publish a replacement power table for this corrected decision rule.
 """
 
 

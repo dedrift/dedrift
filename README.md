@@ -25,28 +25,29 @@ dedrift's differentiation is statistical correctness:
   shared battery, and the later observed-effect filter is not a practical-null FDR
   procedure. The release therefore relies on stated default-scenario simulations,
   not a universal production FDR claim.
-- Every alert requires both statistical significance and a configurable effect-size (materiality) threshold. Fewer, higher-confidence alerts.
+- On the default fixed-sample path, every alert requires both statistical
+  significance and a configurable observed effect-size (materiality) threshold.
+  Fewer, higher-confidence alerts.
 - LLM outputs are stochastic: canaries run N times per cycle and we compare distributions, never single outputs.
-- Dual baselines: every check runs against a rolling recent window (sudden breaks) and a frozen golden baseline (boiling-frog drift).
+- Fixed-sample checks use dual baselines: a rolling recent window (sudden
+  breaks) and a frozen golden baseline (boiling-frog drift).
 - Honest about power: small N means low detection power, and the docs show you the math instead of hiding it.
 - **Anytime mode** (`--inference anytime`): swaps per-check FDR for
   lifetime-oriented rate e-processes targeting P(ever falsely alerting on a
-  stable agent) ≤ α, per epoch. Per-process optional-stopping control and
-  per-check e-BH are proven; the repeated dependent battery has a documented
-  causal assumption and is measured rather than presented as an unconditional
-  theorem. The default rate model is the two-sample SAFE e-value: measured 2
-  false alerts across 500 stable-agent runs of 2000 cycles each with
-  dependent streams (0.4%, Wilson upper 1.5%), against 100% for the
-  per-check path on identical histories. Power on refusal shifts: +20 pp
-  detected in 100/100 runs (median 17 cycles), +10 pp in 89/100 (median 50
-  cycles, 400-cycle horizon). The measured validity boundary: persistent
-  AR(1) cycle offsets (σ = 0.25, φ = 0.9) push the ever-alert rate to 7.2%,
-  above the 5% budget — published as the boundary of the guarantee. An
-  alternative Clopper–Pearson construction (`anytime.rate_model =
-  "frozen_cp"`) ships as a documented ablation; its coverage interval traps
-  the alternative at canary scale (audit: 0/30 detections at +5/+10/+20 pp
-  over 60 cycles). Opt-in,
-  golden baseline only, and both numbers are published.
+  stable agent) ≤ α, per epoch, under the stated stable-rate Bernoulli
+  model. Version 0.5.1 uses the frozen Clopper–Pearson construction
+  (`anytime.rate_model = "frozen_cp"`) as the only supported rate model. It
+  splits `α′ = α - gamma_total` across a fixed process pool and makes
+  crossings persistent, so Ville's inequality plus a Bonferroni union bound
+  handles cross-process dependence without e-BH. The former `twosample`
+  prior-predictive ratio, dependent pooled products, repeated e-BH decision,
+  and their published null/power headlines are withdrawn. The corrected mode
+  is conservative and can have very low power at canary scale; no replacement
+  power table is claimed in 0.5.1. It is opt-in and golden-baseline only; read
+  the [assumptions and limitations](https://dedrift.ai/docs/anytime/) before
+  paging. Its configured tilts aim the predictable bets and affect power; they
+  are not an observed-effect materiality gate, so the fixed path's practical-
+  significance claim does not transfer to anytime alerts.
 
 ## Status
 
@@ -59,9 +60,19 @@ corroboration; PSI and Page–Hinkley as labeled diagnostics) with BH adjustment
 and materiality gating, dual baselines, config-change attribution, and deterministic
 markdown reports — all with calibration and power tests enforced in CI. Plus an
 opt-in **anytime** inference path (`--inference anytime`): e-values,
-e-processes and e-BH targeting lifetime rather than per-check control, with
-per-epoch semantics, persisted exactly-once process state, and explicit
-coverage status. Rate channel only so far — run both modes.
+frozen-reference e-processes and persistent Ville–Bonferroni crossings
+targeting lifetime rather than per-check control, with per-epoch semantics,
+persisted exactly-once process state, and explicit coverage status. Rate
+channel only so far — run both modes.
+
+This is not yet a broad high-volume production release. Checks currently scan
+the full finalized history, making each check O(history) and long runs
+potentially O(cycles²) in cumulative compute. Check rows use the finalized
+revision rather than duplicating full record-ID manifests, but bounded indexed
+windows/checkpoints, retention/redaction, privacy controls, and deployment-scale
+benchmarks remain pre-1.0 blockers. Use one `Store` instance per thread, back up
+the entire `.dedrift` directory, and validate both error rate and power on your
+own traffic before paging.
 
 ### Agents that don't emit text
 
@@ -106,7 +117,7 @@ mkdir drift-demo && cd drift-demo
 dedrift init                                   # create the project
 dedrift embedder pin hash                      # optional: enable Tier-2 semantic signatures
 dedrift sim --cycles 8 --change-cycle 7        # 8 canary cycles; model swap at cycle 7
-dedrift baseline set cycle-0000 cycle-0001 cycle-0002   # freeze known-good cycles
+dedrift baseline set --first 3   # predeclare by position; never cherry-pick outcomes
 dedrift check                                  # exits 2: DRIFT DETECTED (both baselines)
 dedrift report --out report.md                 # deterministic markdown report
 ```

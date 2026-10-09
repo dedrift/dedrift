@@ -344,7 +344,7 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 </nav>
 
 <header class="hero wrap" id="home">
-  <div class="chip"><b>●</b> <a href="https://github.com/dedrift/dedrift/blob/main/CHANGELOG.md">v0.4.0</a> <span class="sep">·</span> AGPL-3.0 <span class="sep">·</span> zero ML dependencies</div>
+  <div class="chip"><b>●</b> <a href="https://github.com/dedrift/dedrift/blob/main/CHANGELOG.md">v0.5.1</a> <span class="sep">·</span> AGPL-3.0 <span class="sep">·</span> zero ML dependencies</div>
   <h1>Agents don't throw errors when they degrade.<br><span class="grad">dedrift catches it.</span></h1>
   <p class="sub">
     Silent model updates, prompt edits, and RAG refreshes change how your agent behaves
@@ -363,28 +363,26 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 Current cycle: cycle-0007
 Sudden (vs rolling 4 cycles): <span class="a">DRIFT DETECTED</span>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span>
-Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
-  [golden] adversarial/output_words ks: effect=<span class="a">+0.771</span>, p_adj=8.97e-15
-  [golden] adversarial/tokens_out ks: effect=<span class="a">+0.676</span>, p_adj=7.13e-11
-  [golden] adversarial/semantic_displacement ks: effect=<span class="a">+0.390</span>, p_adj=0.002136
+Alerts: build-specific (BH-adjusted and observed-effect gated)
 <span class="dim"># attribution: model fingerprint change, 0.0 h before onset</span>
 <span class="dim"># consistent with the swap. nobody told it anything.</span></div>
   </div>
-  <p class="term-cap">Real output of the scripted demonstration below — regenerate it in four commands.</p>
+  <p class="term-cap">Output shape of the scripted demonstration below — regenerate current values locally.</p>
 
-  <div class="stats" aria-label="Measured results, v0.4.0">
+  <div class="stats" aria-label="Measured fixed-path results and the v0.5.1 anytime correction">
     <div class="stat rv"><div class="n"><em>3.2%</em></div>
       <div class="l">measured null alert rate — 16 of 500 stable-agent checks alerted</div>
       <div class="fine">Wilson 95% upper 5.1% · family-wise over m≈336 primaries; grows with battery size even under valid per-test FDR</div></div>
     <div class="stat rv"><div class="n"><em>1 cycle</em></div>
       <div class="l">to catch a silent model swap — flagged on both baselines, correctly attributed</div>
+      <div class="fine">Order-channel audit: 8/20 first-check alerts with the channel versus 0/30 without it; see Statistics for scale and caveats.</div>
       <div class="fine">harness: 30 canaries × 7 reps, golden = 3 cycles</div></div>
     <div class="stat rv"><div class="n"><em>100%</em></div>
       <div class="l">of stable checks falsely flagged by raw PSI at canary scale — measured</div>
       <div class="fine">dedrift refuses to compute PSI where it is invalid</div></div>
-    <div class="stat rv"><div class="n"><em>2 of 500</em></div>
-      <div class="l">stable runs ever alerted by anytime-valid mode, over 2,000 cycles each</div>
-      <div class="fine">Wilson 95% upper 1.5% · a lifetime guarantee, not per-check</div></div>
+    <div class="stat rv"><div class="n"><em>0.5.1</em></div>
+      <div class="l">anytime safety correction: the invalid 0.4 rate model is withdrawn</div>
+      <div class="fine">frozen_cp only · persistent Ville–Bonferroni · prior null/power figures retracted</div></div>
   </div>
 </header>
 
@@ -415,7 +413,7 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
         <tr><td>Behavioral distributions on frozen canaries</td><td><span class="n">—</span></td><td><span class="mid">partial</span> raw shift scores</td><td class="hl"><span class="y">✓</span> one primary test per channel</td></tr>
         <tr><td>Calibrated false-alarm rate at canary scale</td><td><span class="n">—</span></td><td><span class="mid">✗</span> flagged 100% of stable checks in our harness</td><td class="hl"><span class="y">✓</span> 3.2% measured, enforced in CI</td></tr>
         <tr><td>Multiplicity control (BH FDR) + materiality gates</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td class="hl"><span class="y">✓</span></td></tr>
-        <tr><td>Anytime-valid mode for continuous watch</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td class="hl"><span class="y">✓</span> lifetime error budget</td></tr>
+        <tr><td>Anytime-valid mode for continuous watch</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td class="hl"><span class="y">✓</span> model-conditional lifetime budget</td></tr>
         <tr><td>Config-fingerprint attribution</td><td><span class="mid">partial</span> deploy markers</td><td class="hl"><span class="n">—</span></td><td class="hl"><span class="y">✓</span> model / prompt / tools</td></tr>
       </tbody>
     </table>
@@ -446,15 +444,15 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
       <h2 id="case-h">We swapped the model.<br>Nobody told the detector.</h2>
       <p class="lead">A scripted silent swap you can regenerate in four commands — 30 canaries × 7 reps, golden frozen at cycle 3, the swap at cycle 8 behind a changed model fingerprint.</p>
       <div class="metrics">
-        <div class="metric"><b>124</b>gated alerts</div>
-        <div class="metric"><b>D=0.93</b>output lengths</div>
-        <div class="metric"><b>D≈0.4–0.5</b>semantic shift</div>
-        <div class="metric"><b>2.1×</b>latency dispersion ratio</div>
+        <div class="metric"><b>BH</b>multiplicity adjusted</div>
+        <div class="metric"><b>D</b>shape materiality</div>
+        <div class="metric"><b>MMD</b>semantic diagnostic</div>
+        <div class="metric"><b>P95</b>tail monitoring</div>
         <div class="metric"><b>0.0 h</b>attribution at onset</div>
       </div>
       <ul>
         <li>First post-swap check: <b style="color:var(--amber)">DRIFT DETECTED</b> on both baselines</li>
-        <li>21 signature groups co-shift, attributed to the fingerprint change at onset</li>
+        <li>Co-shifting signatures are attributed to the fingerprint change at onset</li>
         <li>Same pipeline pages you on prompt edits and RAG refreshes</li>
       </ul>
       <a class="btn btn-primary" href="/docs/case-study/">Read the demonstration</a>
@@ -472,8 +470,8 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
       <ul>
         <li>Every p-valued detector calibration-tested against a documented band, on every commit</li>
         <li>Pipeline null: <b>16/500</b> stable checks alerted (3.2%, Wilson upper 5.1%), family-wise over m≈336 primaries</li>
-        <li>Anytime-valid mode: <b>2/500</b> stable runs ever alerted over 2,000 cycles (Wilson upper 1.5%)</li>
-        <li>The guarantee's edge, published too: the e-value property is <b>already unresolved at σ=0.10</b> wobble — before the alert rate shows anything is wrong</li>
+        <li>Anytime 0.5.1: frozen Clopper–Pearson e-processes with persistent Ville–Bonferroni crossings over a fixed pool</li>
+        <li>The earlier anytime null, wobble-boundary, and power figures used an invalid <code>twosample</code> process and are retracted; no replacement performance table is claimed</li>
         <li>Cross-implementation validation: two audit harnesses, built independently by different AI coding agents with no sight of our simulator, re-measure this build. Every finding they returned is locked behind a regression test</li>
         <li>Vendor cross-check: raw PSI flags 92.5% of stable windows at the conventional threshold — dedrift's guard emits none</li>
       </ul>
@@ -488,18 +486,19 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
     <div class="card rv"><span class="ic">calibration ∈ CI</span><h3>No unmeasured claims</h3>
       <p>If a number carries a p-value, the simulation proving its false-alarm rate runs on
       every commit. A release that fails its own audit doesn't ship.</p></div>
-    <div class="card rv"><span class="ic">significant ∧ material</span><h3>Alerts must earn it twice</h3>
-      <p>Multiplicity-adjusted equality-test evidence <em>and</em> an observed effect worth acting on. Statistically
-      real but practically trivial doesn't page you — alert fatigue kills monitoring.</p></div>
+    <div class="card rv"><span class="ic">significant ∧ material</span><h3>Fixed-sample alerts earn it twice</h3>
+      <p>The default fixed-sample path requires multiplicity-adjusted equality-test evidence <em>and</em>
+      an observed effect worth acting on. Anytime mode is golden-only and uses predictable tilts to
+      target power; those tilts are not an observed-effect materiality gate.</p></div>
     <div class="card rv"><span class="ic">power(2pp) ≈ 0.11</span><h3>We publish what we can't detect</h3>
       <p>Small suites have limited power, and the docs show that math instead of hiding it — including the
       shifts this battery will likely miss. Overclaiming is just drift of another kind.</p></div>
-    <div class="card rv"><span class="ic">P(ever) ≤ α, boundary published</span><h3>A guarantee with a measured edge</h3>
-      <p>Anytime-valid mode bounds the whole watch horizon, not each check: 2 of 500 stable runs over 2,000
-      cycles. And the edge is published as carefully as the claim: the e-value property is already unresolved
-      at σ=0.10 wobble, well before the alert rate shows anything — it stays inside budget to σ=0.25, breaching
-      only at 7.2% with persistent AR(1) offsets. Watching the alert rate alone would miss that.
-      <a href="/docs/anytime/">The trade-off, quantified</a>.</p></div>
+    <div class="card rv"><span class="ic">P(ever) ≤ α, under stated assumptions</span><h3>A corrected lifetime construction</h3>
+      <p>Anytime mode splits the lifetime budget between frozen-reference coverage and persistent
+      per-process Ville crossings, then union-bounds over the fixed pool. It is intentionally conservative,
+      assumes a stable Bernoulli rate, and has no corrected performance table yet. The old
+      <code>twosample</code> headlines are retracted, not recycled as evidence for 0.5.1.
+      <a href="/docs/anytime/">Read the construction and its boundary</a>.</p></div>
   </div>
   <p style="text-align:center;margin-top:26px;color:var(--dim);font-size:.92rem">
     Don't take our word for any of it — <a href="/docs/statistics/">audit the statistics</a>.
@@ -532,7 +531,7 @@ Alerts: 124 (BH-adjusted equality tests, observed-effect gated)
       <div class="price">$0</div><div class="per">AGPL-3.0, forever</div>
       <ul>
         <li>Full detector battery, BH FDR adjustment + observed-effect gating</li>
-        <li>Anytime mode — lifetime-valid rate e-processes, assumptions and boundary reported</li>
+        <li>Anytime mode — model-conditional lifetime rate e-processes, assumptions and limitations reported</li>
         <li>Dual baselines, attribution, reports</li>
         <li>Calibration suite — audit us</li>
         <li>Runs on a laptop: JSONL + SQLite, zero ML dependencies</li>
@@ -692,10 +691,7 @@ const LINES = [
   ['t','Current cycle: cycle-0007\n'],
   ['t','Sudden (vs rolling 4 cycles): '],['a','DRIFT DETECTED\n'],
   ['t','Cumulative (vs golden 3 cycles): '],['a','DRIFT DETECTED\n'],
-  ['t','Alerts: 124 (BH-adjusted equality tests, observed-effect gated)\n'],
-  ['t','  [golden] adversarial/output_words ks: effect='],['a','+0.771'],['t',', p_adj=8.97e-15\n'],
-  ['t','  [golden] adversarial/tokens_out ks: effect='],['a','+0.676'],['t',', p_adj=7.13e-11\n'],
-  ['t','  [golden] adversarial/semantic_displacement ks: effect='],['a','+0.390'],['t',', p_adj=0.002136\n'],
+  ['t','Alerts: build-specific (BH-adjusted and observed-effect gated)\n'],
   ['dim','# attribution: model fingerprint change, 0.0 h before onset\n'],
   ['dim','# consistent with the swap. nobody told it anything.\n'],
 ];

@@ -115,15 +115,14 @@ def _rows(scale: str, docs: dict[tuple[str, str], dict[str, Any]]) -> list[dict[
             "history": None,
         },
         {
-            "name": "dedrift anytime-valid path",
-            "config": "e-processes + e-BH, golden baseline, twosample rates",
-            "nominal": "≤ 0.05 lifetime per epoch",
-            # No per-check cell: this path makes no per-check claim, and its
-            # per-fold rate has a 25,000 denominator against every other row's
-            # 500. Printing it in the same column would buy a tighter interval
-            # from a different estimand.
+            "name": "dedrift anytime-valid path (0.5.1; not yet rebenchmarked)",
+            "config": "frozen_cp + persistent Ville–Bonferroni, golden baseline",
+            "nominal": "≤ 0.05 lifetime per epoch under stated model",
+            # No current cells are published. The stored benchmark result was
+            # produced by the withdrawn twosample/e-BH decision and is not
+            # evidence about the corrected 0.5.1 construction.
             "percheck": None,
-            "history": dd["dedrift_anytime"]["runs_ever_alerted_50_cycles"],
+            "history": None,
         },
     ]
 
@@ -152,12 +151,13 @@ def render_html(docs: dict[tuple[str, str], dict[str, Any]], scale: str) -> str:
     parts.append("</tbody></table></div>")
     parts.append(
         "<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable "
-        "histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such "
-        "estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they "
-        "are shown because hiding them would break the symmetry this table exists for. The "
-        "anytime-valid path has no per-check cell: it makes no per-check claim, and its per-fold "
-        "rate is over 25,000 folds against every other row's 500 runs, so printing it in that "
-        "column would compare different estimands. Per-run "
+        "histories; brackets are Wilson 95% intervals. “—”: no comparable current result is "
+        "published for that cell. The dedrift flag channel and the PSI rows are diagnostics, "
+        "not alerts; they are shown because hiding them would break the symmetry this table "
+        "exists for. The "
+        "0.5.1 anytime path has no cells because the stored result used the withdrawn "
+        "twosample/e-BH decision; that historical result is retracted and excluded rather than "
+        "presented as evidence for frozen_cp. Per-run "
         "and per-comparison raw rows: "
         "<a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>"
         "benchmark/results/</a>.</p>"
@@ -276,9 +276,7 @@ def render_macros(docs: dict[tuple[str, str], dict[str, Any]]) -> str:
                 kn(dd["dedrift_fixed_cumulative"]["runs_ever_alerted_50_cycles"]),
             )
         )
-        out.append(
-            _macro(f"benchAtEver{tag}", kn(dd["dedrift_anytime"]["runs_ever_alerted_50_cycles"]))
-        )
+        out.append(_macro(f"benchAtEver{tag}", "\\textit{retracted}"))
     out.append("")
     return "\n".join(out)
 

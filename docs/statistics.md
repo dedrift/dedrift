@@ -123,89 +123,23 @@ against a current window of one, so a shared per-cycle offset shows up as
 location and dispersion movement no record-level two-sample test can
 distinguish from drift.
 
-Measured on stable agents with a latent per-cycle offset of magnitude σ —
-per-check false-alert rate with Wilson 95% intervals, audit-harness scale
-(30 canaries × 7 reps, 3-cycle golden), all three columns measured on the
-current build. Each project contributes five checks, so the denominators
-below are 300 checks at σ = 0 and 200 above it for the record-level
-battery (`detection.cycle_effect = "off"`, the default), 150 for `auto`,
-and 100 for `auto + persistence=2`:
+**0.5.1 correction:** the previously published cycle-effect false-alert and
+power ladders do not describe this build. The correction now prevents the
+cluster-aware path from sharpening a raw p-value, and its KS materiality
+statistic follows the corrected shape test. Those changes invalidate the old
+measurements, so the tables are retracted instead of silently carried forward.
+No replacement `auto` performance claim is made in 0.5.1.
 
-| σ | record-level battery (default) | cluster-aware (`auto`) | `auto` + persistence = 2 |
-|---|---|---|---|
-| 0.00 | 3.0% [1.6, 5.6] — 9/300 | 3.3% [1.4, 7.6] — 5/150 | 0.0% [0.0, 3.7] — 0/100 |
-| 0.05 | 36.5% [30.1, 43.4] — 73/200 | 34.0% [26.9, 41.9] — 51/150 | 6.0% [2.8, 12.5] — 6/100 |
-| 0.10 | 71.0% [64.4, 76.8] — 142/200 | 64.0% [56.1, 71.2] — 96/150 | 31.0% [22.8, 40.6] — 31/100 |
-| 0.15 | 89.0% [83.9, 92.6] — 178/200 | 81.3% [74.3, 86.8] — 122/150 | 47.0% [37.5, 56.7] — 47/100 |
-| 0.25 | 98.5% [95.7, 99.5] — 197/200 | 94.0% [89.0, 96.8] — 141/150 | 66.0% [56.3, 74.5] — 66/100 |
+`detection.cycle_effect = "auto"` remains opt-in and experimental. It engages
+per channel when history-only ICC crosses the configured threshold, uses
+cycle-level/design-effect corrections, and never makes a primary p-value more
+significant than the raw comparison. `alert_persistence = 2` requires the same
+candidate channel on two distinct finalized current cycles; re-running a check
+does not advance the streak. Validate both false-alert rate and power on the
+exact shipped version and your own provider before paging. The 16/500 headline
+elsewhere on this page covers the default `off` path at σ = 0 only.
 
-Each cell is the observed rate `k/n` with its Wilson 95% interval, and the
-counts are printed so the rate can be checked against them.
-
-(Two earlier revisions of this table are superseded. A pre-`tool_order`
-build measured the record-level column at 2.3% / 33.5% / 70.8% / 87.5% /
-97.8%; the rise is expected rather than noise, since the any-alert rate is
-family-wise and `tool_order_inversions` takes the battery from m ≈ 300 to
-m ≈ 336 primaries. Separately, every cell here was previously printed as
-the *centre* of its Wilson interval rather than the observed `k/n`. The
-centre is shrunk toward one half, so 0/100 read as 1.8% and 197/200 as
-97.6%. The counts above are the measurements.)
-
-At the CI scale (12 × 5, 500 runs, σ = 0) the modes measure 16/500
-(3.2%, upper 5.1%) off and 19/500 (3.8%, upper 5.9%) auto — consistent
-with the harness-scale σ = 0 row.
-
-The correction (`detection.cycle_effect = "auto"`, opt-in) engages per
-channel when the estimated intraclass correlation ρ crosses
-`detection.cycle_effect_icc` (default 0.02). ρ is estimated from history
-cycles only — never the cycle under test — on the log scale for positive
-channels, and is capped at 0.15 so a drifting history cannot inflate the
-estimate. On quasi-continuous channels, shape is tested by KS on
-within-cycle-standardized values (a shared per-cycle offset cancels
-exactly, so record-level power survives), disjoined with a
-design-effect-inflated Welch location test and combined by Bonferroni-min,
-which is valid under any dependence of the two members. Rate channels
-switch to a design-effect-inflated two-proportion z. Dispersion and P95
-move to Student-t summaries over per-cycle statistic values — cycle, not
-record, is the unit under clustering — with discreteness guards that keep
-the record-level p-value when the per-cycle series is near-constant. When
-a channel engages, the corrected p replaces the record-level one (each
-member is valid in both regimes, so the replacement is never
-anticonservative); engagement is reported per channel in the check report.
-
-Read the ladder plainly: the correction **reduces but does not restore
-calibration** under wobble, and `detection.alert_persistence = 2` — an
-alert must repeat on a fresh current cycle before it fires — roughly
-halves the residual again. Neither reaches nominal at canary scale, and
-that limit is information-theoretic: a per-cycle offset at these sample
-sizes *is* a real distributional change, not noise a record-level test can
-see through. The 16/500 headline is measured at σ = 0 and describes that
-regime only. Pinned or self-hosted models: leave the default `off`. For
-mildly wobble-prone hosted models the better option is [anytime-valid
-mode](anytime.md), whose observed ever-alert rate stays within its
-lifetime budget under iid wobble up to σ = 0.25 (measured 8/500;
-persistent AR(1) offsets at σ = 0.25, φ = 0.9 exceed it at 7.2% — the
-published boundary). But its *guarantee* lapses earlier than its alert
-rate does — the e-value property is already unresolved at σ = 0.10 — so
-above that magnitude neither path is covered by a bound, and `auto` +
-`alert_persistence = 2` is the configuration whose behaviour is measured
-there, at the rates above.
-
-The correction is bought with power — detection within 3 post-drift
-checks, drift injected at cycle 5, audit harness (record-level cells at
-30–60 reps, cluster-aware cells at 10–20; small-n, stated rather than
-smoothed over):
-
-| injected shift | record-level (`off`) | cluster-aware (`auto`) |
-|---|---|---|
-| gross model swap, multi-channel | 30/30 | 10/10 |
-| output length ×1.10 (d ≈ 0.77) | 31/60 (52%) | 8/20 (40%) |
-| refusal +20 pp | 24/60 (40%) | 4/20 (20%) |
-| variance only | 43/50 (86%) | 18/20 (90%) |
-| shape skew, moments matched | 14/50 (28%) | 6/20 (30%) |
-
-The gross swap is certain under either battery; moderate single-channel
-shifts are where the cluster-aware battery pays. Tool-call order reversal
+Tool-call order reversal
 is the order channel's own measurement: **8/20 first-check channel
 alerts** in the same harness — at a scale where "detected" means about
 two first checks in five — while a battery without the channel measures
@@ -219,10 +153,8 @@ the earlier 10-replicate run and is superseded.)
 - **The 500-run pipeline bound covers the structural channels only.**
   Embeddings are excluded from those runs for runtime, so the semantic
   channel (family MMD and semantic displacement) has per-detector
-  calibration but **no pipeline-level measurement** — and that is the
-  channel carrying the largest effect in the [case study](case-study.md).
-  The gap is material and stated here rather than left to be inferred from
-  m = 336 versus m = 384.
+  calibration but **no pipeline-level measurement**. The gap is material and
+  stated here rather than left to be inferred from m = 336 versus m = 384.
 - **Suppressed evidence fails closed.** A fully suppressed check reports
   `NO VALID COMPARISON`; partial suppression reports `PARTIAL COVERAGE`.
   Both return CLI exit 3, never the green exit 0.
@@ -235,8 +167,9 @@ the earlier 10-replicate run and is superseded.)
   is **suppressed and reported as COMPOSITION MISMATCH** instead of drift.
   Power against shifts confined to a few canaries remains lower than for
   family-wide shifts. Exchangeability across cycles is the stronger
-  requirement, and its measured failure modes — with the cluster-aware
-  correction and its costs — are in [Cycle effects](#cycle-effects) above.
+  requirement. The prior cluster-aware calibration/power table was invalidated
+  by 0.5.1 correctness changes and is retracted; validate the experimental
+  mode on the current build and deployment.
 - **The guarantee on this page is per check, not per lifetime.**
   Everything above bounds the probability that *one* check on a stable
   agent raises an alert. Monitoring runs continuously, and expected
@@ -248,18 +181,16 @@ the earlier 10-replicate run and is superseded.)
   nothing in the batch machinery controls accumulation *across*
   sequence of them.
 
-    **Sequential control exists**: [anytime-valid mode](anytime.md)
-    replaces the per-check statement with a lifetime one — measured 2
-    false alerts in 500 stable-agent runs of 2000 cycles each (0.4%,
-    Wilson upper 1.5%), against 100% for this path on identical
-    histories. It is not
-    the default, because it buys that guarantee with detection power: a
-    +2 pp shift stays undetectable (0/100) and +10 pp is caught in 89/100
-    runs, at a median of 50 cycles. Both figures are on that page. If you
-    stay on the fixed-sample
-    path, the honest operating advice is unchanged — treat one alert as
-    evidence to investigate rather than an incident, require persistence
-    across consecutive cycles before paging anyone
+    **Sequential control exists**: corrected [anytime-valid mode](anytime.md)
+    replaces the per-check statement with a model-conditional lifetime one.
+    Version 0.5.1 uses frozen Clopper–Pearson intervals and persistent
+    Ville–Bonferroni crossings over a fixed process pool. The previously
+    published null and power figures came from the invalid `twosample`
+    process and are retracted; no replacement performance table is published
+    in 0.5.1. The corrected construction is deliberately conservative. If you
+    stay on the fixed-sample path, the honest operating advice is unchanged:
+    treat one alert as evidence to investigate rather than an incident,
+    require persistence across consecutive cycles before paging anyone
     (`detection.alert_persistence = 2` makes that the checker's
     semantics), and choose your check
     frequency knowing the arithmetic above.
@@ -312,10 +243,13 @@ the earlier 10-replicate run and is superseded.)
   nominal level, disproving a twenty-year-old conjecture that would
   otherwise have covered positively correlated two-sided tests. Our primaries are
   two-sided and computed on shared data — the exact configuration. The
-  pipeline-level measured alert rate is therefore the operative guarantee
-  for the default path; Benjamini–Yekutieli is on the roadmap for users who
-  want a theorem, and `--inference anytime` uses e-BH, which holds under
-  arbitrary dependence.
+  pipeline-level measured alert rate is therefore a scenario-specific
+  empirical calibration for the default path, not a transferable guarantee;
+  Benjamini–Yekutieli is on the roadmap for users who want a theorem.
+  `--inference anytime` does **not** use e-BH in 0.5.1: it
+  uses persistent per-process Ville crossings with a Bonferroni split over
+  the fixed epoch pool. That union bound tolerates cross-process dependence;
+  it does not remove the stable-rate assumptions of each e-process.
 - **Page–Hinkley** (λ = 12, δ = 0.3 in robust-scale units, centre and scale
   estimated **causally** from an expanding window of data strictly before
   each step): the idealized null crossing bound is ~0.15% per stream, but

@@ -31,7 +31,9 @@ from dedrift.evalues import (
 from dedrift.evalues.rates import (
     frozen_reference_hypergeometric_INVALID,
     hypergeometric_tilt,
+    worst_case_log_evalue_table,
 )
+from dedrift.evalues.twosample import log_beta_binomial_evalue, twosample_rate_evalue
 
 #: Operating scale: 3 canaries x 7 reps = 21 current trials per family per
 #: cycle, against a 5-cycle golden window (105 trials).
@@ -94,6 +96,18 @@ class TestHarnessSelfValidation:
         assert sup > 100.0, f"harness failed to detect a known-invalid construction (sup={sup})"
         assert arg > 0.2, "violation should be worst where r/m is least representative of p"
 
+    def test_withdrawn_twosample_ratio_is_not_conditionally_evalid(self) -> None:
+        """Exact release regression for the invalid v0.4/v0.5 default."""
+        prior = PriorState(reference_successes=0, reference_trials=5)
+        values = np.array([np.exp(log_beta_binomial_evalue(s, 1, prior)) for s in range(2)])
+        expected = float(np.sum(binom.pmf(np.arange(2), 1, 0.5) * values))
+        assert expected == pytest.approx(2.0416666666666665)
+        assert expected > 1.0
+
+    def test_withdrawn_twosample_wrapper_refuses_operational_use(self) -> None:
+        with pytest.raises(RuntimeError, match="withdrawn"):
+            twosample_rate_evalue(1, 1, PriorState(reference_successes=0, reference_trials=5))
+
 
 class TestTiltExactness:
     def test_known_p_tilt_has_expectation_exactly_one(self) -> None:
@@ -131,6 +145,36 @@ class TestWorstCaseConstruction:
             np.linspace(lo, hi, 120),
         )
         assert sup <= 1.0 + 1e-6, f"conditional validity violated inside CI: sup={sup}"
+
+    @pytest.mark.parametrize(
+        ("n", "p"),
+        [(400, 0.9992163), (1000, 0.9992163)],
+    )
+    def test_large_n_table_is_evalid_between_old_grid_points(self, n: int, p: float) -> None:
+        """Regression: the former 129-point minimum exceeded one off-grid."""
+        interval = clopper_pearson(2, 2, 0.02 / 24)
+        values = np.exp(worst_case_log_evalue_table(n, interval, symmetric_grid()))
+        expected = float(np.sum(binom.pmf(np.arange(n + 1), n, p) * values))
+        assert interval[0] <= p <= interval[1]
+        assert expected <= 1.0 + 1e-10, f"E_p[E]={expected} at n={n}, p={p}"
+
+    def test_worst_case_is_pointwise_below_known_p_mixture(self) -> None:
+        """The certified construction must dominate no in-interval null."""
+        interval = (0.07458803548756206, 0.7303170308946301)
+        grid = symmetric_grid()
+        for successes in range(43):
+            certified = np.exp(worst_case_log_evalue(successes, 42, interval, grid))
+            for p in np.linspace(*interval, 101):
+                known_p = np.mean(
+                    [np.exp(log_tilt_evalue(successes, 42, float(p), psi)) for psi in grid]
+                )
+                assert certified <= known_p * (1.0 + 1e-12)
+
+    def test_losing_evidence_is_never_floored_upward(self) -> None:
+        """An upward log floor breaks E[E] <= 1, however small the change."""
+        prior = PriorState(reference_successes=0, reference_trials=1)
+        outcome = rate_evalue(5000, 10_000, prior, gamma=0.01)
+        assert outcome.log_e < -50.0
 
     def test_conservatism_is_the_documented_price(self) -> None:
         """Worst-casing leaves budget on the table; quantify rather than hide."""

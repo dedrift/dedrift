@@ -119,6 +119,7 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
     <span class="chip"><b>measured</b> 2026-08-09</span>
     <span class="chip">dedrift <b>0.4.0</b></span>
     <span class="chip">seeds <b>0–499</b> shipped</span>
+    <span class="chip">anytime result <b>retracted in 0.5.1</b></span>
   </div>
 </header>
 
@@ -136,6 +137,13 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
     domain of validity, and nothing warns the user. dedrift is included under identical conditions and
     reported with the same scrutiny, including its own uncalibrated diagnostic channel and the fixed-sample
     cumulative number that motivated its anytime-valid path.
+  </div>
+  <div class="callout">
+    <b>0.5.1 safety correction.</b> The original anytime row used the withdrawn
+    <code>twosample</code> prior-predictive ratio, dependent pooled products, and repeated e-BH.
+    Its null result is retracted and excluded from the current comparison. The corrected path uses
+    <code>frozen_cp</code> with persistent Ville–Bonferroni crossings over a fixed pool; it has not
+    been rebenchmarked here, and this page makes no replacement performance claim.
   </div>
 </section>
 
@@ -155,9 +163,9 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 <tr><td><b>dedrift PSI + validity guard</b></td><td>identical metric; refused where E[PSI] > 0.05</td><td>none stated (diagnostic)</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
 <tr><td><b>dedrift fixed-sample path (alerts)</b></td><td>BH-FDR q = 0.05 + materiality, dual baselines</td><td>FDR q = 0.05 per check</td><td class='num'>8/500 = 1.6% [0.8, 3.1]</td><td class='num'>358/500 = 71.6% [67.5, 75.4]</td></tr>
 <tr><td><b>dedrift flag channel (Page–Hinkley / guarded PSI)</b></td><td>diagnostic flags, deliberately uncalibrated</td><td>none stated — published limitation</td><td class='num'>372/500 = 74.4% [70.4, 78.0]</td><td class='num'>—</td></tr>
-<tr><td><b>dedrift anytime-valid path</b></td><td>e-processes + e-BH, golden baseline, twosample rates</td><td>≤ 0.05 lifetime per epoch</td><td class='num'>—</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td></tr>
+<tr><td><b>dedrift anytime-valid path (0.5.1; not yet rebenchmarked)</b></td><td>frozen_cp + persistent Ville–Bonferroni, golden baseline</td><td>≤ 0.05 lifetime per epoch under stated model</td><td class='num'>—</td><td class='num'>—</td></tr>
 </tbody></table></div>
-<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The anytime-valid path has no per-check cell: it makes no per-check claim, and its per-fold rate is over 25,000 folds against every other row's 500 runs, so printing it in that column would compare different estimands. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
+<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: no comparable current result is published for that cell. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The 0.5.1 anytime path has no cells because the stored result used the withdrawn twosample/e-BH decision; that historical result is retracted and excluded rather than presented as evidence for frozen_cp. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
 <!-- BENCHMARK:TABLE:END -->
 </section>
 
@@ -177,9 +185,9 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
 <tr><td><b>dedrift PSI + validity guard</b></td><td>identical metric; refused where E[PSI] > 0.05</td><td>none stated (diagnostic)</td><td class='num'>0/500 = 0.0% [0.0, 0.8]</td><td class='num'>—</td></tr>
 <tr><td><b>dedrift fixed-sample path (alerts)</b></td><td>BH-FDR q = 0.05 + materiality, dual baselines</td><td>FDR q = 0.05 per check</td><td class='num'>16/500 = 3.2% [2.0, 5.1]</td><td class='num'>420/500 = 84.0% [80.5, 87.0]</td></tr>
 <tr><td><b>dedrift flag channel (Page–Hinkley / guarded PSI)</b></td><td>diagnostic flags, deliberately uncalibrated</td><td>none stated — published limitation</td><td class='num'>349/500 = 69.8% [65.6, 73.7]</td><td class='num'>—</td></tr>
-<tr><td><b>dedrift anytime-valid path</b></td><td>e-processes + e-BH, golden baseline, twosample rates</td><td>≤ 0.05 lifetime per epoch</td><td class='num'>—</td><td class='num'>1/500 = 0.2% [0.0, 1.1]</td></tr>
+<tr><td><b>dedrift anytime-valid path (0.5.1; not yet rebenchmarked)</b></td><td>frozen_cp + persistent Ville–Bonferroni, golden baseline</td><td>≤ 0.05 lifetime per epoch under stated model</td><td class='num'>—</td><td class='num'>—</td></tr>
 </tbody></table></div>
-<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: the configuration produces no such estimand. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The anytime-valid path has no per-check cell: it makes no per-check claim, and its per-fold rate is over 25,000 folds against every other row's 500 runs, so printing it in that column would compare different estimands. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
+<p class='tbl-note'>k/n = runs with at least one false alarm over 500 seeded stable histories; brackets are Wilson 95% intervals. “—”: no comparable current result is published for that cell. The dedrift flag channel and the PSI rows are diagnostics, not alerts; they are shown because hiding them would break the symmetry this table exists for. The 0.5.1 anytime path has no cells because the stored result used the withdrawn twosample/e-BH decision; that historical result is retracted and excluded rather than presented as evidence for frozen_cp. Per-run and per-comparison raw rows: <a href='https://github.com/dedrift/dedrift/tree/main/benchmark/results'>benchmark/results/</a>.</p>
 <!-- BENCHMARK:TABLE2:END -->
 </section>
 
@@ -208,9 +216,9 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
   <div class="math">P(≥ 1 alert by cycle T) = 1 − (1 − p)<sup>T</sup> ≈ 1 − e<sup>−pT</sup> <span class="c">— p per-check, T cycles</span></div>
   <p class="body">A perfectly calibrated per-check rate of 3% compounds to ≈ 78% over 50 checks. Any
   procedure whose control is per check — including dedrift's own fixed-sample path — accumulates false
-  alerts without bound as monitoring continues. That arithmetic is the entire motivation for the
-  anytime-valid path, whose claim is about the whole trajectory (ever-alert ≤ α), and why its row in the
-  table is the only one whose nominal rate is a <em>lifetime</em> bound.</p>
+  alerts without bound as monitoring continues. That arithmetic motivates the corrected anytime-valid
+  path, whose model-conditional claim concerns the whole trajectory (ever-alert ≤ α). The blank row
+  records that no current 0.5.1 measurement is published here.</p>
 </section>
 
 <section class="wrap" aria-labelledby="methods">
@@ -233,11 +241,13 @@ footer{margin-top:80px;border-top:1px solid var(--line);padding:40px 0 52px}
     <li><b>Defaults only.</b> Each method runs at its documented default configuration; no tuning
     against any tool. Ambiguous defaults are resolved by the tool's own documentation and recorded in
     <code>benchmark/methods.py</code>.</li>
-    <li><b>dedrift (0.4.0).</b> The shipped fixed-sample path (BH-FDR q = 0.05 + materiality gates,
-    dual baselines) and the anytime-valid path (e-processes + e-BH on the golden baseline,
-    <code>rate_model="twosample"</code>, lifetime α = 0.05), both at <code>ProjectConfig()</code>
-    defaults, run cycle-by-cycle as in deployment. The uncalibrated diagnostic flag channel
-    (validity-guarded PSI + per-stream Page–Hinkley) is recorded and published.</li>
+    <li><b>dedrift (0.4.0 historical protocol).</b> The shipped fixed-sample path (BH-FDR q = 0.05 +
+    materiality gates, dual baselines) ran cycle-by-cycle as in deployment. The original study also ran
+    an anytime path using <code>rate_model="twosample"</code> and repeated e-BH; 0.5.1 found that
+    construction invalid, so its result is retracted and excluded above. The current
+    <code>frozen_cp</code> + persistent Ville–Bonferroni path has not been measured by this study. The
+    uncalibrated diagnostic flag channel (validity-guarded PSI + per-stream Page–Hinkley) is recorded
+    and published.</li>
     <li><b>Intervals.</b> Every headline rate is a binomial proportion over independent seeded runs with
     a Wilson 95% interval. Per-comparison rates pool correlated comparisons within a run; their
     intervals treat comparisons as the unit and are anti-conservative — the run-level interval is

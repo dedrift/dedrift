@@ -22,7 +22,7 @@ ph_delta = 0.3                # Page–Hinkley dead-zone
 inference = "fixed"           # "fixed" | "anytime" (see docs/anytime.md)
 cycle_effect = "off"          # "off" (default) | "auto" — the cluster-aware battery
 cycle_effect_icc = 0.02       # ICC threshold for engaging the correction
-alert_persistence = 1         # checks a channel must alert in a row to fire
+alert_persistence = 1         # distinct fresh cycles a channel must alert on to fire
 
 [materiality]
 refusal_rate_pp = 2.0         # min refusal-rate shift, percentage points
@@ -154,10 +154,10 @@ shape, design-effect Welch for location, design-effect rate z, and
 Student-t cycle-level summaries for dispersion/P95.
 `cycle_effect_icc` is the engagement
 threshold on the estimated ICC. `alert_persistence = 2` holds a first-time
-alert until the same channel alerts at the next check — wobble alerts are
-transient, drift persists; measured false-alert rates by mode are in
-docs/statistics.md#cycle-effects, including the power cost (one cycle of
-delay).
+alert until the same channel alerts on the next distinct finalized current
+cycle. Re-running against the same cycle never advances the streak. The prior
+`auto` calibration/power table was invalidated by the 0.5.1 correctness changes;
+calibrate this experimental mode on the deployed build and provider.
 
 ### `ks_distance`
 
@@ -209,23 +209,38 @@ leave it.
 inference = "fixed"        # or "anytime"
 
 [anytime]
-alpha = 0.05               # lifetime, battery-wide false-alert budget
-rate_model = "twosample"   # or "frozen_cp" (the Clopper–Pearson interval construction)
-gamma_total = 0.02         # frozen_cp only: coverage budget
-tilts = [1.5, 2.0, 3.0]    # frozen_cp only: symmetrised to {psi, 1/psi}
+alpha = 0.05               # epoch-wide lifetime false-alert budget
+rate_model = "frozen_cp"   # only supported production construction
+gamma_total = 0.02         # total frozen-reference coverage budget
+tilts = [1.5, 2.0, 3.0]    # symmetrised to {psi, 1/psi}
 epoch_allocation = "per_epoch"   # or "geometric"
 ```
 
-With `rate_model = "twosample"` (default) each rate process is a two-sample
-SAFE e-value against the frozen reference counts; there is no nuisance
-interval, so no coverage budget is spent and the e-BH level is the full
-`alpha`. `gamma_total` and `tilts` apply only to `"frozen_cp"`.
+`frozen_cp` is the default and the only accepted rate model. Version 0.5.1
+withdraws and rejects the former `"twosample"` setting: its beta-binomial
+prior-predictive ratio is not an e-value for every fixed unknown null rate
+after conditioning on the frozen reference. Configurations that still name it
+fail validation instead of silently changing their inference.
 
-Switches the inference layer from per-check FDR to lifetime-oriented rate
-e-processes. Per-process optional-stopping and per-check e-BH control are
-proven; repeated dependent e-BH has the causal assumption documented on the
-linked page. The power trade is quantified in
-[anytime-valid mode](anytime.md). Default is `fixed`.
+Anytime mode switches the inference layer from per-check FDR to
+lifetime-oriented rate e-processes. From each frozen golden count it builds a
+Clopper–Pearson interval, then evaluates configured likelihood-ratio tilts at
+the certified worst null rate in that interval. The golden cycles must be
+chosen by an outcome-independent rule fixed without inspecting their rates;
+cherry-picking apparently good cycles invalidates interval coverage. For a
+fixed epoch pool of `K` processes,
+`alpha_prime = alpha - gamma_total`: each interval gets
+`gamma_total / K`, and each process gets crossing budget `alpha_prime / K`
+(Ville threshold `K / alpha_prime`). Crossings persist for the rest of the
+epoch. The two union bounds give the battery-wide target without e-BH or an
+independence assumption between processes; the per-process stable-rate
+Bernoulli assumptions still matter.
+
+This construction is conservative: a wide reference interval can contain the
+alternative and prevent wealth growth. The prior `twosample` null and power
+headlines are retracted, and 0.5.1 publishes no replacement performance
+table. See [anytime-valid mode](anytime.md) for the guarantee boundary and
+operational semantics. Default inference remains `fixed`.
 
 ## Exit codes
 
