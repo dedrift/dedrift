@@ -34,6 +34,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dedrift.schema import (
+    SQLITE_INT64_MAX,
     AgentConfig,
     InteractionInput,
     InteractionOutput,
@@ -239,6 +240,8 @@ def _coerce_nonnegative_int(
             raise ValueError("fractional value is not an integer counter")
         if value < minimum:
             raise ValueError(f"must be >= {minimum}")
+        if value > SQLITE_INT64_MAX:
+            raise ValueError(f"must be <= {SQLITE_INT64_MAX}")
     except (TypeError, ValueError, OverflowError) as exc:
         errors.append(f"invalid agent output field {field!r}: {exc}")
         return default
@@ -372,24 +375,31 @@ class CanaryRunner:
         # records already being collected.
         suite_snapshot = CanarySuite.model_validate(self.suite.model_dump(mode="json"))
         suite_fingerprint = suite_snapshot.fingerprint()
+        expected_records = len(suite_snapshot.canaries) * self.repetitions
+        if store is not None:
+            # This commit must happen before the first agent call. Anytime
+            # inference uses it as the durable proof that pool/bet choices
+            # preceded observation of this cycle's outcomes.
+            store.begin_cycle(cycle_id, expected_records=expected_records)
         records: list[InteractionRecord] = []
         for canary in suite_snapshot.canaries:
             for rep in range(1, self.repetitions + 1):
-                records.append(
-                    self._run_one(
-                        canary,
-                        rep,
-                        cycle_id,
-                        suite_snapshot.version,
-                        suite_fingerprint,
-                    )
+                record = self._run_one(
+                    canary,
+                    rep,
+                    cycle_id,
+                    suite_snapshot.version,
+                    suite_fingerprint,
                 )
+                records.append(record)
+                if store is not None:
+                    # Checkpoint each completed observation. A process crash
+                    # leaves an honest OPEN cycle with completed work
+                    # preserved; automated runner resume is not implemented,
+                    # and the partial cycle cannot masquerade as finalized.
+                    store.append(record)
         if store is not None:
-            store.append_many(
-                records,
-                finalize_cycles=True,
-                expected_cycle_counts={cycle_id: len(records)},
-            )
+            store.finalize_cycle(cycle_id, expected_records=expected_records)
         return records
 
     def _run_one(

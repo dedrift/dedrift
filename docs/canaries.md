@@ -66,11 +66,13 @@ budget: at the default N=7 with 30 canaries in a family, a +10 pp refusal
 shift is detected with ~0.91 power, but +2 pp is essentially undetectable.
 Practical guidance:
 
-- **Demo scale:** 3 per family (the shipped example) — catches big changes
-  like a model swap.
-- **Production scale:** 50–200 canaries total, weighted toward the families
-  that matter to your product (if refusal consistency is your business,
-  grow `refusal_boundary`, not `happy_path`).
+- **Demo scale:** 3 per family (the shipped example) keeps the scripted run
+  cheap. It is not a sensitivity recommendation.
+- **Project scale:** there is no evidence-backed universal production count.
+  Weight canaries toward the families that matter to your product (if refusal
+  consistency is your business, grow `refusal_boundary`, not `happy_path`),
+  then estimate power and false alerts on your own stable histories and
+  incident replays.
 - Raising repetitions N helps every family at linear cost.
 
 ## Freezing discipline
@@ -93,3 +95,16 @@ each tracked in location, dispersion, and tail) and, with a
 [pinned embedder](configuration.md#embeddings), semantic signatures
 (per-family embedding clouds via MMD, plus per-record semantic displacement
 from the canary's own reference centroid).
+
+## Cycle durability and interrupted runs
+
+When a store is supplied, `CanaryRunner.run_cycle` reserves the cycle before
+calling the agent, appends each completed coordinate as a checkpoint, and
+finalizes only when the declared record count is present. A process crash can
+therefore leave a truthful open cycle instead of a falsely complete one.
+
+There is no automatic retry/resume protocol yet. Replaying an already written
+canary/repetition coordinate is rejected, and an open cycle blocks the ordered
+anytime stream. Inspect it with `dedrift doctor`; preserve it for diagnosis.
+Production orchestration still needs explicit deadlines, idempotent resume,
+and a predeclared abort/expiry policy.

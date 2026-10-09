@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from dedrift.schema import (
+    SQLITE_INT64_MAX,
     AgentConfig,
     InteractionInput,
     InteractionOutput,
@@ -73,3 +77,15 @@ class TestRoundTrip:
     def test_computed_fingerprint_serialized(self) -> None:
         record = make_record()
         assert '"config_fingerprint":"sha256:' in record.to_jsonl().replace(" ", "")
+
+    @pytest.mark.parametrize(
+        "field",
+        ["repetition", "steps", "retries", "latency_ms", "tokens_in", "tokens_out"],
+    )
+    def test_sqlite_integer_fields_reject_values_above_int64(self, field: str) -> None:
+        with pytest.raises(ValidationError, match="less than or equal"):
+            make_record(**{field: SQLITE_INT64_MAX + 1})
+
+    def test_tool_order_rejects_values_above_sqlite_int64(self) -> None:
+        with pytest.raises(ValidationError, match="less than or equal"):
+            ToolCall(name="search", args_schema_ok=True, order=SQLITE_INT64_MAX + 1)

@@ -13,7 +13,7 @@ from dedrift.attribution import attribute
 from dedrift.canary import Canary, CanaryRunner, CanarySuite
 from dedrift.check import CheckResult, get_golden_baseline, run_check, set_golden_baseline
 from dedrift.config import ProjectConfig
-from dedrift.report import render_report
+from dedrift.report import _markdown_escape, render_report
 from dedrift.schema import Source
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
 from dedrift.store import FinalizedSnapshotChangedError, Store
@@ -180,6 +180,12 @@ class TestMaterialityGate:
         )
         result = run_check(store, config=strict)
         assert result.n_alerts == 0
+        store.close()
+
+    def test_latency_channel_can_be_disabled_for_host_jitter(self, tmp_path: Path) -> None:
+        store = seeded_project(tmp_path, change_cycle=None)
+        result = run_check(store, config=ProjectConfig(monitor_latency=False, permutations=100))
+        assert all(test.signature != "latency_ms" for test in result.tests)
         store.close()
 
 
@@ -358,6 +364,14 @@ class TestSourceIsolation:
 
 
 class TestReport:
+    def test_markdown_escape_neutralizes_forged_sections_and_remote_images(self) -> None:
+        hostile = "legit\n# FORGED SYSTEM HEALTHY\n![tracker](https://evil.invalid/x)"
+        escaped = _markdown_escape(hostile)
+        assert isinstance(escaped, str)
+        assert "\n" not in escaped
+        assert "\\# FORGED" in escaped
+        assert "\\!\\[tracker\\]" in escaped
+
     def test_report_renders_and_is_deterministic(self, tmp_path: Path) -> None:
         store = seeded_project(tmp_path, n_cycles=8, change_cycle=7)
         result = run_check(store)
@@ -637,6 +651,32 @@ class TestSnapshotConsistency:
 
         assert calls >= 4
         assert result.declared_golden_cycles == ["cycle-0000", "cycle-0001"]
+
+    def test_fixed_check_retries_when_embedder_is_pinned_before_persistence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dedrift.embeddings import pin_embedder
+
+        store = seeded_project(tmp_path, n_cycles=5)
+        original_persist = check_module._persist
+        calls = 0
+
+        def racing_persist(target: Store, result: check_module.CheckResult) -> None:
+            nonlocal calls
+            calls += 1
+            # First computation sees no pin.  Pin immediately before it takes
+            # the persistence lock; revalidation must invalidate/retry it.
+            if calls == 1:
+                pin_embedder(target, "hash")
+            original_persist(target, result)
+
+        monkeypatch.setattr(check_module, "_persist", racing_persist)
+        result = run_check(store, config=ProjectConfig(permutations=100))
+        store.close()
+
+        assert calls == 2
+        assert result.pinned_embedder == "hash"
+        assert result.mmd_floors
 
         with Store(tmp_path) as reopened:
             compact = (

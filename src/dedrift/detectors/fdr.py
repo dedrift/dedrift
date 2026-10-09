@@ -13,7 +13,9 @@ from __future__ import annotations
 import numpy as np
 
 
-def benjamini_hochberg(p_values: list[float], q: float = 0.05) -> tuple[list[bool], list[float]]:
+def benjamini_hochberg(
+    p_values: list[float], q: float = 0.05, *, m_total: int | None = None
+) -> tuple[list[bool], list[float]]:
     """Apply the BH step-up procedure.
 
     NaN p-values (degenerate declared tests) are conservatively treated as
@@ -24,20 +26,28 @@ def benjamini_hochberg(p_values: list[float], q: float = 0.05) -> tuple[list[boo
     Args:
         p_values: Raw p-values, one per test.
         q: Target false discovery rate.
+        m_total: Prospectively declared family size. When larger than the
+            supplied vector, missing/suppressed hypotheses are represented as
+            p=1. This prevents current-data collection failures from shrinking
+            the family and making surviving tests easier to reject.
 
     Returns:
         A tuple ``(rejected, p_adjusted)`` aligned with the input order.
     """
     p = np.asarray(p_values, dtype=float)
     n = len(p)
+    m = n if m_total is None else m_total
+    if isinstance(m, bool) or not isinstance(m, int) or m < n:
+        raise ValueError("m_total must be an integer at least len(p_values)")
     rejected = [False] * n
     adjusted: list[float] = [float("nan")] * n
     valid_mask = ~np.isnan(p)
-    m = n
     if m == 0:
         return rejected, adjusted
 
-    working = np.where(valid_mask, p, 1.0)
+    working = np.concatenate(
+        (np.where(valid_mask, p, 1.0), np.ones(m - n, dtype=float))
+    )
     order = np.argsort(working)
     sorted_p = working[order]
     ranks = np.arange(1, m + 1)
@@ -51,6 +61,8 @@ def benjamini_hochberg(p_values: list[float], q: float = 0.05) -> tuple[list[boo
     k = threshold_idx.max() + 1 if len(threshold_idx) else 0
 
     for rank_pos, original_idx in enumerate(order):
+        if original_idx >= n:
+            continue
         if valid_mask[original_idx]:
             adjusted[int(original_idx)] = float(adj[rank_pos])
         if rank_pos < k and valid_mask[original_idx]:

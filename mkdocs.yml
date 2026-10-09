@@ -1,7 +1,7 @@
 site_name: dedrift
 site_url: https://dedrift.ai/docs/
 site_description: >-
-  Statistically rigorous behavioral drift detection for AI agents.
+  Experimental behavioral regression and release gating for AI workflows.
 repo_url: https://github.com/dedrift/dedrift
 repo_name: dedrift/dedrift
 
@@ -54,6 +54,7 @@ nav:
       - Writing canary suites: canaries.md
       - Configuration: configuration.md
       - CLI reference: cli.md
+  - Maintainer review: production-readiness-review.md
 
 markdown_extensions:
   - admonition

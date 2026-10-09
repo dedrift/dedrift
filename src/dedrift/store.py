@@ -18,6 +18,7 @@ recovery for a deleted database.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -29,7 +30,7 @@ from threading import get_ident
 from types import TracebackType
 from typing import BinaryIO, TextIO
 
-from dedrift.schema import InteractionRecord
+from dedrift.schema import SQLITE_INT64_MAX, InteractionRecord
 
 PROJECT_DIR = ".dedrift"
 LOGS_DIR = "logs"
@@ -43,6 +44,7 @@ _SQLITE_BUSY_TIMEOUT_MS = 30_000
 _FINALIZED_REVISION_KEY = "finalized_revision"
 _STORE_IDENTITY_KEY = "store_identity"
 _STORE_IDENTITY_VALUE = "dedrift-index-v1"
+_PINNED_EMBEDDER_KEY = "pinned_embedder"
 _SQLITE_APPLICATION_ID = 0x44445246  # ASCII "DDRF"
 
 
@@ -57,6 +59,7 @@ name = "default"
 canary_repetitions = 7      # N repeated runs per canary per cycle
 rolling_window_cycles = 5   # K cycles for the rolling reference
 deterministic = false       # true only if the agent is exactly reproducible
+monitor_latency = true       # false when in-process host jitter is not product behavior
 custom_scalars = []         # numeric channels read from output.structured
 
 [detection]
@@ -86,6 +89,11 @@ ks_distance = 0.15          # KS statistic D floor (sup-norm CDF distance):
 dispersion_ratio = 1.5      # robust dispersion (MAD) must grow/shrink by this
 p95_relative = 0.10         # relative P95 shift floor
 embedding_mmd2_floor = -1.0 # -1 = auto-calibrate; 0 = off; >0 = explicit
+
+# Native-unit gate for noisy scalar channels. Every primary on the channel
+# must also exceed this Wasserstein-1 distance before it can alert.
+# [materiality.per_channel.latency_ms]
+# absolute_distance = 5.0    # milliseconds
 
 [embeddings]
 # Pinned forever per project once set; dedrift refuses cross-embedder comparisons.
@@ -132,6 +140,7 @@ CREATE TABLE IF NOT EXISTS canary_cycles (
     cycle_id TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status IN ('open', 'finalized')),
     open_seq INTEGER NOT NULL,
+    prospective INTEGER NOT NULL DEFAULT 0 CHECK (prospective IN (0, 1)),
     expected_records INTEGER,
     finalized_records INTEGER,
     opened_ts TEXT NOT NULL,
@@ -500,6 +509,8 @@ class Store:
                         conn.execute(
                             "DELETE FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
                         )
+                    else:
+                        self._validate_indexed_jsonl_prefix(conn)
                     self._reconcile_jsonl_tail(conn)
                     self._sync_cycle_registry(
                         conn,
@@ -589,6 +600,15 @@ class Store:
             conn.execute("ALTER TABLE canary_cycles ADD COLUMN open_seq INTEGER")
         if "finalize_seq" not in cycle_columns:
             conn.execute("ALTER TABLE canary_cycles ADD COLUMN finalize_seq INTEGER")
+        if "prospective" not in cycle_columns:
+            # Existing lifecycle rows were reconstructed at or after import;
+            # there is no durable proof that they preceded observation. They
+            # remain valid fixed-sample/history data, but fail closed for an
+            # already-active anytime epoch.
+            conn.execute(
+                "ALTER TABLE canary_cycles ADD COLUMN prospective INTEGER "
+                "NOT NULL DEFAULT 0 CHECK (prospective IN (0, 1))"
+            )
         self._backfill_cycle_open_sequences(conn)
         self._backfill_finalized_revisions(conn)
         conn.execute(
@@ -598,6 +618,22 @@ class Store:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_canary_cycles_finalize_seq "
             "ON canary_cycles(finalize_seq) WHERE finalize_seq IS NOT NULL"
+        )
+        duplicate_coordinate = conn.execute(
+            "SELECT cycle_id, canary_id, repetition, COUNT(*) FROM records "
+            "WHERE source = 'canary' AND cycle_id IS NOT NULL "
+            "GROUP BY cycle_id, canary_id, repetition HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate_coordinate is not None:
+            raise RuntimeError(
+                "legacy index contains duplicate canary coordinates "
+                f"{duplicate_coordinate[0]!r}/{duplicate_coordinate[1]!r}#"
+                f"{duplicate_coordinate[2]!r}; restore or repair the project before opening"
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_records_canary_coordinate "
+            "ON records(cycle_id, canary_id, repetition) "
+            "WHERE source = 'canary' AND cycle_id IS NOT NULL"
         )
         epoch_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(anytime_epochs)")}
         if "start_after_open_seq" not in epoch_columns:
@@ -611,6 +647,41 @@ class Store:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (_STORE_IDENTITY_KEY, _STORE_IDENTITY_VALUE),
         )
+        # The pin file is convenient for humans, but SQLite is authoritative
+        # lifecycle state. Backfill legacy pins once, then fail closed if a
+        # partial restore/delete leaves the two copies inconsistent.
+        embedder_path = self.project_dir / "embedder.json"
+        pinned_row = conn.execute(
+            "SELECT value FROM store_metadata WHERE key = ?", (_PINNED_EMBEDDER_KEY,)
+        ).fetchone()
+        pinned_metadata = str(pinned_row[0]) if pinned_row is not None else None
+        pinned_file: str | None = None
+        if embedder_path.exists():
+            try:
+                raw_pin = json.loads(embedder_path.read_text(encoding="utf-8"))
+                value = raw_pin["embedder"]
+                if not isinstance(value, str) or not value:
+                    raise ValueError("embedder must be a non-empty string")
+                pinned_file = value
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "embedder.json is invalid; restore the complete .dedrift snapshot"
+                ) from exc
+        if pinned_metadata is not None and pinned_file is None:
+            raise RuntimeError(
+                "the authoritative embedder pin exists but embedder.json is missing; "
+                "restore the complete .dedrift snapshot"
+            )
+        if pinned_metadata is not None and pinned_file != pinned_metadata:
+            raise RuntimeError(
+                "embedder.json conflicts with the authoritative embedder pin; "
+                "restore the complete .dedrift snapshot"
+            )
+        if pinned_metadata is None and pinned_file is not None:
+            conn.execute(
+                "INSERT INTO store_metadata (key, value) VALUES (?, ?)",
+                (_PINNED_EMBEDDER_KEY, pinned_file),
+            )
         conn.execute(f"PRAGMA application_id = {_SQLITE_APPLICATION_ID}")
 
     @staticmethod
@@ -732,6 +803,90 @@ class Store:
 
     # -- writes --------------------------------------------------------------
 
+    def begin_cycle(self, cycle_id: str, *, expected_records: int | None = None) -> None:
+        """Durably declare a prospective canary cycle before observing it.
+
+        This is the lifecycle boundary used by anytime-valid inference. A
+        cycle first discovered while records are imported is deliberately
+        marked non-prospective and cannot later be upgraded: by then its
+        outcomes may already be known. Complete-batch imports remain valid
+        for fixed checks and frozen golden/reference data.
+
+        Args:
+            cycle_id: Stable non-empty identifier for the upcoming cycle.
+            expected_records: Optional exact number of records to collect.
+        """
+        if not isinstance(cycle_id, str) or not cycle_id:
+            raise ValueError("cycle_id must be a non-empty string")
+        if (
+            expected_records is not None
+            and (
+                isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or not 1 <= expected_records <= SQLITE_INT64_MAX
+            )
+        ):
+            raise ValueError(
+                "expected_records must be a strict integer between 1 and "
+                f"{SQLITE_INT64_MAX}"
+            )
+        conn = self.connect()
+        if conn.in_transaction:
+            raise RuntimeError("begin_cycle requires ownership of the SQLite transaction")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._reconcile_jsonl_tail(conn)
+            self._sync_cycle_registry(conn, legacy_finalize=False)
+            row = conn.execute(
+                "SELECT status, prospective, expected_records FROM canary_cycles "
+                "WHERE cycle_id = ?",
+                (cycle_id,),
+            ).fetchone()
+            if row is not None:
+                status = str(row[0])
+                prospective = bool(row[1])
+                declared = int(row[2]) if row[2] is not None else None
+                if not prospective:
+                    raise ValueError(
+                        f"cycle {cycle_id!r} was already observed or imported without a "
+                        "pre-observation marker; it cannot be made prospective"
+                    )
+                if status != "open":
+                    raise ValueError(f"cycle {cycle_id!r} is already finalized")
+                if (
+                    declared is not None
+                    and expected_records is not None
+                    and declared != expected_records
+                ):
+                    raise ValueError(
+                        f"cycle {cycle_id!r} expected count is already {declared}, "
+                        f"not {expected_records}"
+                    )
+                if declared is None and expected_records is not None:
+                    conn.execute(
+                        "UPDATE canary_cycles SET expected_records = ? WHERE cycle_id = ?",
+                        (expected_records, cycle_id),
+                    )
+            else:
+                conn.execute(
+                    "INSERT INTO canary_cycles "
+                    "(cycle_id, status, open_seq, prospective, expected_records, opened_ts) "
+                    "VALUES (?, 'open', ?, 1, ?, ?)",
+                    (
+                        cycle_id,
+                        self._next_cycle_open_seq(conn),
+                        expected_records,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            self._harden_sqlite_files()
+
     def append(self, record: InteractionRecord) -> None:
         """Append one streaming record without finalizing its canary cycle.
 
@@ -785,8 +940,18 @@ class Store:
         if not unique:
             return
         expected = dict(expected_cycle_counts or {})
-        if any(not cycle_id or count < 1 for cycle_id, count in expected.items()):
-            raise ValueError("expected cycle counts require non-empty IDs and counts >= 1")
+        if any(
+            not isinstance(cycle_id, str)
+            or not cycle_id
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= SQLITE_INT64_MAX
+            for cycle_id, count in expected.items()
+        ):
+            raise ValueError(
+                "expected cycle counts require non-empty string IDs and strict integers "
+                f"between 1 and {SQLITE_INT64_MAX}"
+            )
         # Within a complete batch, open/finalize cycles in first-appearance
         # order, never lexical ID order. Cycle IDs are opaque ("cycle-10"
         # need not sort after "cycle-9"). Cross-batch first-observation order
@@ -876,6 +1041,28 @@ class Store:
                     + ", ".join(extended_finalized)
                     + "; reopen under a new cycle ID (exact-ID retries remain allowed)"
                 )
+            pending_coordinates: set[tuple[str, str, int]] = set()
+            for record, _ in pending:
+                if record.source.value != "canary" or record.cycle_id is None:
+                    continue
+                assert record.canary_id is not None and record.repetition is not None
+                coordinate = (record.cycle_id, record.canary_id, record.repetition)
+                if coordinate in pending_coordinates:
+                    raise ValueError(
+                        "batch contains duplicate canary coordinates "
+                        f"(cycle_id, canary_id, repetition)={coordinate!r}"
+                    )
+                pending_coordinates.add(coordinate)
+                existing_coordinate = conn.execute(
+                    "SELECT id FROM records WHERE source = 'canary' AND cycle_id = ? "
+                    "AND canary_id = ? AND repetition = ? LIMIT 1",
+                    coordinate,
+                ).fetchone()
+                if existing_coordinate is not None:
+                    raise ValueError(
+                        "canary coordinate already exists under a different record id: "
+                        f"{coordinate!r}"
+                    )
             pending_per_cycle: dict[str, int] = {}
             for record, _ in pending:
                 if record.source.value == "canary" and record.cycle_id is not None:
@@ -937,8 +1124,8 @@ class Store:
                 open_seq = self._next_cycle_open_seq(conn)
                 conn.execute(
                     "INSERT INTO canary_cycles "
-                    "(cycle_id, status, open_seq, expected_records, opened_ts) "
-                    "VALUES (?, 'open', ?, ?, ?) "
+                    "(cycle_id, status, open_seq, prospective, expected_records, opened_ts) "
+                    "VALUES (?, 'open', ?, 0, ?, ?) "
                     "ON CONFLICT(cycle_id) DO UPDATE SET expected_records = "
                     "COALESCE(canary_cycles.expected_records, excluded.expected_records)",
                     (cycle_id, open_seq, expected.get(cycle_id), opened_ts),
@@ -988,9 +1175,10 @@ class Store:
                 self._set_finalized_revision(conn, finalize_seq)
                 conn.execute(
                     "INSERT INTO canary_cycles "
-                    "(cycle_id, status, open_seq, expected_records, finalized_records, "
+                    "(cycle_id, status, open_seq, prospective, expected_records, "
+                    "finalized_records, "
                     "opened_ts, finalized_ts, finalized_offset, finalize_seq) "
-                    "VALUES (?, 'finalized', ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, 'finalized', ?, 0, ?, ?, ?, ?, ?, ?)",
                     (
                         str(cycle_id),
                         open_seq,
@@ -1004,8 +1192,9 @@ class Store:
                 )
             else:
                 conn.execute(
-                    "INSERT INTO canary_cycles (cycle_id, status, open_seq, opened_ts) "
-                    "VALUES (?, 'open', ?, ?)",
+                    "INSERT INTO canary_cycles "
+                    "(cycle_id, status, open_seq, prospective, opened_ts) "
+                    "VALUES (?, 'open', ?, 0, ?)",
                     (str(cycle_id), open_seq, str(first_ts)),
                 )
 
@@ -1067,6 +1256,18 @@ class Store:
         finalized_offset: int,
     ) -> None:
         """Finalize one cycle inside the caller's writer transaction."""
+        if (
+            expected_records is not None
+            and (
+                isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or not 1 <= expected_records <= SQLITE_INT64_MAX
+            )
+        ):
+            raise ValueError(
+                "expected_records must be a strict integer between 1 and "
+                f"{SQLITE_INT64_MAX}"
+            )
         row = conn.execute(
             "SELECT status, expected_records, finalized_records "
             "FROM canary_cycles WHERE cycle_id = ?",
@@ -1077,8 +1278,6 @@ class Store:
         status = str(row[0])
         declared = int(row[1]) if row[1] is not None else None
         previous_count = int(row[2]) if row[2] is not None else None
-        if expected_records is not None and expected_records < 1:
-            raise ValueError("expected_records must be >= 1")
         if declared is not None and expected_records is not None and declared != expected_records:
             raise ValueError(
                 f"cycle {cycle_id!r} expected count is already {declared}, not {expected_records}"
@@ -1120,6 +1319,18 @@ class Store:
         """Mark a streamed canary cycle complete after validating its size."""
         if not cycle_id:
             raise ValueError("cycle_id must be non-empty")
+        if (
+            expected_records is not None
+            and (
+                isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or not 1 <= expected_records <= SQLITE_INT64_MAX
+            )
+        ):
+            raise ValueError(
+                "expected_records must be a strict integer between 1 and "
+                f"{SQLITE_INT64_MAX}"
+            )
         conn = self.connect()
         if conn.in_transaction:
             raise RuntimeError("finalize_cycle requires ownership of the SQLite transaction")
@@ -1151,6 +1362,7 @@ class Store:
         row = conn.execute(
             "SELECT value FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
         ).fetchone()
+        legacy_full_scan = row is None
         offset = int(row[0]) if row is not None else 0
         size = self.records_path.stat().st_size
         if not 0 <= offset <= size:
@@ -1160,6 +1372,7 @@ class Store:
             )
         with self.records_path.open("rb") as stream:
             stream.seek(offset)
+            seen_in_scan: set[str] = set()
             while raw_line := stream.readline():
                 if not raw_line.endswith(b"\n"):
                     raise RuntimeError(
@@ -1170,11 +1383,22 @@ class Store:
                 if not stripped:
                     continue
                 record = InteractionRecord.from_jsonl(stripped.decode("utf-8"))
+                if record.id in seen_in_scan:
+                    raise RuntimeError(
+                        f"records.jsonl tail repeats record id {record.id!r}; "
+                        "restore the append-only log before retrying"
+                    )
+                seen_in_scan.add(record.id)
                 digest = self._record_digest(record)
                 existing = conn.execute(
                     "SELECT record_digest, record_json FROM records WHERE id = ?",
                     (record.id,),
                 ).fetchone()
+                if existing is not None and not legacy_full_scan:
+                    raise RuntimeError(
+                        f"records.jsonl tail repeats indexed record id {record.id!r}; "
+                        "restore the append-only log before retrying"
+                    )
                 if existing is None:
                     if record.source.value == "canary" and record.cycle_id is not None:
                         lifecycle = conn.execute(
@@ -1227,6 +1451,106 @@ class Store:
                     )
             self._assert_finalized_counts(conn)
             self._set_indexed_offset(conn, stream.tell())
+
+    def _validate_indexed_jsonl_prefix(self, conn: sqlite3.Connection) -> None:
+        """Verify the immutable indexed prefix against SQLite on process open.
+
+        Tail-only reconciliation cannot detect an equal-length edit before the
+        byte checkpoint.  Such an edit previously allowed raw-log reads and
+        finalized-snapshot reads to describe different histories.  Validate
+        every indexed line once when a Store connection is established; later
+        writes remain serialized by the same SQLite writer lock.
+
+        This is deliberately fail-closed and O(indexed log size) per process
+        open.  A future chunked hash manifest can make the same guarantee
+        incrementally without weakening it.
+        """
+        row = conn.execute(
+            "SELECT value FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
+        ).fetchone()
+        if row is None:
+            return
+        offset = int(row[0])
+        size = self.records_path.stat().st_size
+        if not 0 <= offset <= size:
+            raise RuntimeError(
+                "records.jsonl is shorter than its indexed checkpoint; restore the "
+                "complete .dedrift snapshot"
+            )
+        indexed = [
+            (str(record_id), str(digest) if digest is not None else None, payload)
+            for record_id, digest, payload in conn.execute(
+                "SELECT id, record_digest, record_json FROM records ORDER BY rowid"
+            )
+        ]
+        seen: set[str] = set()
+        position = 0
+        with self.records_path.open("rb") as stream:
+            while stream.tell() < offset:
+                raw_line = stream.readline()
+                if not raw_line or stream.tell() > offset or not raw_line.endswith(b"\n"):
+                    raise RuntimeError(
+                        "indexed JSONL checkpoint is not on a complete record boundary; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                try:
+                    record = InteractionRecord.from_jsonl(stripped.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "records.jsonl indexed prefix contains an invalid record; "
+                        "restore the complete .dedrift snapshot"
+                    ) from exc
+                if record.id in seen:
+                    raise RuntimeError(
+                        f"records.jsonl indexed prefix repeats record id {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                if position >= len(indexed):
+                    raise RuntimeError(
+                        f"records.jsonl indexed prefix contains unknown id {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                expected_id, stored_digest, payload = indexed[position]
+                if record.id != expected_id:
+                    raise RuntimeError(
+                        "records.jsonl indexed prefix order conflicts with SQLite: "
+                        f"expected {expected_id!r}, found {record.id!r}; restore the "
+                        "complete .dedrift snapshot"
+                    )
+                digest = self._record_digest(record)
+                if stored_digest is None or stored_digest != digest or payload is None:
+                    raise RuntimeError(
+                        f"records.jsonl indexed prefix conflicts with record {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                try:
+                    cached = InteractionRecord.from_jsonl(str(payload))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"indexed payload is invalid for record {record.id!r}"
+                    ) from exc
+                if cached.id != record.id or self._record_digest(cached) != digest:
+                    raise RuntimeError(
+                        f"records.jsonl conflicts with cached payload for record {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                seen.add(record.id)
+                position += 1
+            if stream.tell() != offset:
+                raise RuntimeError(
+                    "indexed JSONL checkpoint is inconsistent; restore the complete "
+                    ".dedrift snapshot"
+                )
+        if position != len(indexed):
+            missing = [record_id for record_id, _digest, _payload in indexed[position:]]
+            preview = ", ".join(missing[:5])
+            raise RuntimeError(
+                "SQLite indexes records absent from the indexed JSONL prefix "
+                f"({preview}); restore the complete .dedrift snapshot"
+            )
 
     @staticmethod
     def _assert_finalized_counts(conn: sqlite3.Connection) -> None:
@@ -1630,7 +1954,8 @@ class Store:
             revision_before = self._current_finalized_revision(conn)
             records = self._read_stable_snapshot()
             lifecycle_rows = conn.execute(
-                "SELECT cycle_id, status, open_seq, expected_records, finalized_records, "
+                "SELECT cycle_id, status, open_seq, prospective, expected_records, "
+                "finalized_records, "
                 "opened_ts, finalized_ts, finalized_offset, finalize_seq FROM canary_cycles"
             ).fetchall()
             unique: dict[str, InteractionRecord] = {}
@@ -1652,9 +1977,10 @@ class Store:
             self._set_indexed_offset(conn, self.records_path.stat().st_size)
             conn.executemany(
                 "INSERT INTO canary_cycles "
-                "(cycle_id, status, open_seq, expected_records, finalized_records, opened_ts, "
+                "(cycle_id, status, open_seq, prospective, expected_records, "
+                "finalized_records, opened_ts, "
                 "finalized_ts, finalized_offset, finalize_seq) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 lifecycle_rows,
             )
             # External complete JSONL lines discovered during a rebuild have

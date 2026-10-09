@@ -1,5 +1,6 @@
 # Example canary suite for the README walkthrough.
-# Real suites should hold 50-200 canaries stratified across families (SPEC §3).
+# This tiny suite is for the scripted demo. Size a project suite from measured
+# power, cost, and failure-mode coverage; no universal production count exists.
 version: "1"
 canaries:
   - id: happy-001

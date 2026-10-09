@@ -23,7 +23,7 @@ dedrift baseline set --first 3            # golden = cycles 1–3
 
 The scripted swap changes the model identifier from `simmodel@v1` to
 `simmodel@v2` — **same prompt, same canaries, same tooling** — with the
-classic silent-degradation profile: longer outputs, higher refusal and
+engineered regression profile: longer outputs, higher refusal and
 format-error rates, a thicker latency tail. The only trace visible to the
 system is a changed configuration fingerprint. Nobody told the detector
 anything.
@@ -58,8 +58,8 @@ generated report for the current build rather than copying historical values.
 
 ![Per-record distributions by cycle: output tokens jump after the swap; latency medians hold while the tail thickens](assets/fig1_the_catch.png)
 
-That right-hand panel is why dedrift tracks variance and P95 alongside
-means: agents often go erratic before they go wrong on average.
+That right-hand panel illustrates why the battery tracks dispersion and P95
+alongside means: a tail can move while the center stays similar.
 
 ## The attribution
 
@@ -85,10 +85,10 @@ weak evidence instead.
   weak evidence rather than preceding-onset. The estimate's measured false
   alarm behavior is documented in [Statistics](statistics.md).
 - This is a scripted synthetic agent: it demonstrates detection and
-  attribution mechanics, not production prevalence. Evidence on real
-  production agents is what the design-partner program collects —
-  [apply from the pricing section](https://dedrift.ai/#pricing) if you run
-  one.
+  attribution mechanics, not production performance. The design-partner
+  program exists to find missed regressions, false alerts, and workflows in
+  which this approach is not useful — [contact the project](https://dedrift.ai/#pricing)
+  if you can supply that evidence.
 
 ## Reproduce it
 
@@ -99,6 +99,7 @@ dedrift sim --cycles 8 --change-cycle 7 && dedrift baseline set --first 3
 dedrift check
 ```
 
-Runs in about a minute. The numbers above regenerate bit-for-bit (the sim
-is seeded), and `dedrift report` renders the full markdown report with the
-attribution table.
+Runs in about a minute on a typical laptop. The installed build's result is
+deterministic for the seeded simulation; results may change when the detector
+battery changes. `dedrift report` renders the full markdown report and returns
+the same nonzero result code when it detects drift.

@@ -15,6 +15,27 @@ from dedrift.store import Store
 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
+
+def _markdown_escape(value: object) -> object:
+    """Escape untrusted scalar text interpolated into Markdown reports.
+
+    Cycle/canary/rubric identifiers originate outside the package.  Jinja's
+    HTML autoescape does not protect Markdown, where a newline, table pipe,
+    inline HTML tag, or image token can forge report sections or trigger a
+    remote request in a renderer.  ``finalize`` applies this to every dynamic
+    string while leaving numbers and template-authored Markdown untouched.
+    """
+    if not isinstance(value, str):
+        return value
+    cleaned = "".join(
+        " " if char in "\r\n\t" else (char if ord(char) >= 32 and ord(char) != 127 else "�")
+        for char in value
+    )
+    cleaned = cleaned.replace("\\", "\\\\")
+    for token in ("`", "|", "!", "[", "]", "*", "#"):
+        cleaned = cleaned.replace(token, f"\\{token}")
+    return cleaned.replace("<", "&lt;").replace(">", "&gt;")
+
 _TEMPLATE = """\
 # dedrift report — {{ verdict }}
 
@@ -32,12 +53,23 @@ isolated permutation result can reach the first BH threshold.
 | Sudden (rolling window) | {{ r.rolling_cycles | join(', ') or '—' }} | **{{ r.verdict_sudden }}** |
 | Cumulative (golden baseline) | {{ r.golden_cycles | join(', ') or '—' }} | **{{ r.verdict_cumulative }}** |
 
+## Detector health
+
+{% for item in health.findings -%}
+- **{{ item.status }}** `{{ item.code }}` — {{ item.message }}
+{% endfor %}
+
+**{{ health.summary() }}**
+
 ## Evidence coverage
 
-| Baseline | Coverage | Families tested | Valid primary tests | Undefined primary tests | Power |
-|---|---|---:|---:|---:|---|
+| Baseline | Coverage | Families tested | Channels tested | Valid primary tests | Undefined primary tests | Power |
+|---|---|---:|---:|---:|---:|---|
 {% for a in r.assessments -%}
-| {{ a.baseline }} | **{{ a.coverage_status }}** | {{ a.n_families_tested }}/{{ a.n_families_total }} | {{ a.n_valid_primary_tests }} | {{ a.n_undefined_primary_tests }} | {{ a.power_status }} |
+| {{ a.baseline }} | **{{ a.coverage_status }}** | {{ a.n_families_tested }}/{{ a.n_families_total }} | {{ a.n_channels_tested }}/{{ a.n_channels_total }} | {{ a.n_valid_primary_tests }} | {{ a.n_undefined_primary_tests }} | {{ a.power_status }} |
+{% endfor %}
+{% for a in r.assessments if a.missing_channels %}
+Missing required channels for `{{ a.baseline }}`: {{ a.missing_channels | join(', ') }}.
 {% endfor %}
 {% set unused = family_vocabulary | reject('in', r.families_present) | list -%}
 Families populated: {{ r.families_present | length }} of {{ family_vocabulary | length }}{% if unused %} — not populated: {{ unused | join(', ') }}. An empty family is
@@ -364,7 +396,7 @@ def render_anytime_report(result: object) -> str:
     from dedrift.anytime import AnytimeCheckResult
 
     assert isinstance(result, AnytimeCheckResult)
-    env = Environment(autoescape=False)
+    env = Environment(autoescape=False, finalize=_markdown_escape)
     template = env.from_string(_ANYTIME_TEMPLATE)
     return template.render(
         r=result,
@@ -466,8 +498,11 @@ def render_report(store: Store, result: CheckResult) -> str:
                 }
             )
 
+    from dedrift.health import assess_fixed_result_health
+
     attributions: list[Attribution] = attribute(store, result)
-    env = Environment(autoescape=False)
+    health = assess_fixed_result_health(result, records)
+    env = Environment(autoescape=False, finalize=_markdown_escape)
     env.filters["effect"] = _effect_str
     template = env.from_string(_TEMPLATE)
 
@@ -502,4 +537,5 @@ def render_report(store: Store, result: CheckResult) -> str:
         degraded_pct=20,
         correctness=correctness,
         family_vocabulary=FAMILIES,
+        health=health,
     )

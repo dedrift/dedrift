@@ -3,11 +3,15 @@
 Two paths: a two-minute simulated incident (no API keys), then your own
 agent.
 
-## 1. The two-minute demo
+## 1. The two-minute controlled demo
 
 The built-in simulator plays an agent whose "model version" is silently
 swapped mid-history — shifting output length, refusal rate, and format
 validity.
+
+The shift is intentionally large and engineered to exercise the pipeline. A
+successful run proves that this installation can detect this simulation; it
+does not establish sensitivity to your real failure modes.
 
 ```bash
 pip install dedrift
@@ -87,8 +91,8 @@ because it is what attribution correlates behavioral onsets against.
 
 ### Ready-made adapters
 
-The repository ships two Anthropic adapters used in the
-[real-world case study](case-study.md):
+The repository ships two Anthropic adapters for an optional live-provider
+demonstration. That demonstration is not a production validation:
 
 - **`examples/anthropic_agent.py`** — API key via the `anthropic` SDK
   (recommended: proper sampling control, low latency overhead).
@@ -106,7 +110,8 @@ DEDRIFT_DEMO_MODEL=claude-haiku-4-5 dedrift canary run \
 
 ## 3. Freeze a golden baseline
 
-After you've collected a few cycles you trust:
+After collecting reference cycles chosen by a rule written down before you
+inspect their outcomes:
 
 ```bash
 dedrift baseline set --first 3     # or list explicit cycle IDs
@@ -119,8 +124,8 @@ failure mode, not a configuration choice.
 
 ## 4. Read a check like an operator
 
-- **Alerts** passed BH adjustment at q=0.05 *and* an observed materiality gate — these are
-  worth waking up for.
+- **Alerts** passed BH adjustment at q=0.05 *and* an observed materiality gate.
+  They are evidence to investigate, not a page or a proof of regression.
 - **"Significant, below materiality"** — real but small; watch it.
 - **Flags** (PSI, Page–Hinkley) are uncalibrated diagnostics that localize
   onsets for attribution. A stable agent shows occasional flags —
@@ -132,17 +137,21 @@ failure mode, not a configuration choice.
 
 ### Two inference modes
 
-`dedrift check` controls false alarms *per check*. Because monitoring runs
-forever, that rate compounds — measured 3.2% per check on stable agents,
-about 23 false alerts a month at hourly checks. Two answers ship:
-`detection.alert_persistence = 2` requires an alert to repeat on a fresh
-cycle before it fires; it is intended to filter one-cycle transients but its
-current false-alert/power tradeoff is not yet republished. `--inference
-anytime` uses lifetime-oriented rate e-processes instead. Version 0.5.1
+`dedrift check` applies BH to primary p-values within one fixed-sample check;
+with dependence assumptions unproven for the full shared battery, the package
+relies on its stated scenario simulation rather than claiming universal FDR
+control. It does not control the probability of at least one false alert over
+repeated use. The 3.2% figure is a scenario-specific per-check measurement, not a rate
+you may extrapolate to your deployment. `detection.alert_persistence = 2`
+requires an alert to repeat on a fresh cycle, but its current false-alert/power
+tradeoff is not republished. The experimental `--inference anytime` path uses
+lifetime-oriented rate e-processes instead. Version 0.5.1
 supports only the conservative frozen
 Clopper–Pearson construction with persistent Ville–Bonferroni crossings over
 a fixed pool. The former `twosample`/e-BH null and power figures are retracted,
-and no replacement performance table is claimed. Read
+and no replacement performance table is claimed. It covers only rate channels
+under strong fixed-rate assumptions; it is not a general continuous agent
+monitor. Read
 [anytime-valid mode](anytime.md) before switching; `fixed` is the default.
 
 ```bash

@@ -49,6 +49,19 @@ class TestPinning:
             with pytest.raises(EmbedderMismatchError, match="invalidates all history"):
                 pin_embedder(store, "st:all-MiniLM-L6-v2")
 
+    def test_missing_pin_file_is_detected_from_authoritative_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        with Store.init_project(tmp_path) as store:
+            pin_embedder(store, "hash")
+            pin_path = store.project_dir / "embedder.json"
+        pin_path.unlink()
+
+        with pytest.raises(RuntimeError, match="authoritative embedder pin"), Store(
+            tmp_path
+        ) as reopened:
+            reopened.connect()
+
     def test_embed_refuses_unpinned(self, tmp_path: Path) -> None:
         with (
             Store.init_project(tmp_path) as store,

@@ -25,6 +25,7 @@ _TABLE_KEYS = {
             "canary_repetitions",
             "rolling_window_cycles",
             "deterministic",
+            "monitor_latency",
             "custom_scalars",
         }
     ),
@@ -246,6 +247,7 @@ class Materiality:
             "ks_distance": (0.0, 1.0),
             "dispersion_ratio": (1.0, None),
             "p95_relative": (0.0, None),
+            "absolute_distance": (0.0, None),
         }
         for signature, gates in self.per_channel.items():
             for gate, value in gates.items():
@@ -271,14 +273,20 @@ class Materiality:
         other channel at the same time.
 
         Args:
-            gate: One of ``ks_distance``, ``dispersion_ratio``, ``p95_relative``.
+            gate: One of ``ks_distance``, ``dispersion_ratio``,
+                ``p95_relative``, or the per-channel-only
+                ``absolute_distance``.
             signature: The scalar signature being gated.
 
         Returns:
             The threshold in force for that (gate, signature) pair.
         """
         override = self.per_channel.get(signature, {}).get(gate)
-        return float(override) if override is not None else float(getattr(self, gate))
+        if override is not None:
+            return float(override)
+        if gate == "absolute_distance":
+            return 0.0
+        return float(getattr(self, gate))
 
     def rate_threshold(self, signature: str) -> float:
         """Return the pp threshold for a rate signature (in [0,1] units)."""
@@ -383,6 +391,9 @@ class ProjectConfig:
     Attributes:
         name: Project name.
         canary_repetitions: N repeated runs per canary per cycle.
+        monitor_latency: Whether runtime latency participates in the detector
+            battery. Disable this for fast in-process deterministic functions,
+            where host jitter is usually not product behavior.
         rolling_window_cycles: K cycles in the rolling reference.
         fdr_q: Benjamini-Hochberg FDR level.
         permutations: Number of label permutations for permutation tests.
@@ -418,6 +429,7 @@ class ProjectConfig:
     name: str = "default"
     canary_repetitions: int = 7
     deterministic: bool = False
+    monitor_latency: bool = True
     custom_scalars: tuple[str, ...] = ()
     rolling_window_cycles: int = 5
     fdr_q: float = 0.05
@@ -442,6 +454,8 @@ class ProjectConfig:
         if self.canary_repetitions < 2 and not self.deterministic:  # pragma: no cover
             msg = "canary_repetitions may be 1 only when project.deterministic = true"
             raise ValueError(msg)
+        if not isinstance(self.monitor_latency, bool):
+            raise ValueError("project.monitor_latency must be true or false")
         seen: set[str] = set()
         for name in self.custom_scalars:
             if not name.isidentifier():
@@ -579,10 +593,14 @@ class ProjectConfig:
         deterministic = project.get("deterministic", False)
         if not isinstance(deterministic, bool):
             raise ValueError("project.deterministic must be true or false")
+        monitor_latency = project.get("monitor_latency", True)
+        if not isinstance(monitor_latency, bool):
+            raise ValueError("project.monitor_latency must be true or false")
         return cls(
             name=_toml_string(project, "name", "default", section="project"),
             canary_repetitions=_toml_int(project, "canary_repetitions", 7, section="project"),
             deterministic=deterministic,
+            monitor_latency=monitor_latency,
             custom_scalars=_custom_scalar_names(project.get("custom_scalars", [])),
             rolling_window_cycles=_toml_int(project, "rolling_window_cycles", 5, section="project"),
             fdr_q=_toml_float(detection, "fdr_q", 0.05, section="detection"),

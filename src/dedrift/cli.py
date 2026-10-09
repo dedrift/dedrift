@@ -1,8 +1,4 @@
-"""dedrift command-line interface.
-
-Phases 0-1 expose ``init``, ``log``, ``sim``, ``canary run``, and
-``signatures``. Later phases add ``check`` and ``report`` (see ROADMAP.md).
-"""
+"""Command-line interface for the experimental dedrift release gate."""
 
 from __future__ import annotations
 
@@ -23,7 +19,7 @@ if TYPE_CHECKING:  # annotation only: keeps CLI start-up import-light
 
 app = typer.Typer(
     name="dedrift",
-    help="Statistically rigorous behavioral drift detection for AI agents.",
+    help="Experimental behavioral regression gates for repeatable AI-agent workflows.",
     no_args_is_help=True,
 )
 canary_app = typer.Typer(help="Canary suite operations.", no_args_is_help=True)
@@ -107,7 +103,17 @@ def init(
     """Initialize a dedrift project (.dedrift/ directory)."""
     store = Store(path, require_project=False)
     if store.exists():
-        typer.echo(f"Project already initialized at {store.project_dir}")
+        try:
+            with Store(path):
+                pass
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            typer.echo(
+                "A project-shaped directory exists but failed integrity validation: "
+                f"{exc}",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"Project already initialized and validated at {store.project_dir}")
         raise typer.Exit(code=0)
     try:
         with Store.init_project(path):
@@ -331,10 +337,14 @@ def _load_agent_fn(spec: str) -> object:
         raise typer.Exit(code=1)
     try:
         module = importlib.import_module(module_name)
-        return getattr(module, attr)
+        loaded = getattr(module, attr)
     except (ImportError, AttributeError) as exc:
         typer.echo(f"Cannot load agent {spec!r}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if not callable(loaded):
+        typer.echo(f"Cannot load agent {spec!r}: imported attribute is not callable.", err=True)
+        raise typer.Exit(code=1)
+    return loaded
 
 
 @canary_app.command("run")
@@ -395,10 +405,12 @@ def canary_run(
         repetitions=effective_repetitions,
         deterministic=_load_project_config(store).deterministic,
     )
+    failed_records = 0
     try:
         with store:
             for _ in range(cycles):
                 records = runner.run_cycle(store=store)
+                failed_records += sum(bool(record.errors) for record in records)
                 typer.echo(f"Cycle {records[0].cycle_id}: {len(records)} records.")
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         typer.echo(f"Could not persist canary cycle: {exc}", err=True)
@@ -407,6 +419,13 @@ def canary_run(
         f"Ran {cycles} cycle(s) of suite v{loaded_suite.version} "
         f"({len(loaded_suite.canaries)} canaries x {effective_repetitions} repetitions)."
     )
+    if failed_records:
+        typer.echo(
+            f"DEGRADED RUN: {failed_records} record(s) contain agent or adapter errors; "
+            "records were preserved for diagnosis, but this command is not successful.",
+            err=True,
+        )
+        raise typer.Exit(code=3)
 
 
 @app.command()
@@ -460,6 +479,29 @@ def signatures(
         typer.echo(table[show].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
 
+@app.command()
+def doctor(
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Read-only readiness and detector-health inspection."""
+    from dedrift.health import assess_health
+
+    store = Store(path, require_project=False)
+    try:
+        health = assess_health(store)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        # ``assess_health`` is intentionally total, but keep the CLI
+        # fail-closed if an unfamiliar platform/filesystem error escapes it.
+        typer.echo(f"FAIL [doctor] health inspection could not complete: {exc}", err=True)
+        typer.echo("SUMMARY FAIL — inspection aborted", err=True)
+        raise typer.Exit(code=1) from exc
+    for finding in health.findings:
+        typer.echo(f"{finding.status} [{finding.code}] {finding.message}")
+    typer.echo(health.summary())
+    if health.exit_code:
+        raise typer.Exit(code=health.exit_code)
+
+
 @baseline_app.command("set")
 def baseline_set(
     cycle_ids: Annotated[
@@ -510,10 +552,10 @@ def baseline_set(
         frozen = get_golden_baseline(store)
         typer.echo(f"Golden baseline frozen: {frozen}")
         typer.echo(
-            "ANYTIME VALIDITY: baseline selection must not depend on observed outcomes. "
-            "Use a prospectively chosen rule (for example, the first N designated "
-            "reference cycles); choosing cycles because their rates looked good "
-            "invalidates the lifetime bound.",
+            "CONFIRMATORY VALIDITY: baseline selection must not depend on observed "
+            "outcomes. Post-hoc baseline selection makes both fixed-sample p-values "
+            "and anytime evidence exploratory, not confirmatory. Use a prospectively "
+            "chosen rule (for example, the first N designated reference cycles).",
             err=True,
         )
         # Golden cycles are excluded from the rolling reference, so freezing

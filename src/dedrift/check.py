@@ -36,6 +36,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from scipy.stats import wasserstein_distance
 
 from dedrift.config import ProjectConfig
 from dedrift.detectors import (
@@ -89,7 +90,7 @@ DEGRADED_ERROR_FRACTION = 0.2
 
 #: Bump whenever the fixed-path candidate/persistence semantics change. Old
 #: check rows then fail closed instead of completing a streak under new rules.
-FIXED_PERSISTENCE_VERSION = "2"
+FIXED_PERSISTENCE_VERSION = "4"
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,10 @@ class TestRecord:
             effect scales only (the AD statistic, for instance, is not a
             sup-norm distance and has no meaningful threshold here).
         alert: significant AND material (primaries only).
+        absolute_distance: Wasserstein-1 distance between the reference and
+            current scalar samples in the signature's native units. ``None``
+            for rate/semantic channels. A configured native-unit floor gates
+            every primary scalar test on the channel.
     """
 
     baseline: str
@@ -122,6 +127,7 @@ class TestRecord:
     significant: bool = False
     material: bool | None = False
     alert: bool = False
+    absolute_distance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +206,9 @@ class ComparisonAssessment:
     n_valid_primary_tests: int
     n_undefined_primary_tests: int
     suppressed_families: tuple[str, ...] = ()
+    n_channels_total: int = 0
+    n_channels_tested: int = 0
+    missing_channels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -258,6 +267,10 @@ class CheckResult:
         persistence_fingerprint: Identity of the detector configuration,
             golden baseline, suite, embedder, and active agent configuration.
             Candidate streaks never cross a fingerprint boundary.
+        pinned_embedder: Exact embedder identity read for this computation.
+            Persistence verifies the pin is still identical while holding the
+            writer lock, so a concurrent first pin cannot silently produce a
+            check with the semantic battery omitted.
         overall_verdict: Conservative aggregate status for CLI/report use.
         n_alerts: Convenience count of alerting tests.
         families_present: Families this project actually populates. Reported
@@ -289,6 +302,7 @@ class CheckResult:
     cycle_effects: list[dict[str, Any]] = field(default_factory=list)
     persistence_demoted: int = 0
     persistence_fingerprint: str = ""
+    pinned_embedder: str | None = None
     snapshot_log_offset: int = 0
     snapshot_finalized_revision: int = 0
     snapshot_record_ids: tuple[str, ...] = field(default_factory=tuple)
@@ -417,11 +431,23 @@ def _test_seed(base_seed: int, *parts: str) -> int:
     return int.from_bytes(hashlib.blake2b(key, digest_size=4).digest(), "big") % (2**31)
 
 
-def _material_scalar(test: TestOutcome, cfg: ProjectConfig, signature: str) -> bool:
+def _material_scalar(
+    test: TestOutcome,
+    cfg: ProjectConfig,
+    signature: str,
+    absolute_distance: float | None,
+) -> bool:
     m = cfg.materiality
     # Gates resolve per signature: the defaults are shaped for text channels,
     # and a project whose only live scalar is latency on shared hardware has
     # to raise them without desensitising every other channel at once.
+    native_floor = m.scalar_threshold("absolute_distance", signature)
+    if native_floor > 0 and (
+        absolute_distance is None
+        or not math.isfinite(absolute_distance)
+        or absolute_distance < native_floor
+    ):
+        return False
     if test.test == "levene":
         ratio = m.scalar_threshold("dispersion_ratio", signature)
         r = test.effect_size
@@ -765,6 +791,11 @@ def _run_check_snapshot(
     golden = [c for c in declared_golden if c in cycles and c != current]
     rolling = [c for c in history if c not in golden][-cfg.rolling_window_cycles :]
     pinned_embedder = get_pinned_embedder(store)
+    if cfg.embedder and cfg.embedder != pinned_embedder:
+        raise ValueError(
+            f"embeddings.model expects {cfg.embedder!r}, but the authoritative pin is "
+            f"{pinned_embedder!r}; use `dedrift embedder pin` or restore the project state"
+        )
     persistence_fingerprint = _persistence_fingerprint(
         cfg,
         declared_golden,
@@ -788,8 +819,13 @@ def _run_check_snapshot(
         semantic_reference = golden if declared_golden else (rolling or history)
         _add_semantic_displacement(frame, records, embeddings, semantic_reference)
 
+    built_in_scalars = tuple(
+        signature
+        for signature in SCALAR_SIGNATURES
+        if cfg.monitor_latency or signature != "latency_ms"
+    )
     scalar_signatures = (
-        tuple(SCALAR_SIGNATURES)
+        built_in_scalars
         + tuple(cfg.custom_scalars)
         + (("semantic_displacement",) if embeddings is not None else ())
     )
@@ -882,6 +918,11 @@ def _run_check_snapshot(
                     cur,
                     n_permutations=effective_permutations,
                     seed=_test_seed(cfg.seed, baseline_name, family, sig, "p95_perm"),
+                )
+                native_distance = (
+                    float(wasserstein_distance(ref, cur))
+                    if len(ref) and len(cur)
+                    else float("nan")
                 )
                 if ice is not None and ice.engaged:
                     # Cycle-level null stats come from THIS baseline's
@@ -1049,9 +1090,33 @@ def _run_check_snapshot(
                             "n_reference_cycles": ice.n_cycles,
                         }
                     )
-                out.append(TestRecord(baseline_name, family, sig, ks_out))
-                out.append(TestRecord(baseline_name, family, sig, lev_out))
-                out.append(TestRecord(baseline_name, family, sig, p95_out))
+                out.append(
+                    TestRecord(
+                        baseline_name,
+                        family,
+                        sig,
+                        ks_out,
+                        absolute_distance=native_distance,
+                    )
+                )
+                out.append(
+                    TestRecord(
+                        baseline_name,
+                        family,
+                        sig,
+                        lev_out,
+                        absolute_distance=native_distance,
+                    )
+                )
+                out.append(
+                    TestRecord(
+                        baseline_name,
+                        family,
+                        sig,
+                        p95_out,
+                        absolute_distance=native_distance,
+                    )
+                )
                 # Corroboration only (same location hypothesis as KS on the
                 # same data; admitting them would inflate m at no gain).
                 out.append(TestRecord(baseline_name, family, sig, ad_test(ref, cur), primary=False))
@@ -1167,7 +1232,9 @@ def _run_check_snapshot(
     # Gate 2: one BH family across the PRIMARY tests in this check.
     primary_idx = [i for i, t in enumerate(tests) if t.primary]
     rejected_p, adjusted_p = benjamini_hochberg(
-        [tests[i].outcome.p_value for i in primary_idx], q=cfg.fdr_q
+        [tests[i].outcome.p_value for i in primary_idx],
+        q=cfg.fdr_q,
+        m_total=primary_family_upper_bound,
     )
     rejected = [False] * len(tests)
     adjusted = [float("nan")] * len(tests)
@@ -1203,7 +1270,12 @@ def _run_check_snapshot(
                 abs(t.outcome.effect_raw) >= cfg.materiality.rate_threshold(t.signature)
             )
         else:
-            material = _material_scalar(t.outcome, cfg, t.signature)
+            material = _material_scalar(
+                t.outcome,
+                cfg,
+                t.signature,
+                t.absolute_distance,
+            )
         gated.append(
             TestRecord(
                 baseline=t.baseline,
@@ -1217,6 +1289,7 @@ def _run_check_snapshot(
                 alert=bool(
                     t.primary and rej and material and (not degraded or t.signature == "had_error")
                 ),
+                absolute_distance=t.absolute_distance,
             )
         )
 
@@ -1238,7 +1311,7 @@ def _run_check_snapshot(
         rows = store.connect().execute(
             "SELECT params_json FROM checks WHERE baseline_kind = 'dual' ORDER BY id DESC"
         )
-        latest_candidates: dict[str, set[tuple[str, str, str]]] = {}
+        latest_candidates: dict[str, set[tuple[str, str, str, str]]] = {}
         for row in rows:
             params = json.loads(row[0])
             if params.get("persistence_fingerprint") != persistence_fingerprint:
@@ -1250,10 +1323,18 @@ def _run_check_snapshot(
                 or prior_cycle in latest_candidates
             ):
                 continue
-            latest_candidates[prior_cycle] = {
-                (str(base_), str(fam_), str(sig_))
-                for base_, fam_, sig_ in params.get("candidate_channels", [])
-            }
+            parsed_candidates: set[tuple[str, str, str, str]] = set()
+            for candidate in params.get("candidate_channels", []):
+                if isinstance(candidate, list) and len(candidate) == 4:
+                    parsed_candidates.add(
+                        (
+                            str(candidate[0]),
+                            str(candidate[1]),
+                            str(candidate[2]),
+                            str(candidate[3]),
+                        )
+                    )
+            latest_candidates[prior_cycle] = parsed_candidates
             if len(latest_candidates) == required_prior:
                 break
 
@@ -1261,7 +1342,7 @@ def _run_check_snapshot(
         # significant & material), persisted in params_json. Referencing
         # only fired alerts would self-extinguish a streak before it reached
         # N. Missing prior distinct cycles make the eligible set empty.
-        persistent_channels: set[tuple[str, str, str]] = set()
+        persistent_channels: set[tuple[str, str, str, str]] = set()
         if len(expected_prior_cycles) == required_prior and all(
             cycle in latest_candidates for cycle in expected_prior_cycles
         ):
@@ -1269,7 +1350,8 @@ def _run_check_snapshot(
             persistent_channels = set.intersection(*prior_candidate_sets)
         new_gated: list[TestRecord] = []
         for t in gated:
-            if t.alert and (t.baseline, t.family, t.signature) not in persistent_channels:
+            identity = (t.baseline, t.family, t.signature, t.outcome.test)
+            if t.alert and identity not in persistent_channels:
                 demoted += 1
                 new_gated.append(replace(t, alert=False))
             else:
@@ -1356,12 +1438,36 @@ def _run_check_snapshot(
         primary = [t for t in gated if t.baseline == name and t.primary]
         valid = [t for t in primary if np.isfinite(t.outcome.p_value)]
         tested_families = {t.family for t in valid}
+        observed_channels = {(t.family, t.signature) for t in valid}
+        expected_channels: set[tuple[str, str]] = set()
+        ref_frame = frame[frame["cycle_id"].isin(ref_cycles)]
+        for family in families:
+            expected_channels.update((family, signature) for signature in scalar_signatures)
+            ref_fam = ref_frame[ref_frame["family"] == family]
+            cur_fam = cur_frame[cur_frame["family"] == family]
+            for signature in RATE_SIGNATURES:
+                # Correctness is opt-in: when no record in either window has
+                # an executable expectation contract, an absent exact-match
+                # channel is honest rather than missing evidence. Once used
+                # on either side, however, it is part of the declared health
+                # manifest and cannot silently disappear.
+                if signature == "exact_match" and not (
+                    ref_fam[signature].notna().any() or cur_fam[signature].notna().any()
+                ):
+                    continue
+                expected_channels.add((family, signature))
+            if embeddings is not None:
+                expected_channels.add((family, "embedding"))
+        missing_channel_pairs = sorted(expected_channels - observed_channels)
+        missing_channels = tuple(
+            f"{family}/{signature}" for family, signature in missing_channel_pairs
+        )
         suppressed = tuple(sorted({i.family for i in issues if i.baseline == name}))
         if not ref_cycles:
             coverage = "NO REFERENCE"
         elif not valid:
             coverage = "NONE"
-        elif suppressed or len(tested_families) < len(families):
+        elif suppressed or missing_channels or len(tested_families) < len(families):
             coverage = "PARTIAL"
         else:
             coverage = "FULL"
@@ -1376,6 +1482,9 @@ def _run_check_snapshot(
                 n_valid_primary_tests=len(valid),
                 n_undefined_primary_tests=len(primary) - len(valid),
                 suppressed_families=suppressed,
+                n_channels_total=len(expected_channels),
+                n_channels_tested=len(expected_channels & observed_channels),
+                missing_channels=missing_channels,
             )
         )
         if verdicts.get(name) != "pending":
@@ -1412,6 +1521,7 @@ def _run_check_snapshot(
         cycle_effects=cycle_notes,
         persistence_demoted=demoted,
         persistence_fingerprint=persistence_fingerprint,
+        pinned_embedder=pinned_embedder,
         snapshot_log_offset=snapshot_offset,
         snapshot_finalized_revision=snapshot_revision,
         snapshot_record_ids=tuple(record.id for record in records),
@@ -1430,6 +1540,10 @@ def _persist(store: Store, result: CheckResult) -> None:
         if get_golden_baseline(store) != result.declared_golden_cycles:
             raise FinalizedSnapshotChangedError(
                 "golden baseline changed during the check snapshot; retry"
+            )
+        if get_pinned_embedder(store) != result.pinned_embedder:
+            raise FinalizedSnapshotChangedError(
+                "pinned embedder changed during the check snapshot; retry"
             )
         cursor = conn.execute(
             "INSERT INTO checks "
@@ -1455,11 +1569,12 @@ def _persist(store: Store, result: CheckResult) -> None:
                         "cycle_effects": result.cycle_effects,
                         "persistence_demoted": result.persistence_demoted,
                         "persistence_fingerprint": result.persistence_fingerprint,
+                        "pinned_embedder": result.pinned_embedder,
                         # Channels that earned an alert this check, whether
                         # or not the persistence gate fired them; the gate
                         # reads this at the next check.
                         "candidate_channels": [
-                            [t.baseline, t.family, t.signature]
+                            [t.baseline, t.family, t.signature, t.outcome.test]
                             for t in result.tests
                             if t.primary
                             and t.significant
@@ -1517,6 +1632,7 @@ def _persist(store: Store, result: CheckResult) -> None:
                             "baseline": t.baseline,
                             "statistic": t.outcome.statistic,
                             "effect_raw": t.outcome.effect_raw,
+                            "absolute_distance": t.absolute_distance,
                             "n_ref": t.outcome.n_ref,
                             "n_cur": t.outcome.n_cur,
                         }

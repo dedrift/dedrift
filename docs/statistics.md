@@ -1,8 +1,10 @@
 # The statistics
 
-This page is the reason dedrift exists. Every claim below is enforced by a
-test in CI; where a guarantee is approximate or a procedure is heuristic, the
-docs say so plainly.
+This page states the detector's evidence boundary. Load-bearing published
+numbers are tied to simulation regression tests; prose and a passing CI run are
+not independent validation. Where a guarantee is conditional, a procedure is
+heuristic, or a mode lacks a current performance table, the limitation is
+stated here.
 
 ## The detector battery
 
@@ -61,7 +63,7 @@ Ordinary BH needs independence or PRDS, which is not established for this
 dependent battery. Filtering equality-null rejections by an observed effect
 does not inherit FDR control for “effect is inside the materiality band.” The
 default simulation below is the evidence offered here; near-threshold alerts
-need confirmation and production suites need their own calibration.
+need confirmation and every project suite needs its own calibration.
 
 ## Calibration is enforced, not asserted
 
@@ -136,7 +138,8 @@ cycle-level/design-effect corrections, and never makes a primary p-value more
 significant than the raw comparison. `alert_persistence = 2` requires the same
 candidate channel on two distinct finalized current cycles; re-running a check
 does not advance the streak. Validate both false-alert rate and power on the
-exact shipped version and your own provider before paging. The 16/500 headline
+exact shipped version and your own provider before using the result in a
+release decision. The 16/500 headline
 elsewhere on this page covers the default `off` path at σ = 0 only.
 
 Tool-call order reversal
@@ -189,10 +192,11 @@ the earlier 10-replicate run and is superseded.)
     process and are retracted; no replacement performance table is published
     in 0.5.1. The corrected construction is deliberately conservative. If you
     stay on the fixed-sample path, the honest operating advice is unchanged:
-    treat one alert as evidence to investigate rather than an incident,
-    require persistence across consecutive cycles before paging anyone
-    (`detection.alert_persistence = 2` makes that the checker's
-    semantics), and choose your check
+    treat one alert as evidence to investigate rather than an incident. Do not
+    wire this pre-alpha package to a production pager. If you use it as a
+    human-reviewed release signal, persistence across consecutive cycles
+    (`detection.alert_persistence = 2`) can filter one-cycle candidates, but
+    that mode currently lacks a republished false-alert/power table. Choose your check
     frequency knowing the arithmetic above.
 - **Where the KS gate binds.** The two-sample critical value at raw
   α = 0.05 is D_crit ≈ 1.36·√((n+m)/(n·m)). For equal arms the default
@@ -213,7 +217,7 @@ the earlier 10-replicate run and is superseded.)
   the streams sharing records). That
   number is printed here deliberately — flags never alert, they exist to
   localize onsets for attribution, and the report labels them as such.
-  Cross-stream correction for the flag channel is on the roadmap.
+  No cross-stream correction is implemented for the flag channel.
 - **PSI is refused where it cannot mean anything.** PSI between two finite
   samples of the *same* distribution is not zero — to first order
   E[PSI] ≈ (B−1)·(1/n_ref + 1/n_cur) — and that asymptotic figure is itself optimistic: simulating the shipped implementation at (30, 10) gives a measured E[PSI] of **3.10**, with PSI calling unchanged data a "major shift" **100%** of the time. At canary scale (10 bins,
@@ -245,7 +249,7 @@ the earlier 10-replicate run and is superseded.)
   two-sided and computed on shared data — the exact configuration. The
   pipeline-level measured alert rate is therefore a scenario-specific
   empirical calibration for the default path, not a transferable guarantee;
-  Benjamini–Yekutieli is on the roadmap for users who want a theorem.
+  Benjamini–Yekutieli is not implemented.
   `--inference anytime` does **not** use e-BH in 0.5.1: it
   uses persistent per-process Ville crossings with a Bonferroni split over
   the fixed epoch pool. That union bound tolerates cross-process dependence;

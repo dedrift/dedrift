@@ -16,7 +16,7 @@ from typing import BinaryIO
 import pytest
 
 import dedrift.store as store_module
-from dedrift.schema import InteractionRecord
+from dedrift.schema import InteractionOutput, InteractionRecord
 from dedrift.store import Store
 from tests.test_schema import make_config, make_record
 
@@ -311,6 +311,58 @@ class TestRoundTrip:
             assert reopened.count_records() == 0
             assert reopened.cycle_status("bad-cycle") is None
 
+    def test_streaming_rejects_duplicate_coordinate_before_jsonl_write(
+        self, tmp_path: Path
+    ) -> None:
+        first = make_record(cycle_id="stream-cycle", canary_id="same", repetition=1)
+        duplicate = make_record(cycle_id="stream-cycle", canary_id="same", repetition=1)
+        with Store.init_project(tmp_path) as store:
+            store.append(first)
+            before = store.records_path.stat().st_size
+            with pytest.raises(ValueError, match="coordinate already exists"):
+                store.append(duplicate)
+            assert store.records_path.stat().st_size == before
+            assert store.read_records() == [first]
+
+    def test_begin_cycle_is_durable_and_imported_cycle_cannot_be_upgraded(
+        self, tmp_path: Path
+    ) -> None:
+        with Store.init_project(tmp_path) as store:
+            store.begin_cycle("future", expected_records=1)
+            assert store.connect().execute(
+                "SELECT status, open_seq, prospective, expected_records "
+                "FROM canary_cycles WHERE cycle_id = 'future'"
+            ).fetchone() == ("open", 1, 1, 1)
+
+        with Store(tmp_path) as reopened:
+            # Repeating the declaration itself is idempotent while no
+            # conflicting lifecycle decision has been made.
+            reopened.begin_cycle("future", expected_records=1)
+            reopened.append_many([make_record(cycle_id="future")])
+            assert reopened.connect().execute(
+                "SELECT status, prospective FROM canary_cycles WHERE cycle_id = 'future'"
+            ).fetchone() == ("finalized", 1)
+
+            reopened.append_many([make_record(cycle_id="imported")])
+            assert reopened.connect().execute(
+                "SELECT status, prospective FROM canary_cycles WHERE cycle_id = 'imported'"
+            ).fetchone() == ("finalized", 0)
+            with pytest.raises(ValueError, match="cannot be made prospective"):
+                reopened.begin_cycle("imported", expected_records=1)
+
+    def test_legacy_cycle_rows_migrate_as_non_prospective(self, tmp_path: Path) -> None:
+        with Store.init_project(tmp_path) as store:
+            store.append_many([make_record(cycle_id="legacy")])
+            index_path = store.index_path
+
+        with sqlite3.connect(index_path) as conn:
+            conn.execute("ALTER TABLE canary_cycles DROP COLUMN prospective")
+
+        with Store(tmp_path) as migrated:
+            assert migrated.connect().execute(
+                "SELECT prospective FROM canary_cycles WHERE cycle_id = 'legacy'"
+            ).fetchone() == (0,)
+
     def test_streamed_cycle_is_allowed_until_anytime_processing(self, tmp_path: Path) -> None:
         first = make_record(cycle_id="cycle-0001")
         second = make_record(cycle_id="cycle-0001")
@@ -380,6 +432,129 @@ class TestRoundTrip:
             store.append_many(records)
             assert store.count_records() == 2
             assert store.read_records() == records
+
+    def test_unvalidated_oversized_integer_cannot_poison_jsonl(
+        self, tmp_path: Path
+    ) -> None:
+        valid = make_record()
+        # model_copy(update=...) deliberately bypasses Pydantic validation;
+        # append_many must still revalidate its detached persistence snapshot.
+        poisoned = valid.model_copy(update={"tokens_in": 2**100})
+        with Store.init_project(tmp_path) as store:
+            before = store.records_path.stat().st_size
+            with pytest.raises(ValueError, match="less than or equal"):
+                store.append_many([poisoned])
+            assert store.records_path.stat().st_size == before
+            assert store.count_records() == 0
+
+        # Reopening remains possible because no poison tail was published.
+        with Store(tmp_path) as reopened:
+            assert reopened.count_records() == 0
+
+    @pytest.mark.parametrize("count", [True, 1.5, 2**100])
+    def test_invalid_expected_cycle_count_is_rejected_before_write(
+        self, tmp_path: Path, count: object
+    ) -> None:
+        record = make_record(cycle_id="bounded-cycle")
+        with Store.init_project(tmp_path) as store:
+            before = store.records_path.stat().st_size
+            with pytest.raises(ValueError, match="strict integers"):
+                store.append_many(
+                    [record],
+                    finalize_cycles=False,
+                    expected_cycle_counts={"bounded-cycle": count},  # type: ignore[dict-item]
+                )
+            assert store.records_path.stat().st_size == before
+            assert store.count_records() == 0
+
+    @pytest.mark.parametrize("count", [0, True, 1.5, 2**100])
+    def test_finalize_rejects_invalid_expected_count_before_sqlite_binding(
+        self, tmp_path: Path, count: object
+    ) -> None:
+        record = make_record(cycle_id="open-cycle")
+        with Store.init_project(tmp_path) as store:
+            store.append(record)
+            with pytest.raises(ValueError, match="strict integer"):
+                store.finalize_cycle(
+                    "open-cycle",
+                    expected_records=count,  # type: ignore[arg-type]
+                )
+            assert store.cycle_status("open-cycle") == "open"
+            assert store.count_records() == 1
+
+    def test_reopen_rejects_equal_length_indexed_prefix_tampering(
+        self, tmp_path: Path
+    ) -> None:
+        record = make_record(output=InteractionOutput(text="AAA"))
+        with Store.init_project(tmp_path) as store:
+            store.append_many([record])
+            payload = store.records_path.read_bytes()
+            assert b"AAA" in payload
+            store.records_path.write_bytes(payload.replace(b"AAA", b"ZZZ", 1))
+
+        with pytest.raises(RuntimeError, match="indexed prefix conflicts"), Store(
+            tmp_path
+        ) as reopened:
+            reopened.connect()
+
+    def test_reopen_rejects_duplicate_id_smuggled_into_indexed_blank_line(
+        self, tmp_path: Path
+    ) -> None:
+        first = make_record(canary_id="first")
+        second = make_record(canary_id="second")
+        duplicate_line = (first.to_jsonl() + "\n").encode("utf-8")
+        blank_line = b" " * (len(duplicate_line) - 1) + b"\n"
+        with Store.init_project(tmp_path) as store:
+            store.append_many([first, second])
+            with store.records_path.open("ab") as stream:
+                stream.write(blank_line)
+                stream.flush()
+                os.fsync(stream.fileno())
+
+        # First reopen legitimately reconciles/skips the external blank line
+        # and advances the durable checkpoint over it.
+        with Store(tmp_path):
+            pass
+
+        records_path = tmp_path / ".dedrift" / "logs" / "records.jsonl"
+        payload = records_path.read_bytes()
+        assert payload.endswith(blank_line)
+        records_path.write_bytes(payload[: -len(blank_line)] + duplicate_line)
+
+        with pytest.raises(RuntimeError, match="repeats record id"), Store(tmp_path):
+            pass
+
+    def test_first_reopen_rejects_duplicate_record_in_unindexed_tail(
+        self, tmp_path: Path
+    ) -> None:
+        first = make_record(canary_id="first")
+        second = make_record(canary_id="second")
+        with Store.init_project(tmp_path) as store:
+            store.append_many([first, second])
+            duplicate_line = (first.to_jsonl() + "\n").encode("utf-8")
+
+        records_path = tmp_path / ".dedrift" / "logs" / "records.jsonl"
+        with records_path.open("ab") as stream:
+            stream.write(duplicate_line)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        with pytest.raises(RuntimeError, match="tail repeats indexed record id"), Store(tmp_path):
+            pass
+
+    def test_reopen_rejects_reordered_indexed_prefix(self, tmp_path: Path) -> None:
+        first = make_record(canary_id="first")
+        second = make_record(canary_id="second")
+        with Store.init_project(tmp_path) as store:
+            store.append_many([first, second])
+
+        records_path = tmp_path / ".dedrift" / "logs" / "records.jsonl"
+        lines = records_path.read_bytes().splitlines(keepends=True)
+        assert len(lines) == 2
+        records_path.write_bytes(lines[1] + lines[0])
+
+        with pytest.raises(RuntimeError, match="prefix order conflicts"), Store(tmp_path):
+            pass
 
     def test_recovered_crash_tail_keeps_earlier_cycle_observation_order(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -744,6 +919,7 @@ class TestRebuild:
             make_record(config=make_config(model="provider/model@v2")) for _ in range(5)
         ]
         with Store.init_project(tmp_path) as store:
+            store.begin_cycle("cycle-0001", expected_records=len(records))
             store.append_many(records)
             events_before = store.config_events()
             snapshot_before = store.read_finalized_canary_snapshot_with_revision()
@@ -752,6 +928,9 @@ class TestRebuild:
             assert store.config_events() == events_before
             assert store.count_records() == 10
             assert store.read_finalized_canary_snapshot_with_revision() == snapshot_before
+            assert store.connect().execute(
+                "SELECT prospective FROM canary_cycles WHERE cycle_id = 'cycle-0001'"
+            ).fetchone() == (1,)
 
     @pytest.mark.parametrize("mutation", ["content", "identity", "order"])
     def test_rebuild_rejects_changes_to_finalized_records(

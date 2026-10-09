@@ -24,6 +24,7 @@ from dedrift.anytime import (
     run_anytime_check,
     wealth_table,
 )
+from dedrift.canary import Canary, CanaryRunner, CanarySuite
 from dedrift.check import run_check, set_golden_baseline
 from dedrift.cli import app
 from dedrift.config import AnytimeConfig, ProjectConfig
@@ -34,6 +35,7 @@ from dedrift.report import render_anytime_report
 from dedrift.schema import InteractionInput, InteractionRecord, Source
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
 from dedrift.store import FinalizedSnapshotChangedError, Store
+from tests.test_schema import make_config
 
 runner = CliRunner()
 
@@ -75,8 +77,28 @@ def store_records(tmp_path: Path, records: list[InteractionRecord]) -> Store:
     set_golden_baseline(store, ids[:3])
     declaration = run_anytime_check(store)
     assert declaration.processed_cycles == ()
-    store.append_many([record for record in records if record.cycle_id not in golden])
+    append_prospective(store, [record for record in records if record.cycle_id not in golden])
     return store
+
+
+def append_prospective(
+    store: Store,
+    records: list[InteractionRecord],
+    *,
+    finalize_cycles: bool = True,
+) -> None:
+    """Model production collection: mark each cycle before publishing outcomes."""
+    grouped: dict[str, list[InteractionRecord]] = {}
+    for record in records:
+        assert record.cycle_id is not None
+        grouped.setdefault(record.cycle_id, []).append(record)
+    for cycle_id, cycle_records in grouped.items():
+        store.begin_cycle(cycle_id, expected_records=len(cycle_records))
+        store.append_many(
+            cycle_records,
+            finalize_cycles=finalize_cycles,
+            expected_cycle_counts={cycle_id: len(cycle_records)},
+        )
 
 
 def stamp_suite(record: InteractionRecord, fingerprint: str) -> InteractionRecord:
@@ -117,6 +139,71 @@ class TestBudgetArithmetic:
 
 
 class TestStatePersistence:
+    @staticmethod
+    def _runner() -> CanaryRunner:
+        suite = CanarySuite(
+            version="prospective-v1",
+            canaries=[
+                Canary(
+                    id="prospective-canary",
+                    family="happy_path",
+                    input={"text": "say hi"},
+                )
+            ],
+        )
+        return CanaryRunner(
+            suite,
+            lambda _inp: {"text": "hi", "structured": {"ok": True}},
+            make_config(),
+            repetitions=2,
+        )
+
+    def test_posthoc_import_after_epoch_declaration_is_rejected(self, tmp_path: Path) -> None:
+        store = Store.init_project(tmp_path)
+        canaries = self._runner()
+        golden = ["golden-0", "golden-1", "golden-2"]
+        for cycle_id in golden:
+            canaries.run_cycle(store=store, cycle_id=cycle_id)
+        # These outcomes exist before the pool and betting rule are frozen.
+        already_observed = canaries.run_cycle(cycle_id="observed-before-declaration")
+        set_golden_baseline(store, golden)
+        assert run_anytime_check(store).processed_cycles == ()
+
+        store.append_many(already_observed)
+        assert store.connect().execute(
+            "SELECT prospective FROM canary_cycles "
+            "WHERE cycle_id = 'observed-before-declaration'"
+        ).fetchone() == (0,)
+        with pytest.raises(ValueError, match="post-hoc outcomes as prospective evidence"):
+            run_anytime_check(store)
+        assert load_processed_cycles(
+            store,
+            store.connect().execute(
+                "SELECT fingerprint FROM anytime_epochs ORDER BY epoch_index DESC LIMIT 1"
+            ).fetchone()[0],
+        ) == set()
+        store.close()
+
+    def test_runner_cycle_started_after_declaration_is_eligible(self, tmp_path: Path) -> None:
+        store = Store.init_project(tmp_path)
+        canaries = self._runner()
+        golden = ["golden-0", "golden-1", "golden-2"]
+        for cycle_id in golden:
+            canaries.run_cycle(store=store, cycle_id=cycle_id)
+        set_golden_baseline(store, golden)
+        declaration = run_anytime_check(store)
+        assert declaration.processed_cycles == ()
+
+        canaries.run_cycle(store=store, cycle_id="future")
+        result = run_anytime_check(store)
+
+        assert result.processed_cycles == ("future",)
+        assert store.connect().execute(
+            "SELECT prospective FROM canary_cycles WHERE cycle_id = 'future'"
+        ).fetchone() == (1,)
+        assert all(state.cycles == 1 for state in load_states(store).values())
+        store.close()
+
     def test_only_cycles_after_declaration_are_folded_once_and_recheck_is_read_only(
         self, tmp_path: Path
     ) -> None:
@@ -127,7 +214,8 @@ class TestStatePersistence:
         assert all(state.cycles == 0 for state in load_states(store).values())
 
         future = make_records(cycles=9)
-        store.append_many(
+        append_prospective(
+            store,
             [
                 record
                 for record in future
@@ -191,7 +279,9 @@ class TestStatePersistence:
         assert after_finalization.processed_cycles == ()
         assert all(state.cycles == 0 for state in load_states(store).values())
 
-        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0004"]
+        )
         future = run_anytime_check(store)
         assert future.processed_cycles == ("cycle-0004",)
         assert all(state.cycles == 1 for state in load_states(store).values())
@@ -212,11 +302,14 @@ class TestStatePersistence:
             lambda *_args, **_kwargs: EValueOutcome(0.0, True, "neutral scripted evidence"),
         )
 
-        store.append_many(
+        append_prospective(
+            store,
             [record for record in records if record.cycle_id == "cycle-0003"],
             finalize_cycles=False,
         )
-        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0004"]
+        )
         deferred = run_anytime_check(store)
 
         assert deferred.current_cycle == "cycle-0004"
@@ -291,7 +384,10 @@ class TestStatePersistence:
                 .fetchone()
             )
             assert boundary[0] == boundary[1]
-            migrated.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+            append_prospective(
+                migrated,
+                [record for record in records if record.cycle_id == "cycle-0004"],
+            )
             result = run_anytime_check(migrated)
             assert result.processed_cycles == ("cycle-0004",)
 
@@ -493,9 +589,11 @@ class TestProductionStateGuards:
             for record in records
             if record.cycle_id == degraded_cycle
         ]
-        store.append_many(degraded_records)
+        append_prospective(store, degraded_records)
         first = run_anytime_check(store)
-        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0004"]
+        )
         second = run_anytime_check(store)
         repeated = run_anytime_check(store)
         report = render_anytime_report(repeated)
@@ -532,7 +630,9 @@ class TestProductionStateGuards:
             finalize_cycles=False,
         )
         assert run_anytime_check(store).processed_cycles == ()
-        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0004"]
+        )
         store.finalize_cycle("cycle-0003")
         before_states = load_states(store)
         before_ledger = (
@@ -571,7 +671,9 @@ class TestProductionStateGuards:
             finalize_cycles=False,
         )
         declaration = run_anytime_check(store)
-        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0004"]
+        )
         store.finalize_cycle("cycle-0003")
         monkeypatch.setattr(
             anytime_module,
@@ -616,7 +718,9 @@ class TestProductionStateGuards:
             finalize_cycles=False,
         )
         assert run_anytime_check(store).processed_cycles == ()
-        store.append_many([record for record in selected if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in selected if record.cycle_id == "cycle-0004"]
+        )
         store.finalize_cycle("cycle-0003")
         monkeypatch.setattr(
             anytime_module,
@@ -655,7 +759,9 @@ class TestProductionStateGuards:
             finalize_cycles=False,
         )
         assert run_anytime_check(store).processed_cycles == ()
-        store.append_many([record for record in records if record.cycle_id == "cycle-0004"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0004"]
+        )
         store.finalize_cycle("cycle-0003")
         monkeypatch.setattr(
             anytime_module,
@@ -743,7 +849,7 @@ class TestProductionStateGuards:
         store.append_many(golden)
         set_golden_baseline(store, sorted(golden_ids))
         assert run_anytime_check(store).processed_cycles == ()
-        store.append_many(partially_stamped)
+        append_prospective(store, partially_stamped)
         before_states = load_states(store)
         before_checks = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
 
@@ -758,19 +864,72 @@ class TestProductionStateGuards:
         assert store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0] == before_checks
         store.close()
 
-    def test_actual_pinned_embedder_not_config_text_defines_epoch(self, tmp_path: Path) -> None:
+    def test_actual_pinned_embedder_defines_epoch(self, tmp_path: Path) -> None:
         store = project(tmp_path)
-        first = run_anytime_check(store, ProjectConfig(embedder="ignored-a"))
-        second = run_anytime_check(store, ProjectConfig(embedder="ignored-b"))
+        first = run_anytime_check(store)
+        second = run_anytime_check(store)
         assert second.fingerprint == first.fingerprint
         assert second.processed_cycles == ()
 
         pin_embedder(store, "hash")
-        third = run_anytime_check(store, ProjectConfig(embedder="still-ignored"))
+        third = run_anytime_check(store)
         assert third.fingerprint != first.fingerprint
         assert third.processed_cycles == ()
         assert third.verdict == "NO CURRENT OBSERVATION"
         assert all(state.epoch == 1 for state in load_states(store).values())
+        store.close()
+
+    def test_embedder_pin_race_retries_before_declaring_epoch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = project(tmp_path)
+        original = anytime_module.get_pinned_embedder
+        calls = 0
+
+        def racing_read(target: Store) -> str | None:
+            nonlocal calls
+            calls += 1
+            observed = original(target)
+            if calls == 1:
+                # Return the stale observation only after another writer has
+                # made the pin authoritative.  The writer transaction must
+                # reject this computation and let the public retry rebuild
+                # the epoch fingerprint from the new pin.
+                pin_embedder(target, "hash")
+            return observed
+
+        monkeypatch.setattr(anytime_module, "get_pinned_embedder", racing_read)
+        result = run_anytime_check(store)
+
+        assert calls >= 4
+        expected_base = anytime_module.epoch_fingerprint(
+            suite_version=anytime_module._canonical_suite_identity(
+                [record for record in store.read_records() if record.cycle_id == "cycle-0000"],
+                "cycle-0000",
+            ),
+            embedder="hash",
+            golden_cycles=("cycle-0000", "cycle-0001", "cycle-0002"),
+            extractor_version=anytime_module.EXTRACTOR_VERSION,
+            inference_config=anytime_module.json.dumps(
+                {
+                    "alpha": 0.05,
+                    "epoch_allocation": "per_epoch",
+                    "gamma_total": 0.02,
+                    "inference_version": anytime_module.ANYTIME_INFERENCE_VERSION,
+                    "rate_model": "frozen_cp",
+                    "tilts": (1.5, 2.0, 3.0),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        assert result.fingerprint == f"{expected_base}:e0"
+        store.close()
+
+    def test_configured_embedder_mismatch_fails_closed(self, tmp_path: Path) -> None:
+        store = project(tmp_path)
+        with pytest.raises(ValueError, match="authoritative pin"):
+            run_anytime_check(store, ProjectConfig(embedder="hash"))
         store.close()
 
     def test_production_records_with_cycle_ids_do_not_enter_the_experiment(
@@ -821,7 +980,9 @@ class TestBothPathsOnIdenticalLogs:
         declaration = run_anytime_check(store)
         assert declaration.verdict == "NO CURRENT OBSERVATION"
         future = make_records(cycles=7, change_cycle=None)
-        store.append_many([record for record in future if record.cycle_id == "cycle-0006"])
+        append_prospective(
+            store, [record for record in future if record.cycle_id == "cycle-0006"]
+        )
         anytime = run_anytime_check(store)
         assert fixed.n_alerts == 0
         assert anytime.n_alerts == 0
@@ -841,7 +1002,9 @@ class TestBothPathsOnIdenticalLogs:
         set_golden_baseline(store, ["cycle-0000", "cycle-0001", "cycle-0002"])
         declaration = run_anytime_check(store)
         assert declaration.processed_cycles == ()
-        store.append_many([record for record in records if record.cycle_id == "cycle-0007"])
+        append_prospective(
+            store, [record for record in records if record.cycle_id == "cycle-0007"]
+        )
         anytime = run_anytime_check(store)
         assert anytime.verdict in {"OK", "DRIFT DETECTED"}
         assert all(p.cycles == 1 for p in anytime.processes)
@@ -974,7 +1137,7 @@ class TestEpochPool:
             record.model_copy(update={"id": str(uuid4()), "cycle_id": "cycle-0006"})
             for record in SimAgent(cfg).run_cycles(1)
         ]
-        store.append_many(added)
+        append_prospective(store, added)
         later = run_anytime_check(store)
         store.close()
         assert later.n_processes == first.n_processes
@@ -1022,7 +1185,9 @@ class TestProductionRateModel:
         set_golden_baseline(store, ids[:3])
         declaration = run_anytime_check(store)
         assert declaration.processed_cycles == ()
-        store.append_many([record for record in records if record.cycle_id in set(ids[8:])])
+        append_prospective(
+            store, [record for record in records if record.cycle_id in set(ids[8:])]
+        )
         result = run_anytime_check(store)
         assert result.n_alerts > 0
         refusal = [p for p in result.processes if p.key[2] == "refusal"]
@@ -1037,7 +1202,9 @@ class TestProductionRateModel:
         set_golden_baseline(store, ["cycle-0000", "cycle-0001", "cycle-0002"])
         declaration = run_anytime_check(store)
         assert declaration.processed_cycles == ()
-        store.append_many([record for record in records if record.cycle_id not in initial_ids])
+        append_prospective(
+            store, [record for record in records if record.cycle_id not in initial_ids]
+        )
         result = run_anytime_check(store)
         assert result.n_alerts == 0
         assert result.processed_cycles == (
@@ -1060,7 +1227,9 @@ class TestProductionRateModel:
         declaration = run_anytime_check(store, config=explicit)
         assert declaration.processed_cycles == ()
         future = make_records(cycles=7, change_cycle=None)
-        store.append_many([record for record in future if record.cycle_id == "cycle-0006"])
+        append_prospective(
+            store, [record for record in future if record.cycle_id == "cycle-0006"]
+        )
         result = run_anytime_check(store, config=explicit)
         assert result.n_alerts == 0
         assert result.gamma_per_process > 0
@@ -1097,16 +1266,20 @@ class TestProductionRateModel:
         batched.append_many(initial)
         set_golden_baseline(batched, cycle_ids[:3])
         run_anytime_check(batched)
-        batched.append_many(future)
+        append_prospective(batched, future)
         batched_result = run_anytime_check(batched)
 
         incremental = Store.init_project(tmp_path / "incremental")
         incremental.append_many(initial)
         set_golden_baseline(incremental, cycle_ids[:3])
         run_anytime_check(incremental)
-        incremental.append_many([r for r in records if r.cycle_id == cycle_ids[3]])
+        append_prospective(
+            incremental, [r for r in records if r.cycle_id == cycle_ids[3]]
+        )
         first = run_anytime_check(incremental)
-        incremental.append_many([r for r in records if r.cycle_id == cycle_ids[4]])
+        append_prospective(
+            incremental, [r for r in records if r.cycle_id == cycle_ids[4]]
+        )
         second = run_anytime_check(incremental)
 
         assert first.n_alerts > 0

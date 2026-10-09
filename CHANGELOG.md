@@ -58,6 +58,23 @@ fixed-reference simulations also exceeded the advertised lifetime budget.
   serialized, finalized cycles are immutable, snapshot races retry, and a
   missing, empty, unrelated, or incompatible SQLite index is never silently
   rebuilt from the interaction log.
+- Closed additional review blockers before release: SQLite-sized integer and
+  expected-count validation happens before JSONL publication; duplicate
+  canary coordinates are rejected for streaming as well as finalization;
+  indexed JSONL prefixes are integrity-checked on open; embedder pins are
+  authoritative lifecycle state and are revalidated at check commit.
+- Fixed current-data-dependent multiplicity shrinkage by retaining the
+  prospectively declared primary family size when families or channels are
+  suppressed, and included the exact statistical test in persistence keys.
+- Added channel-level evidence coverage, a native-unit scalar materiality
+  floor, and a latency opt-out. A declared custom channel that disappears can
+  no longer return a green fixed result.
+- Added durable pre-observation cycle declaration for anytime inference.
+  Runner-managed cycles are declared before the first agent call and
+  checkpointed record by record; post-hoc batches after an active epoch fail
+  closed rather than masquerading as future evidence.
+- Added `dedrift doctor`, report health output, non-callable/degraded-run CLI
+  failures, Markdown-injection escaping, and honest release-gate positioning.
 
 Upgrade note: an explicit `rate_model = "twosample"` now fails closed. Remove
 that setting or replace it with `rate_model = "frozen_cp"`, then review the

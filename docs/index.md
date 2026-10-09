@@ -8,12 +8,12 @@ hide:
 
 <div class="dd-hero" markdown>
 
-<h1>Agents don't throw errors when they degrade.<br>They keep confidently producing <em>worse outputs</em>.</h1>
+<h1>A behavioral regression gate<br>for <em>repeatable agent workflows</em>.</h1>
 
 <p class="dd-sub">
-dedrift catches silent behavioral drift in AI agents — with calibrated
-false-alarm rates, multiplicity-adjusted alerting, and config-change attribution.
-Every statistical claim is enforced by simulation tests that run in CI.
+dedrift compares repeated frozen-canary runs across agent releases. It combines
+multiplicity-adjusted tests, observed-effect gates, and correlational config
+context. It is experimental research software, not a production pager.
 </p>
 
 [Get started](#try-it-in-two-minutes){ .md-button .md-button--primary }
@@ -22,16 +22,17 @@ Every statistical claim is enforced by simulation tests that run in CI.
 
 <div class="dd-pip"><span>$</span> pip install dedrift</div>
 
-<p class="dd-proof-strip">A silent model swap, caught in one canary cycle
-with correct attribution — reproducible in four commands.
+<p class="dd-proof-strip">A deliberately large scripted model swap exercises
+both baselines in the shipped simulation. That demonstration does not
+establish power or detection latency on your agent.
 <a href="case-study/">see the demonstration</a>.</p>
 
 </div>
 
-<div class="dd-section-title">Your observability catches crashes.<br>It doesn't catch character changes.</div>
+<div class="dd-section-title">A narrower question than observability:<br>did this release change behavior on fixed inputs?</div>
 <p class="dd-section-sub">
-Model updates, prompt edits, tool-schema changes, RAG refreshes, provider-side
-silent updates — all shift agent behavior without a single error in your logs.
+Model updates, prompt edits, tool-schema changes, RAG refreshes, and
+provider-side updates can shift agent behavior without an error in your logs.
 </p>
 
 <div class="grid cards" markdown>
@@ -40,9 +41,9 @@ silent updates — all shift agent behavior without a single error in your logs.
 
     ---
 
-    Every detector's false-alarm rate is validated by simulation tests that
-    run in CI on every commit — and inside the release pipeline. A release
-    cannot ship if the statistics fail their own audit.
+    The shipped p-valued detector scenarios have documented simulation bands
+    that run in CI and in the release workflow. A failed calibration job blocks
+    those workflows; a pass is still not independent validation.
 
 -   :material-filter-check:{ .lg .middle } **Fixed-sample alerts: two gates**
 
@@ -50,7 +51,8 @@ silent updates — all shift agent behavior without a single error in your logs.
 
     The default fixed-sample path applies Benjamini–Hochberg adjustment across
     every primary test, then an observed materiality gate on effect size.
-    Statistically significant but practically trivial? You don't get paged.
+    Statistically significant but practically trivial? It does not become an
+    alert row. An alert row is still evidence to investigate, not a page.
     Anytime mode instead uses golden-only e-processes; its tilts target power
     but do not impose this observed-effect gate.
 
@@ -58,7 +60,7 @@ silent updates — all shift agent behavior without a single error in your logs.
 
     ---
 
-    LLM outputs are random, so single-run comparisons are meaningless.
+    Stochastic LLM outputs make single-run comparisons unreliable.
     Canaries run N times per cycle; the fixed-sample path compares
     distributions against a rolling window *and* a frozen golden baseline.
     Anytime mode deliberately uses only the frozen golden reference.
@@ -89,12 +91,12 @@ silent updates — all shift agent behavior without a single error in your logs.
 
 </div>
 
-<div class="dd-section-title">Watch it catch a real one</div>
+<div class="dd-section-title">Inspect the controlled demonstration</div>
 <p class="dd-section-sub">
-A scripted silent model swap — same prompt, same canaries, nothing
-announced. The gross-swap regression fires on both baselines and attributes
-the co-shift to the config fingerprint change; exact counts and effects must
-be regenerated for the installed build.
+A scripted model swap — same prompt and canaries, changed model identity. The
+gross-swap regression fires on both baselines and reports the co-located config
+fingerprint change as correlational context; exact counts and effects must be
+regenerated for the installed build.
 </p>
 
 [![A scripted silent model swap, caught](assets/fig1_the_catch.png)](case-study.md)
@@ -104,18 +106,18 @@ be regenerated for the installed build.
 [Reproduce it yourself](https://github.com/dedrift/dedrift/tree/main/examples){ .md-button }
 </p>
 
-<div class="dd-section-title">Measured, not asserted</div>
+<div class="dd-section-title">Measured in a stated simulation, not generalized</div>
 <p class="dd-section-sub">
-Every detector's false-alarm rate is measured against a documented
-acceptance band by simulation tests that run in CI on every commit. The
+The default detector battery is exercised against documented acceptance bands
+by simulation tests in CI. The
 full pipeline's null alert rate: 16 of 500 stable-agent checks (3.2%,
 Wilson 95% upper bound 5.1%), measured at m ≈ 336 primaries — the
 any-alert rate is family-wise and grows with battery size even under
 valid per-test FDR, so the headline number is always stated at its
-battery size. Opt-in cycle-effect/anytime modes are experimental and require
-deployment-specific calibration; their prior tables are retracted in 0.5.1.
-The parts that aren't calibrated — the diagnostic flag channel — carry their
-measured rate too, because honesty is the product.
+battery size. This is scenario evidence, not a production guarantee. Opt-in
+cycle-effect/anytime modes are experimental and require project-specific
+calibration; their prior tables are retracted in 0.5.1. Diagnostic flags are
+explicitly non-alerting.
 </p>
 
 [![Measured null false-alarm rates per detector](assets/fig2_calibration.png)](statistics.md)
@@ -143,10 +145,7 @@ dedrift check
 Current cycle: cycle-0007<br>
 Sudden (vs rolling 4 cycles): <span class="a">DRIFT DETECTED</span><br>
 Cumulative (vs golden 3 cycles): <span class="a">DRIFT DETECTED</span><br>
-Alerts: multiple (build-specific BH-adjusted, observed-effect-gated results)<br>
-&nbsp;&nbsp;[golden] adversarial/refusal two_proportion_z: effect=<span class="a">+21.0 pp</span>, p_adj=0.0009<br>
-&nbsp;&nbsp;[golden] adversarial/format_valid two_proportion_z: effect=<span class="a">-21.9 pp</span>, p_adj=0.0023<br>
-&nbsp;&nbsp;[golden] edge_case/output_words ks: effect=<span class="a">D=0.71</span>, p_adj=1.4e-20<br>
+Alerts: multiple (exact rows and values are build-specific)<br>
 <span class="c"># dedrift report --out report.md  →  attribution: nearest config event,</span><br>
 <span class="c"># model fingerprint change, 0.0 h before onset — consistent with the swap.</span>
 </div>
@@ -165,30 +164,33 @@ def agent_fn(input: dict) -> dict:
 ```bash
 dedrift canary run --suite canaries.yaml --agent myagent:agent_fn \
     --model 'anthropic/claude-sonnet-5@2026-05-01'
-dedrift check && dedrift report
+dedrift report --out report.md
 ```
 
-Run it on a schedule. When behavior shifts, you'll know what moved, by how
-much, since when — and what changed in your stack at the same time. Full
+`dedrift report` runs the check itself and preserves its exit status: 0 for
+supported `OK`, 2 for detected drift, 3 for inconclusive evidence, and 1 for an
+operational failure. Do not chain `dedrift check && dedrift report`: a valid
+drift result exits 2, so the shell would skip the report. Run this first in CI
+or before a release and review the result with task-specific evals. It shows
+what measured channel moved, by how much, and which recorded config event was
+nearby; it does not establish cause. Full
 walkthrough: [quickstart](quickstart.md) ·
 [writing canary suites](canaries.md) ·
 [configuration](configuration.md).
 
-<div class="dd-section-title">Run it on your agent, with us watching the stats</div>
+<div class="dd-section-title">Help test whether the narrow workflow is useful</div>
 <p class="dd-section-sub">
-We're onboarding a small number of <strong>design partners</strong>: teams
-running production agents who want drift monitoring they can actually
-trust. You get hands-on setup, a canary suite designed for your failure
-modes, and a statistician reading your reports. We get the thing no
-simulation can give — real drift, in the wild.
+We're looking for <strong>design partners</strong> willing to run the
+experimental release gate beside their existing evals. Hands-on setup is in
+exchange for blunt evidence about false alerts, missed regressions, runtime,
+and whether anyone returns to the tool after the first trial.
 </p>
 
 <p style="text-align:center" markdown>
 [Become a design partner](https://dedrift.ai/#pricing){ .md-button .md-button--primary }
 </p>
 
-## dedrift Pro
+## Commercial status
 
-A commercial tier with advanced inference is in development and lives outside
-this repository — contact [support@dedrift.ai](mailto:support@dedrift.ai) to
-hear when it ships.
+There is no hosted service or paid production tier today. Commercialization is
+premature until the release-gate workflow shows recurring use and paid intent.

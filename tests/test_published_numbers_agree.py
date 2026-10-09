@@ -31,9 +31,27 @@ CANONICAL: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
     (
         "tool-order channel, first-check alerts with and without the channel",
         ("8/20", "0/30"),
-        ("docs/statistics.md", "web/index.html"),
+        ("docs/statistics.md",),
     ),
 ]
+
+
+def test_public_entry_points_state_the_experimental_boundary() -> None:
+    """The first page a user sees must not present dedrift as a pager."""
+    for rel in ("README.md", "docs/index.md", "web/index.html"):
+        body = (_read(rel) or "").lower()
+        assert "experimental" in body, f"{rel} must label the project experimental"
+        assert "production pager" in body, f"{rel} must deny production-pager status"
+
+
+def test_landing_page_structured_version_matches_package() -> None:
+    """Search metadata must not advertise a stale release."""
+    package = (ROOT / "src" / "dedrift" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', package, flags=re.MULTILINE)
+    assert match is not None, "dedrift.__version__ is missing"
+    landing = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    assert f'"softwareVersion": "{match.group(1)}"' in landing
+
 
 #: values superseded by a re-measurement, with the one file allowed to cite them
 RETIRED: list[tuple[str, tuple[str, ...], str]] = [

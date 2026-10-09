@@ -9,6 +9,16 @@ Create a project: `.dedrift/` with `config.toml` (thresholds, FDR level,
 seeds, materiality gates — all documented inline), an append-only JSONL log,
 and a SQLite index. Everything runs on a laptop; there are no servers.
 
+## `dedrift doctor`
+
+Run a strictly read-only integrity and readiness inspection of an existing
+project. It verifies the JSONL/SQLite relationship, cycle lifecycle, baseline,
+embedder pin, channel coverage, persisted-check freshness, and anytime
+prospective boundary. Exit 0 means no blocking finding; exit 1 means the
+detector is not safe to interpret. Warnings still require human review.
+
+`doctor` diagnoses; it never repairs, migrates, finalizes, or deletes state.
+
 ## `dedrift log FILE`
 
 Ingest `InteractionRecord`s from a JSONL file — the generic adapter for any
@@ -65,7 +75,9 @@ the demo and the CI calibration/power suites.
 
 Runs the full gated pipeline for the latest cycle against both baselines.
 Prints both verdicts and the alert list; **exits 2 when drift is detected**,
-so it drops straight into cron/CI. Exit 0 is reserved for an overall `OK`.
+so CI can distinguish a behavioral finding from an operational failure. Exit 0
+is reserved for an overall `OK`; neither status is a production paging
+recommendation.
 Exit 3 means the result is inconclusive (`DEGRADED DATA`, no valid reference,
 or partial evidence coverage); automation must not interpret it as healthy.
 
@@ -73,7 +85,9 @@ or partial evidence coverage); automation must not interpret it as healthy.
 
 Renders the deterministic markdown report: verdicts, alert table in plain
 units, attribution, heuristic flags (clearly labeled), per-family sparklines,
-config timeline, and an appendix of every non-alerting result.
+config timeline, and an appendix of every non-alerting result. It runs the
+check itself and returns the same 0/2/3 result codes, so do not invoke it after
+`dedrift check` with `&&`: exit 2 would prevent the report from running.
 
 ## `dedrift signatures [--by family|canary]`
 

@@ -11,6 +11,7 @@ name = "my-agent"
 canary_repetitions = 7        # N runs per canary per cycle
 rolling_window_cycles = 5     # K cycles in the rolling reference
 deterministic = false         # true only if the agent is exactly reproducible
+monitor_latency = true         # false if host timing is not product behavior
 custom_scalars = []           # numeric channels read from output.structured
 
 [detection]
@@ -39,6 +40,7 @@ embedding_mmd2_floor = -1.0   # -1 = auto-calibrate; 0 = off; >0 = explicit
 # per-channel overrides; unlisted channels keep the defaults above
 [materiality.per_channel.latency_ms]
 ks_distance = 0.35
+absolute_distance = 5.0       # native units; ms for latency_ms
 
 [embeddings]
 model = ""                    # set via `dedrift embedder pin`, not by hand
@@ -94,6 +96,8 @@ same materiality gates, and the same BH adjudication as a built-in signature:
 ```toml
 [project]
 custom_scalars = ["score", "top_prob"]
+deterministic = true       # only if repeated calls are exactly reproducible
+monitor_latency = false    # when host jitter is not product behavior
 ```
 
 Values must be real numbers. A missing key, a string, a boolean, or a nested
@@ -109,6 +113,16 @@ every calibration figure published for dedrift is measured on the default
 battery (m ≈ 336); channels of your own enlarge m, and their correlation
 structure is yours, not ours.
 
+### `monitor_latency`
+
+Latency is enabled by default, but it is often a measurement of the host,
+network, rate limits, or cache state rather than agent quality. Set
+`monitor_latency = false` for in-process deterministic functions or whenever
+you cannot make the timing environment repeatable. If latency matters, keep it
+enabled and set a native-unit `absolute_distance` floor rather than allowing a
+statistically significant but operationally irrelevant millisecond shift to
+gate a release.
+
 ### `materiality.per_channel`
 
 Materiality gates are global by default, which makes retuning one channel
@@ -120,12 +134,16 @@ gate for one signature and leaves the rest alone:
 [materiality.per_channel.latency_ms]
 ks_distance = 0.35
 p95_relative = 0.50
+absolute_distance = 5.0
 ```
 
-Only the three scalar gates — `ks_distance`, `p95_relative`,
-`dispersion_ratio` — are overridable, and overrides are range-validated
-exactly like the global values. Rate gates stay global: they are expressed in
-percentage points of a rate and are already per-signature by construction.
+The three scalar gates — `ks_distance`, `p95_relative`, and
+`dispersion_ratio` — are overridable. `absolute_distance` is per-channel only,
+defaults to zero, and requires the Wasserstein-1 distance between the samples
+to clear a threshold in that channel's native units for any of its primaries
+to alert. Overrides are range-validated like the global values. Rate gates
+stay global: they are expressed in percentage points of a rate and are already
+per-signature by construction.
 
 ### `fdr_q`
 
@@ -188,7 +206,8 @@ estimated causally, from data strictly before each step — a sequential
 detector that standardised on cycles *after* the alarm would read its own
 future and understate the rate roughly sixfold. Flags compound
 across streams — a stable agent shows ≥1 flag on
-[69.8% of checks](statistics.md) — which is why flags never page anyone.
+[69.8% of checks](statistics.md) — which is why flags must never drive a
+release or page anyone.
 
 ### Embeddings
 
@@ -210,7 +229,7 @@ inference = "fixed"        # or "anytime"
 
 [anytime]
 alpha = 0.05               # epoch-wide lifetime false-alert budget
-rate_model = "frozen_cp"   # only supported production construction
+rate_model = "frozen_cp"   # only supported construction
 gamma_total = 0.02         # total frozen-reference coverage budget
 tilts = [1.5, 2.0, 3.0]    # symmetrised to {psi, 1/psi}
 epoch_allocation = "per_epoch"   # or "geometric"
@@ -247,5 +266,5 @@ operational semantics. Default inference remains `fixed`.
 | Command | Exit | Meaning |
 |---|---|---|
 | `dedrift check` | 0 | OK with valid evidence coverage |
-| `dedrift check` | 2 | DRIFT DETECTED — wire this to alerting |
+| `dedrift check` | 2 | DRIFT DETECTED — investigate; do not page automatically |
 | `dedrift check` | 3 | Inconclusive: degraded, missing/invalid reference, or partial coverage |

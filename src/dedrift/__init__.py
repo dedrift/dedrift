@@ -1,7 +1,3 @@
-"""dedrift: statistically rigorous behavioral drift detection for AI agents.
-
-Agents don't throw errors when they degrade — they keep confidently producing
-worse outputs. dedrift catches it.
-"""
+"""Experimental behavioral regression and release gating for AI workflows."""
 
 __version__ = "0.5.1"

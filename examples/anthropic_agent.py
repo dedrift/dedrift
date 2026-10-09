@@ -1,6 +1,6 @@
-"""A real agent adapter for the dedrift demo: one call to the Anthropic API.
+"""A live-provider adapter for the dedrift experiment: one Anthropic API call.
 
-Used by the real-world walkthrough:
+Used by the optional live-provider walkthrough (not a production validation):
 
     export ANTHROPIC_API_KEY=...
     export DEDRIFT_DEMO_MODEL=claude-haiku-4-5

@@ -646,9 +646,15 @@ def _run_anytime_check_snapshot(
         sort_keys=True,
         separators=(",", ":"),
     )
+    pinned_embedder = get_pinned_embedder(store)
+    if cfg.embedder and cfg.embedder != pinned_embedder:
+        raise ValueError(
+            f"embeddings.model expects {cfg.embedder!r}, but the authoritative pin is "
+            f"{pinned_embedder!r}; use `dedrift embedder pin` or restore project state"
+        )
     base_fingerprint = epoch_fingerprint(
         suite_version=epoch_suite,
-        embedder=get_pinned_embedder(store) or "",
+        embedder=pinned_embedder or "",
         golden_cycles=tuple(golden),
         extractor_version=EXTRACTOR_VERSION,
         inference_config=inference_config,
@@ -689,6 +695,10 @@ def _run_anytime_check_snapshot(
             raise FinalizedSnapshotChangedError(
                 "golden baseline changed during the check snapshot; retry"
             )
+        if get_pinned_embedder(store) != pinned_embedder:
+            raise FinalizedSnapshotChangedError(
+                "pinned embedder changed during the check snapshot; retry"
+            )
         states = load_states(store)
         missing_open_sequences = int(
             conn.execute("SELECT COUNT(*) FROM canary_cycles WHERE open_seq IS NULL").fetchone()[0]
@@ -723,7 +733,7 @@ def _run_anytime_check_snapshot(
         post_golden: list[str] = []
         lifecycle = (
             conn.execute(
-                "SELECT cycle_id, status, open_seq FROM canary_cycles "
+                "SELECT cycle_id, status, open_seq, prospective FROM canary_cycles "
                 "WHERE open_seq > ? ORDER BY open_seq",
                 (epoch_start_after_open_seq,),
             ).fetchall()
@@ -731,7 +741,15 @@ def _run_anytime_check_snapshot(
             else []
         )
         snapshot_cycles = set(cycles)
-        for cycle_id, status, _open_seq in lifecycle:
+        for cycle_id, status, _open_seq, prospective in lifecycle:
+            if not bool(prospective):
+                raise ValueError(
+                    f"cycle {str(cycle_id)!r} was imported after the anytime epoch began "
+                    "without a durable pre-observation begin_cycle marker. Refusing to "
+                    "treat post-hoc outcomes as prospective evidence. Re-baseline after "
+                    "the imported history, then collect future cycles with CanaryRunner "
+                    "or call Store.begin_cycle before the first agent call."
+                )
             if str(status) != "finalized":
                 break
             cycle = str(cycle_id)

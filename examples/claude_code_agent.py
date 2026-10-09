@@ -1,4 +1,4 @@
-"""A subscription-friendly agent adapter: Claude Code CLI in headless mode.
+"""A subscription-friendly adapter for an optional live-provider experiment.
 
 Uses `claude -p` (non-interactive print mode), which authenticates via your
 Claude subscription login — no ANTHROPIC_API_KEY required. This is the

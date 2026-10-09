@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dedrift — silent behavioral drift detection for AI agents</title>
-<meta name="description" content="Agents don't throw errors when they degrade — dedrift catches it. Frozen canary suites, BH-FDR-adjusted distribution tests, materiality gates, dual baselines, and config-change attribution. Measured false-alarm rates, published.">
-<meta property="og:title" content="dedrift — catch silent behavioral drift in AI agents">
-<meta property="og:description" content="Simulation-calibrated, multiplicity-adjusted drift detection for LLM agents.">
+<title>dedrift — experimental behavioral regression gates for AI agents</title>
+<meta name="description" content="Experimental frozen-canary release comparisons for repeatable AI-agent workflows. Scenario-calibrated tests, materiality gates, dual baselines, and correlational config context; not a production pager.">
+<meta property="og:title" content="dedrift — experimental behavioral regression gates for AI agents">
+<meta property="og:description" content="Compare repeated frozen-canary runs across agent releases; not a production pager.">
 <meta property="og:url" content="https://dedrift.ai/">
-<meta property="og:image" content="https://dedrift.ai/og-card.png">
+<meta property="og:image" content="https://dedrift.ai/og-card-v2.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://dedrift.ai/og-card.png">
+<meta name="twitter:image" content="https://dedrift.ai/og-card-v2.png">
 <link rel="canonical" href="https://dedrift.ai/">
 <link rel="icon" href="/docs/assets/logo.svg">
 <script type="application/ld+json">
@@ -18,10 +18,10 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "dedrift",
-  "description": "Simulation-calibrated behavioral drift detection for AI agents: frozen canary suites, multiplicity adjustment, materiality gates, and config-change attribution.",
+  "description": "Experimental behavioral regression gates for repeatable AI-agent workflows: frozen canary suites, multiplicity adjustment, materiality gates, and correlational config context.",
   "url": "https://dedrift.ai/",
   "downloadUrl": "https://pypi.org/project/dedrift/",
-  "softwareVersion": "0.4.0",
+  "softwareVersion": "0.5.1",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux, Windows",
   "license": "https://www.gnu.org/licenses/agpl-3.0.html",
@@ -336,7 +336,7 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
       <a href="#how">How it works</a>
       <a href="#case-study">Case study</a>
       <a href="#statistics">Statistics</a>
-      <a href="#pricing">Pricing</a>
+      <a href="#pricing">Status</a>
       <a href="/docs/">Docs</a>
       <a class="btn" href="https://github.com/dedrift/dedrift">GitHub ↗</a>
     </div>
@@ -345,15 +345,15 @@ dialog#contact::backdrop{background:rgba(4,6,12,.72);backdrop-filter:blur(3px)}
 
 <header class="hero wrap" id="home">
   <div class="chip"><b>●</b> <a href="https://github.com/dedrift/dedrift/blob/main/CHANGELOG.md">v0.5.1</a> <span class="sep">·</span> AGPL-3.0 <span class="sep">·</span> zero ML dependencies</div>
-  <h1>Agents don't throw errors when they degrade.<br><span class="grad">dedrift catches it.</span></h1>
+  <h1>A behavioral regression gate<br><span class="grad">for repeatable agent workflows.</span></h1>
   <p class="sub">
-    Silent model updates, prompt edits, and RAG refreshes change how your agent behaves
-    without a single error in the logs. dedrift runs frozen canary suites through your agent
-    every cycle and tests the distributions — so you find out in one cycle, not from your users.
+    dedrift compares repeated frozen-canary runs across model, prompt, tool, and RAG releases.
+    It is pre-alpha research software for controlled release experiments — not passive monitoring,
+    not a production pager, and not proof that a nearby config change caused a regression.
   </p>
   <div class="cta-row">
     <a class="btn btn-primary" href="/docs/quickstart/">Get started in minutes</a>
-    <a class="btn" href="#case-study">Watch the catch</a>
+    <a class="btn" href="#case-study">Inspect the demo</a>
   </div>
   <div class="pip"><span><span class="d">$</span> <b>pip install dedrift</b></span><button type="button" id="pipcopy" aria-label="Copy install command">copy</button></div>
 
@@ -373,9 +373,9 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
     <div class="stat rv"><div class="n"><em>3.2%</em></div>
       <div class="l">measured null alert rate — 16 of 500 stable-agent checks alerted</div>
       <div class="fine">Wilson 95% upper 5.1% · family-wise over m≈336 primaries; grows with battery size even under valid per-test FDR</div></div>
-    <div class="stat rv"><div class="n"><em>1 cycle</em></div>
-      <div class="l">to catch a silent model swap — flagged on both baselines, correctly attributed</div>
-      <div class="fine">Order-channel audit: 8/20 first-check alerts with the channel versus 0/30 without it; see Statistics for scale and caveats.</div>
+    <div class="stat rv"><div class="n"><em>unknown</em></div>
+      <div class="l">detection power on your agent until you run stable-history and incident replays</div>
+      <div class="fine">The deliberately large scripted swap exercises the pipeline; it is not a benchmark.</div>
       <div class="fine">harness: 30 canaries × 7 reps, golden = 3 cycles</div></div>
     <div class="stat rv"><div class="n"><em>100%</em></div>
       <div class="l">of stable checks falsely flagged by raw PSI at canary scale — measured</div>
@@ -390,8 +390,8 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
 
 <section id="product" class="wrap" aria-labelledby="product-h">
   <div class="kicker">The problem</div>
-  <h2 id="product-h">Observability catches crashes.<br>dedrift catches character changes.</h2>
-  <p class="lead">LLM systems fail differently: outputs stay well-formed while length, refusals, tool use and call order, latency tails, and meaning quietly shift. Nothing throws — so nothing pages you.</p>
+  <h2 id="product-h">A narrower question than observability:<br>did this release change behavior on fixed inputs?</h2>
+  <p class="lead">LLM outputs can stay well-formed while length, refusals, tool use, latency tails, and semantic scores move. dedrift measures selected channels on a frozen suite; it cannot decide by itself whether a product regression occurred.</p>
   <div class="cards3">
     <div class="card rv"><span class="ic">model@v2 → model@v3</span><h3>Silent model updates</h3><p>The API alias stays the same. The model behind it doesn't. Nobody emails you.</p></div>
     <div class="card rv"><span class="ic">git diff prompt.txt</span><h3>Prompt &amp; tool-schema edits</h3><p>A colleague "improves" the system prompt. Refusal behavior shifts overnight. No test fails.</p></div>
@@ -402,7 +402,7 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
 <section id="compare" class="wrap" aria-labelledby="compare-h">
   <div class="kicker">Where dedrift fits</div>
   <h2 id="compare-h">Complementary tools, different jobs</h2>
-  <p class="lead">Observability platforms are the right tool for crashes, latency, and spend. Drift monitors ship useful shift scores at telemetry scale. dedrift answers a different question: did my agent's <em>behavior</em> change, and can I trust the alert?</p>
+  <p class="lead">Observability platforms are the right tool for crashes, latency, and spend. Drift monitors ship shift scores at telemetry scale. dedrift asks whether selected behavior channels changed on repeatable canaries, under a stated experimental design.</p>
   <div class="tbl-wrap rv">
     <table>
       <thead>
@@ -411,9 +411,9 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
       <tbody>
         <tr><td>Crashes, exceptions, latency, spend</td><td><span class="y">✓</span> core strength</td><td><span class="n">—</span></td><td class="hl"><span class="n">—</span> not an APM</td></tr>
         <tr><td>Behavioral distributions on frozen canaries</td><td><span class="n">—</span></td><td><span class="mid">partial</span> raw shift scores</td><td class="hl"><span class="y">✓</span> one primary test per channel</td></tr>
-        <tr><td>Calibrated false-alarm rate at canary scale</td><td><span class="n">—</span></td><td><span class="mid">✗</span> flagged 100% of stable checks in our harness</td><td class="hl"><span class="y">✓</span> 3.2% measured, enforced in CI</td></tr>
+        <tr><td>Published default-simulation false-alert measurement</td><td><span class="n">—</span></td><td><span class="mid">case-specific</span> raw PSI failed at this scale</td><td class="hl"><span class="y">✓</span> 3.2% at the stated battery/scale; not transferable</td></tr>
         <tr><td>Multiplicity control (BH FDR) + materiality gates</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td class="hl"><span class="y">✓</span></td></tr>
-        <tr><td>Anytime-valid mode for continuous watch</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td class="hl"><span class="y">✓</span> model-conditional lifetime budget</td></tr>
+        <tr><td>Experimental sequential rate-only mode</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td class="hl"><span class="mid">partial</span> conditional lifetime budget; no corrected power table</td></tr>
         <tr><td>Config-fingerprint attribution</td><td><span class="mid">partial</span> deploy markers</td><td class="hl"><span class="n">—</span></td><td class="hl"><span class="y">✓</span> model / prompt / tools</td></tr>
       </tbody>
     </table>
@@ -440,7 +440,7 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
       <img src="/docs/assets/fig1_the_catch.png" alt="A scripted silent model swap: output tokens jump after the swap; latency tails thicken" loading="lazy">
     </div>
     <div>
-      <div class="kicker" style="text-align:left">A reproducible catch</div>
+      <div class="kicker" style="text-align:left">A reproducible controlled demonstration</div>
       <h2 id="case-h">We swapped the model.<br>Nobody told the detector.</h2>
       <p class="lead">A scripted silent swap you can regenerate in four commands — 30 canaries × 7 reps, golden frozen at cycle 3, the swap at cycle 8 behind a changed model fingerprint.</p>
       <div class="metrics">
@@ -451,9 +451,9 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
         <div class="metric"><b>0.0 h</b>attribution at onset</div>
       </div>
       <ul>
-        <li>First post-swap check: <b style="color:var(--amber)">DRIFT DETECTED</b> on both baselines</li>
+        <li>In this engineered scenario, the gross swap reports <b style="color:var(--amber)">DRIFT DETECTED</b> on both baselines</li>
         <li>Co-shifting signatures are attributed to the fingerprint change at onset</li>
-        <li>Same pipeline pages you on prompt edits and RAG refreshes</li>
+        <li>Prompt and RAG changes can be tested the same way, but sensitivity is not established</li>
       </ul>
       <a class="btn btn-primary" href="/docs/case-study/">Read the demonstration</a>
       <a class="btn btn-ghost" href="https://github.com/dedrift/dedrift/tree/main/examples">Reproduce it ↗</a>
@@ -466,9 +466,9 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
     <div>
       <div class="kicker" style="text-align:left">The differentiator</div>
       <h2 id="stats-h">Measured, not asserted</h2>
-      <p class="lead">Monitoring tools love p-values and hate publishing their false-alarm rates. We enforce ours in CI — a release cannot ship if the statistics fail their own audit.</p>
+      <p class="lead">The default synthetic scenarios publish their measured false-alert rates and are exercised in CI. Those measurements do not transfer automatically to a different suite, provider, battery size, or release cadence.</p>
       <ul>
-        <li>Every p-valued detector calibration-tested against a documented band, on every commit</li>
+        <li>The shipped default detector scenarios are calibration-tested against documented bands in CI</li>
         <li>Pipeline null: <b>16/500</b> stable checks alerted (3.2%, Wilson upper 5.1%), family-wise over m≈336 primaries</li>
         <li>Anytime 0.5.1: frozen Clopper–Pearson e-processes with persistent Ville–Bonferroni crossings over a fixed pool</li>
         <li>The earlier anytime null, wobble-boundary, and power figures used an invalid <code>twosample</code> process and are retracted; no replacement performance table is claimed</li>
@@ -483,9 +483,9 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
   </div>
 
   <div class="cards2" style="margin-top:64px">
-    <div class="card rv"><span class="ic">calibration ∈ CI</span><h3>No unmeasured claims</h3>
-      <p>If a number carries a p-value, the simulation proving its false-alarm rate runs on
-      every commit. A release that fails its own audit doesn't ship.</p></div>
+    <div class="card rv"><span class="ic">calibration ∈ CI</span><h3>Scenario evidence, scoped</h3>
+      <p>The default simulations and acceptance bands run in CI. They are useful regression
+      tests for this implementation, not a certificate for your deployment.</p></div>
     <div class="card rv"><span class="ic">significant ∧ material</span><h3>Fixed-sample alerts earn it twice</h3>
       <p>The default fixed-sample path requires multiplicity-adjusted equality-test evidence <em>and</em>
       an observed effect worth acting on. Anytime mode is golden-only and uses predictable tilts to
@@ -522,16 +522,16 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
 </section>
 
 <section id="pricing" class="wrap" aria-labelledby="pricing-h">
-  <div class="kicker">Pricing</div>
-  <h2 id="pricing-h">Open core, honestly priced</h2>
-  <p class="lead">The statistics are free forever. The advanced tier funds the work.</p>
+  <div class="kicker">Project status</div>
+  <h2 id="pricing-h">Open-source experiment, not a product tier</h2>
+  <p class="lead">There is no hosted service or paid production offering today. The next milestone is evidence of recurring use, not a pricing page.</p>
   <div class="tiers">
     <div class="tier rv">
       <h3>Open source</h3>
-      <div class="price">$0</div><div class="per">AGPL-3.0, forever</div>
+      <div class="price">$0</div><div class="per">AGPL-3.0</div>
       <ul>
         <li>Full detector battery, BH FDR adjustment + observed-effect gating</li>
-        <li>Anytime mode — model-conditional lifetime rate e-processes, assumptions and limitations reported</li>
+        <li>Experimental anytime mode — conditional rate-only construction, assumptions reported</li>
         <li>Dual baselines, attribution, reports</li>
         <li>Calibration suite — audit us</li>
         <li>Runs on a laptop: JSONL + SQLite, zero ML dependencies</li>
@@ -540,20 +540,19 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
     </div>
     <div class="tier hot rv">
       <h3>Design partner</h3>
-      <div class="price">Free</div><div class="per">for teams running production agents</div>
+      <div class="price">Research</div><div class="per">for teams with repeatable regression cases</div>
       <ul>
         <li>Hands-on setup on your agent</li>
         <li>Canary suite designed for your failure modes</li>
-        <li>A statistician reading your drift reports</li>
-        <li>Priority input on the roadmap</li>
+        <li>Joint review of false alerts and missed regressions</li>
+        <li>Evidence that can kill as well as improve the idea</li>
       </ul>
       <a class="btn btn-primary" href="mailto:support@dedrift.ai?subject=Design%20partner" data-contact="partner">Apply by email →</a>
     </div>
   </div>
   <p class="pricing-note">
-    Every statistical guarantee — including anytime-valid mode — is in the open core, forever.
-    A commercial hosted tier (managed monitoring, production-traffic drift) is in development —
-    <a href="mailto:support@dedrift.ai?subject=Commercial%20tier" data-contact="pro">write to us</a> to hear when it ships.
+    Commercialization is premature until the narrow release-gate workflow shows
+    recurring use and paid intent. No hosted-monitoring roadmap is promised.
   </p>
 </section>
 
@@ -563,14 +562,14 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
   <div class="wrap foot">
     <div>
       <div class="logo" style="margin-bottom:10px"><span class="pulse" aria-hidden="true"></span>dedrift</div>
-      <div>Silent behavioral drift detection for AI agents.<br>© 2026 dedrift · AGPL-3.0</div>
+      <div>Experimental behavioral regression gates for AI agents.<br>© 2026 dedrift · AGPL-3.0</div>
     </div>
     <div class="cols">
       <div class="col"><b>Product</b>
         <a href="/docs/quickstart/">Quickstart</a>
         <a href="/docs/case-study/">Case study</a>
         <a href="/docs/statistics/">The statistics</a>
-        <a href="#pricing">Pricing</a>
+        <a href="#pricing">Status</a>
       </div>
       <div class="col"><b>Resources</b>
         <a href="https://dedrift.ai/docs/">Documentation</a>
@@ -618,12 +617,6 @@ Alerts: build-specific (BH-adjusted and observed-effect gated)
       lead: 'Send us a note — a couple of lines is plenty to start.',
       tips: 'Useful to include: <b>what your agent does</b>, <b>what stack it runs on</b>, and <b>the drift you actually worry about</b> (silent model updates, prompt edits, RAG refreshes…).',
       subject: 'Design partner',
-    },
-    pro: {
-      title: 'Commercial tier',
-      lead: "It's in development — hosted monitoring and production-traffic drift. The statistics stay free. Tell us what you'd need and we'll write when it ships.",
-      tips: 'Useful to include: <b>your monitoring cadence</b> and <b>what a false alert currently costs you</b>.',
-      subject: 'Commercial tier',
     },
     general: {
       title: 'Get in touch',

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,60 @@ from dedrift.sim import SimAgent, SimConfig
 from dedrift.store import Store
 
 runner = CliRunner()
+
+
+def test_canary_run_rejects_imported_non_callable(tmp_path: Path) -> None:
+    suite = tmp_path / "suite.yaml"
+    suite.write_text(
+        """\
+version: '1'
+canaries:
+  - id: one
+    family: happy_path
+    input:
+      text: hello
+""",
+        encoding="utf-8",
+    )
+    with Store.init_project(tmp_path):
+        pass
+
+    result = runner.invoke(
+        app,
+        [
+            "canary",
+            "run",
+            "--suite",
+            str(suite),
+            "--agent",
+            "math:pi",
+            "--model",
+            "test/model",
+            "--project",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "not callable" in result.output
+    with Store(tmp_path) as store:
+        assert store.count_records() == 0
+
+
+def test_init_rejects_unrelated_nonempty_sqlite_file(tmp_path: Path) -> None:
+    project = tmp_path / ".dedrift"
+    (project / "logs").mkdir(parents=True)
+    (project / "config.toml").write_text("[project]\n", encoding="utf-8")
+    (project / "logs" / "records.jsonl").write_text("", encoding="utf-8")
+    connection = sqlite3.connect(project / "index.db")
+    connection.execute("CREATE TABLE unrelated (id INTEGER)")
+    connection.commit()
+    connection.close()
+
+    result = runner.invoke(app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "failed integrity validation" in result.output
 
 
 def test_init_refuses_to_replace_a_missing_authoritative_index(tmp_path: Path) -> None:
