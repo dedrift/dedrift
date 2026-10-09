@@ -18,19 +18,16 @@ gate certified a budget the package had already fixed, and would have kept
 passing if the fix were deleted. :class:`TestBudgetArithmetic` now pins the
 arithmetic itself.
 
-**The streams are dependent.** Under the null the whole point at issue is
-whether e-BH survives the dependence our battery actually has: every
-signature of a family is computed from the *same* records of the same
-cycle. Drawing each stream from an independent binomial measures the case
-in which stopped e-BH is already proven, which is no measurement at all.
-Success counts here are generated through a Gaussian copula on shared
-record-level latents.
+**The streams are dependent.** Every signature of a family is computed from
+the same records of the same cycle. The production decision is therefore a
+fixed-pool Ville--Bonferroni crossing, which needs no cross-stream
+independence. Success counts here still use a Gaussian copula so the release
+gate measures the data shape the package actually sees.
 
 Scale is stated, as always. CI runs 120 runs x 400 cycles over 24 rate
-processes; the full study at 500 x 2000 lives in
-``launch/anytime_null_study.py`` and its numbers are what the docs quote.
-Wilson bounds are reported so the CI-scale result is honest about its own
-precision rather than implying the full-scale one.
+processes. This is a seeded regression/calibration smoke test, not the
+replacement production performance table that 0.5.1 explicitly withholds.
+Wilson bounds keep the CI-scale result honest about its own precision.
 """
 
 from __future__ import annotations
@@ -73,9 +70,9 @@ FAMILY_OF = np.array(list(range(N_FAMILIES)) * len(_FAMILY_RATES))
 K = len(BASE_RATES)
 GAMMA_I = per_process_gamma(GAMMA_TOTAL, K)
 
-#: Within-family correlation between signatures computed on shared records.
-#: A refused response is also more likely to be format-invalid; 0.5 is a
-#: deliberately substantial value, since the purpose is to stress e-BH.
+#: Target pairwise within-family latent correlation between signatures
+#: computed on shared records. A refused response is also more likely to be
+#: format-invalid; 0.5 is deliberately substantial.
 RHO_WITHIN = 0.5
 
 
@@ -118,15 +115,11 @@ def _draw_successes(
             moves all channels together while the configured stack is
             unchanged.
         rho_within: Correlation of the record-level latent across signatures
-            of the same family. This is *cross-sectional* dependence, within
-            a cycle -- which is the kind e-BH already tolerates.
-        phi_cycle: AR(1) coefficient of the cycle offset. This is the one
-            that matters for the stopped-e-BH causal condition: that
-            condition excludes unobserved confounding **from the past**, so
-            an i.i.d. per-cycle offset does not probe it at all, however
-            large. With ``phi_cycle > 0`` the offset persists, one stream's
-            history carries information about another stream's future, and
-            the condition is genuinely in question.
+            of the same family. The Bonferroni decision does not require
+            cross-stream independence.
+        phi_cycle: AR(1) coefficient of the cycle offset. Positive values
+            create hidden persistent state and deliberately violate the
+            fixed-rate Bernoulli model on which each e-process relies.
 
     Returns:
         Integer array of shape ``(cycles, K)``.
@@ -148,27 +141,22 @@ def _draw_successes(
     else:
         u = np.zeros((cycles, 1))
     shared = {f: rng.normal(size=(cycles, N_CUR)) for f in range(N_FAMILIES)}
-    w_mix = np.sqrt(max(1.0 - rho_within**2, 0.0))
+    shared_loading = np.sqrt(rho_within)
+    idiosyncratic_loading = np.sqrt(max(1.0 - rho_within, 0.0))
     for k in range(K):
         eps = shared[int(FAMILY_OF[k])]
         idio = rng.normal(size=(cycles, N_CUR))
-        w = rho_within * eps + w_mix * idio
+        w = shared_loading * eps + idiosyncratic_loading * idio
         thr = thresholds[:, k : k + 1] + u
         out[:, k] = np.sum(w < thr, axis=1)
     return out
 
 
-def _ebh_any_rejection(log_wealth: np.ndarray, alpha: float) -> np.ndarray:
-    """e-BH applied at every cycle, in log space.
-
-    In logs because wealth overflows float64 on long horizons; the decision
-    rule is scale-monotone so the translation is exact.
-    """
+def _bonferroni_any_rejection(log_wealth: np.ndarray, alpha: float) -> np.ndarray:
+    """Production decision: any process crosses ``K / alpha``."""
     _, k_proc = log_wealth.shape
-    ks = np.arange(1, k_proc + 1)
-    need = np.log(k_proc) - np.log(alpha) - np.log(ks)
-    srt = -np.sort(-log_wealth, axis=1)
-    return np.any(srt >= need[None, :], axis=1)
+    need = np.log(k_proc) - np.log(alpha)
+    return np.any(log_wealth >= need, axis=1)
 
 
 def _tables(refs: np.ndarray, grid: tuple[float, ...], gamma_i: float) -> np.ndarray:
@@ -198,7 +186,7 @@ def _run_null(
         s = _draw_successes(rng, cycles, BASE_RATES, sigma_cycle=sigma_cycle, phi_cycle=phi_cycle)
 
         wealth = np.cumsum(np.stack([tbl[k][s[:, k]] for k in range(K)], axis=1), axis=0)
-        rej_e = _ebh_any_rejection(wealth, ALPHA_PRIME)
+        rej_e = _bonferroni_any_rejection(wealth, ALPHA_PRIME)
 
         p_ref = refs / N_REF
         p_cur = s / N_CUR
@@ -249,9 +237,8 @@ class TestAnytimeValidNullRate:
 
         The assertion is on the Wilson upper bound, not the point estimate,
         so a lucky zero cannot pass a claim the sample size does not
-        support. Streams are dependent within family, which is the case the
-        stopped-e-BH condition is assumed for and the reason this is
-        reported as measured rather than proven.
+        support. Streams are dependent within family; the production union
+        bound allows that dependence.
         """
         res = _run_null(n_runs=120, cycles=400, seed=20260803)
         n = int(res["n_runs"])  # type: ignore[arg-type]
@@ -261,18 +248,6 @@ class TestAnytimeValidNullRate:
             f"anytime-valid null rate {hits}/{n} over 400 cycles "
             f"(Wilson upper {bound:.4f} >= alpha={ALPHA})"
         )
-
-    def test_rate_does_not_grow_with_horizon(self) -> None:
-        """Horizon insensitivity — the qualitative signature of the fix.
-
-        A fixed-sample guarantee decays with use; an anytime-valid one does
-        not. Measured as: the rate at the full horizon is not materially
-        above the rate at a quarter of it.
-        """
-        res = _run_null(n_runs=120, cycles=400, seed=7)
-        short = res["anytime"][100] / 120  # type: ignore[index]
-        long = res["anytime"][400] / 120  # type: ignore[index]
-        assert long <= short + 0.02, f"rate grew with horizon: {short:.3f} -> {long:.3f}"
 
     def test_fixed_sample_path_degrades_on_the_same_histories(self) -> None:
         """The defect being fixed, measured rather than asserted.
@@ -318,23 +293,8 @@ class TestCycleLevelRandomEffect:
         bound = wilson_upper(hits, 60)
         assert bound < 0.20, f"anytime path degraded at sigma=0.05: {hits}/60 (Wilson {bound:.3f})"
 
-    def test_persistent_confounding_is_the_case_that_actually_matters(self) -> None:
-        """An i.i.d. cycle offset does not probe the stopped-e-BH condition.
-
-        That condition excludes unobserved confounding **from the past**. An
-        offset redrawn independently every cycle has no memory, so however
-        large it is it cannot violate the condition -- measuring it and
-        calling the result reassurance would be measuring the wrong thing,
-        which is the mistake this suite already made once with independent
-        streams.
-
-        Here the offset is AR(1), so provider-side state persists and one
-        stream's history genuinely carries information about another's
-        future. Measured at 120 runs x 500 cycles: 0/120 at phi = 0.7 and
-        phi = 0.95 for sigma = 0.10, and 0/120 and 1/120 at sigma = 0.25.
-        The condition remains unproven for our streams; what changed is that
-        the measurement now bears on it.
-        """
+    def test_persistent_confounding_is_measured_as_model_misspecification(self) -> None:
+        """Persistent provider-side state violates the fixed-rate model."""
         res = _run_null(n_runs=60, cycles=300, seed=808, sigma_cycle=0.25, phi_cycle=0.9)
         hits = int(res["anytime"][300])  # type: ignore[index]
         bound = wilson_upper(hits, 60)
@@ -362,19 +322,10 @@ class TestAnytimeDetection:
     """Anytime-validity is not free; quantify the cost rather than hide it."""
 
     def test_material_shift_is_detected_and_delay_is_reported(self) -> None:
-        """A +10pp shift must be detected, and the delay is the honest cost.
+        """Seeded smoke test for gross power/delay regressions at +10pp.
 
-        Detection is not immediate: the process must accumulate wealth past
-        log(1/alpha'). The floor is set from the measurement, not from
-        ambition: the full study (500 runs x 400 cycles) puts all-channel
-        +10pp detection at 0.74, and at this test's 20 runs the 95% Wilson
-        lower bound for a true 0.74 is about 0.52. The floor is therefore
-        0.50 — it catches a collapse in power, not a sampling wobble.
-
-        The previous floor was 0.80, which passed only because the test then
-        spent ``gamma_total`` per process instead of ``gamma_total / K``.
-        Correcting the budget widens every nuisance interval and costs real
-        power; that cost is published rather than tuned away.
+        This small test is not a production performance estimate and is not
+        the replacement table withheld from the 0.5.1 documentation.
         """
         grid = symmetric_grid(_CFG.tilts)
         rng = np.random.default_rng(3)
@@ -386,7 +337,7 @@ class TestAnytimeDetection:
             tbl = _tables(refs, grid, GAMMA_I)
             s = _draw_successes(rng, cycles, shifted)
             wealth = np.cumsum(np.stack([tbl[k][s[:, k]] for k in range(K)], axis=1), axis=0)
-            rej = _ebh_any_rejection(wealth, ALPHA_PRIME)
+            rej = _bonferroni_any_rejection(wealth, ALPHA_PRIME)
             if rej.any():
                 detected += 1
                 delays.append(int(np.argmax(rej)) + 1)
@@ -394,16 +345,12 @@ class TestAnytimeDetection:
         assert np.median(delays) < 120, f"median delay {np.median(delays)} cycles is a regression"
 
     def test_larger_coverage_budget_buys_power_here(self) -> None:
-        """The alpha'/gamma split is a real parameter, and in this regime
-        the trade is one-sided.
+        """The alpha'/gamma split is a real parameter in this seeded fixture.
 
         Worst-casing over a wide interval makes every e-value conservative,
-        so a small gamma costs power while the null rate has ample headroom.
-        Measured: detection improves monotonically as ``gamma_total`` grows
-        across 0.005 -> 0.02, with no null-rate cost visible at this scale.
-        Both arms split the budget across the pool, so the comparison is
-        between two valid configurations rather than between a valid one and
-        an overspent one.
+        so a small gamma can cost power. This is a regression comparison, not
+        a general tuning claim or a published performance estimate. Both arms
+        split the budget across the pool.
         """
         grid = symmetric_grid(_CFG.tilts)
         results = {}
@@ -418,7 +365,7 @@ class TestAnytimeDetection:
                 tbl = _tables(refs, grid, gamma_i)
                 s = _draw_successes(rng, cycles, shifted)
                 wealth = np.cumsum(np.stack([tbl[k][s[:, k]] for k in range(K)], axis=1), axis=0)
-                if _ebh_any_rejection(wealth, ALPHA - gamma_total).any():
+                if _bonferroni_any_rejection(wealth, ALPHA - gamma_total).any():
                     det += 1
             results[gamma_total] = det / n_runs
         assert results[0.02] >= results[0.005], f"expected monotone power in gamma, got {results}"

@@ -16,6 +16,7 @@ Two embedder families ship:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from collections.abc import Callable
@@ -26,10 +27,19 @@ import numpy as np
 import numpy.typing as npt
 
 from dedrift.schema import InteractionRecord
-from dedrift.store import Store, _atomic_private_writer, _harden_permissions
+from dedrift.store import (
+    _PINNED_EMBEDDER_KEY,
+    Store,
+    _atomic_private_writer,
+    _harden_permissions,
+)
 
 EMBEDDER_FILE = "embedder.json"
 CACHE_FILE = "embedding_cache.npz"
+_CACHE_EMBEDDER_KEY = "__embedder__"
+_CACHE_FORMAT_KEY = "__dedrift_cache_format__"
+_CACHE_FORMAT = "dedrift.embedding-cache.v1"
+_CACHE_RECORD_PREFIX = "__dedrift_record__:"
 
 
 class Embedder(Protocol):
@@ -150,6 +160,11 @@ def pin_embedder(store: Store, name: str) -> None:
             ).encode("utf-8")
             with _atomic_private_writer(path) as stream:
                 stream.write(payload)
+        conn.execute(
+            "INSERT INTO store_metadata (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_PINNED_EMBEDDER_KEY, name),
+        )
         conn.commit()
     except BaseException:
         if conn.in_transaction:
@@ -158,16 +173,48 @@ def pin_embedder(store: Store, name: str) -> None:
 
 
 def get_pinned_embedder(store: Store) -> str | None:
-    """Return the pinned embedder identifier, or None if never pinned."""
+    """Return the authoritative pinned embedder, failing on partial state."""
+    conn = store.connect()
+    row = conn.execute(
+        "SELECT value FROM store_metadata WHERE key = ?", (_PINNED_EMBEDDER_KEY,)
+    ).fetchone()
     path = store.project_dir / EMBEDDER_FILE
-    if not path.exists():
+    if row is None:
+        if path.exists():
+            raise RuntimeError(
+                "embedder.json exists without its authoritative SQLite pin; reopen the "
+                "project to migrate it"
+            )
         return None
+    expected = str(row[0])
+    if not path.exists():
+        raise RuntimeError(
+            "the authoritative embedder pin exists but embedder.json is missing; "
+            "restore the complete .dedrift snapshot"
+        )
     _harden_permissions(path, 0o600)
     data = json.loads(path.read_text(encoding="utf-8"))
-    return str(data["embedder"])
+    actual = data.get("embedder")
+    if actual != expected:
+        raise RuntimeError(
+            "embedder.json conflicts with the authoritative embedder pin; restore the "
+            "complete .dedrift snapshot"
+        )
+    return expected
 
 
 # -- cached record embeddings --------------------------------------------------
+
+
+def _record_cache_key(record_id: str) -> str:
+    """Return an NPZ-safe key in a namespace disjoint from cache metadata."""
+    encoded = base64.urlsafe_b64encode(record_id.encode("utf-8")).decode("ascii")
+    return f"{_CACHE_RECORD_PREFIX}{encoded}"
+
+
+def _record_id_from_cache_key(key: str) -> str:
+    encoded = key.removeprefix(_CACHE_RECORD_PREFIX)
+    return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
 
 
 def embed_records(
@@ -207,14 +254,27 @@ def embed_records(
     if cache_path.exists():
         _harden_permissions(cache_path, 0o600)
         with np.load(cache_path, allow_pickle=False) as data:
-            cache_embedder = str(data["__embedder__"])
+            cache_embedder = str(data[_CACHE_EMBEDDER_KEY])
             if cache_embedder != name:
                 msg = (
                     f"embedding cache was written by {cache_embedder!r} but the "
                     f"pinned embedder is {name!r}; refusing to mix"
                 )
                 raise EmbedderMismatchError(msg)
-            cached = {k: data[k] for k in data.files if k != "__embedder__"}
+            cache_format = str(data[_CACHE_FORMAT_KEY]) if _CACHE_FORMAT_KEY in data.files else None
+            if cache_format == _CACHE_FORMAT:
+                cached = {
+                    _record_id_from_cache_key(key): data[key]
+                    for key in data.files
+                    if key.startswith(_CACHE_RECORD_PREFIX)
+                }
+            elif cache_format is not None and cache_format.startswith("dedrift.embedding-cache.v"):
+                msg = f"unsupported embedding cache format {cache_format!r}"
+                raise ValueError(msg)
+            else:
+                # v0 stored raw record IDs as NPZ keys. Keep healthy legacy
+                # caches readable; the next write migrates every entry to v1.
+                cached = {key: data[key] for key in data.files if key != _CACHE_EMBEDDER_KEY}
 
     missing = [r for r in records if r.id not in cached]
     if missing:
@@ -222,7 +282,11 @@ def embed_records(
         vectors = encode([r.output.text for r in missing])
         for record, vec in zip(missing, vectors, strict=True):
             cached[record.id] = np.asarray(vec, dtype=np.float64)
-        payload: dict[str, Any] = {"__embedder__": np.asarray(name), **cached}
+        payload: dict[str, Any] = {
+            _CACHE_EMBEDDER_KEY: np.asarray(name),
+            _CACHE_FORMAT_KEY: np.asarray(_CACHE_FORMAT),
+            **{_record_cache_key(record_id): vector for record_id, vector in cached.items()},
+        }
         with _atomic_private_writer(cache_path) as stream:
             np.savez_compressed(stream, **payload)
     return {r.id: cached[r.id] for r in records}

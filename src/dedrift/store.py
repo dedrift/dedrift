@@ -1,19 +1,24 @@
-"""Storage layer: append-only JSONL logs plus a SQLite index (SPEC.md §2.2).
+"""Storage layer: append-only records plus authoritative operational state.
 
 Layout under the project root::
 
     .dedrift/
         config.toml        # project config (created by `dedrift init`)
-        logs/records.jsonl # append-only source of truth
-        index.db           # SQLite: records, config_events, checks, alerts
+        logs/records.jsonl # durable raw interaction log
+        index.db           # authoritative lifecycle, checks, and anytime state
 
-JSONL is the source of truth; SQLite is a derived index and can be rebuilt
-from the logs at any time (``Store.rebuild_index``).
+Raw records can be re-indexed from JSONL, but finalization, checks, alerts,
+and e-process state cannot be reconstructed from record payloads alone.
+Production backup and restore must therefore treat the entire ``.dedrift``
+directory as one unit. ``Store.rebuild_index`` repairs record indexing while
+preserving operational rows from the existing database; it is not disaster
+recovery for a deleted database.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -21,10 +26,11 @@ from collections.abc import Collection, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import get_ident
 from types import TracebackType
 from typing import BinaryIO, TextIO
 
-from dedrift.schema import InteractionRecord
+from dedrift.schema import SQLITE_INT64_MAX, InteractionRecord
 
 PROJECT_DIR = ".dedrift"
 LOGS_DIR = "logs"
@@ -35,6 +41,16 @@ CONFIG_FILE = "config.toml"
 _PRIVATE_DIR_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
 _SQLITE_BUSY_TIMEOUT_MS = 30_000
+_FINALIZED_REVISION_KEY = "finalized_revision"
+_STORE_IDENTITY_KEY = "store_identity"
+_STORE_IDENTITY_VALUE = "dedrift-index-v1"
+_PINNED_EMBEDDER_KEY = "pinned_embedder"
+_SQLITE_APPLICATION_ID = 0x44445246  # ASCII "DDRF"
+
+
+class FinalizedSnapshotChangedError(RuntimeError):
+    """Raised when finalized lifecycle state changed after a snapshot read."""
+
 
 DEFAULT_CONFIG_TOML = """\
 # dedrift project configuration
@@ -42,6 +58,9 @@ DEFAULT_CONFIG_TOML = """\
 name = "default"
 canary_repetitions = 7      # N repeated runs per canary per cycle
 rolling_window_cycles = 5   # K cycles for the rolling reference
+deterministic = false       # true only if the agent is exactly reproducible
+monitor_latency = true       # false when in-process host jitter is not product behavior
+custom_scalars = []         # numeric channels read from output.structured
 
 [detection]
 fdr_q = 0.05                # Benjamini-Hochberg FDR level
@@ -52,20 +71,29 @@ ph_delta = 0.3              # Idealized null crossing bound 2*exp(-2*delta*lambd
                             # ~= 0.15% idealized; measured ~8.5%/stream (estimated centering
                             # and scale) - see the PH calibration test.
 inference = "fixed"         # "fixed" or opt-in "anytime"
+cycle_effect = "off"        # "off" (default) | "auto" cluster-aware battery
+cycle_effect_icc = 0.02     # ICC threshold for engaging the correction
+alert_persistence = 1       # distinct finalized cycles required to fire
 
-# Materiality (effect-size) gates, per signature channel. Alerts require BOTH
-# statistical significance after FDR AND an effect exceeding these bands.
+# Fixed-sample materiality gates, per signature channel. Fixed-sample alerts
+# require BOTH FDR-adjusted significance and an effect exceeding these bands.
+# Anytime tilts target power but do not apply this observed-effect gate.
 [materiality]
 refusal_rate_pp = 2.0       # percentage-point shift
 format_validity_pp = 1.0    # percentage-point shift
 rate_default_pp = 2.0       # other rate signatures, percentage points
-scalar_cohen_d = 0.5        # reserved compatibility key; Welch cannot alert in v0.3.1
+scalar_cohen_d = 0.5        # reserved compatibility key; not an alert gate
 ks_distance = 0.15          # KS statistic D floor (sup-norm CDF distance):
                             # KS catches shape changes with equal means,
                             # which Cohen's d would wrongly gate out
 dispersion_ratio = 1.5      # robust dispersion (MAD) must grow/shrink by this
 p95_relative = 0.10         # relative P95 shift floor
 embedding_mmd2_floor = -1.0 # -1 = auto-calibrate; 0 = off; >0 = explicit
+
+# Native-unit gate for noisy scalar channels. Every primary on the channel
+# must also exceed this Wasserstein-1 distance before it can alert.
+# [materiality.per_channel.latency_ms]
+# absolute_distance = 5.0    # milliseconds
 
 [embeddings]
 # Pinned forever per project once set; dedrift refuses cross-embedder comparisons.
@@ -76,6 +104,7 @@ alpha = 0.05
 gamma_total = 0.02
 tilts = [1.5, 2.0, 3.0]
 epoch_allocation = "per_epoch"
+rate_model = "frozen_cp"    # only production-safe rate construction
 """
 
 _SCHEMA_SQL = """
@@ -110,11 +139,14 @@ CREATE INDEX IF NOT EXISTS idx_records_fingerprint ON records (config_fingerprin
 CREATE TABLE IF NOT EXISTS canary_cycles (
     cycle_id TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status IN ('open', 'finalized')),
+    open_seq INTEGER NOT NULL,
+    prospective INTEGER NOT NULL DEFAULT 0 CHECK (prospective IN (0, 1)),
     expected_records INTEGER,
     finalized_records INTEGER,
     opened_ts TEXT NOT NULL,
     finalized_ts TEXT,
-    finalized_offset INTEGER
+    finalized_offset INTEGER,
+    finalize_seq INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_canary_cycles_status
     ON canary_cycles(status, finalized_offset);
@@ -218,6 +250,7 @@ CREATE TABLE IF NOT EXISTS anytime_epochs (
     base_fingerprint TEXT NOT NULL,
     epoch_index INTEGER NOT NULL UNIQUE,
     start_after_cycle TEXT NOT NULL,
+    start_after_open_seq INTEGER NOT NULL,
     declared_ts TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_anytime_epochs_base
@@ -246,17 +279,32 @@ def _open_private_append(path: Path) -> TextIO:
     return os.fdopen(descriptor, "a", encoding="utf-8")
 
 
-def _write_new_private_file(path: Path, content: str) -> None:
-    """Create and durably write a new owner-only UTF-8 file."""
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        _PRIVATE_FILE_MODE,
-    )
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
+@contextmanager
+def _serialized_project_init(project_dir: Path) -> Iterator[None]:
+    """Serialize project initialization across processes.
+
+    A tiny SQLite database is used as the lock because SQLite's exclusive
+    transaction is portable and crash-releasing.  Keeping the lock for the
+    whole publication sequence prevents a second initializer from observing
+    a config file while its contents (or the other authoritative artifacts)
+    are still being created.
+    """
+    project_dir.mkdir(parents=True, exist_ok=True, mode=_PRIVATE_DIR_MODE)
+    _harden_permissions(project_dir, _PRIVATE_DIR_MODE)
+    lock_path = project_dir / ".init.lock"
+    lock = sqlite3.connect(lock_path, timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000)
+    try:
+        lock.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+        lock.execute("BEGIN EXCLUSIVE")
+        yield
+        lock.commit()
+    except BaseException:
+        if lock.in_transaction:
+            lock.rollback()
+        raise
+    finally:
+        lock.close()
+        _harden_permissions(lock_path, _PRIVATE_FILE_MODE)
 
 
 @contextmanager
@@ -303,6 +351,10 @@ class Store:
     Args:
         root: Directory containing (or to contain) the ``.dedrift`` project
             directory. Defaults to the current working directory.
+
+    A connected ``Store`` belongs to the thread that opened it. Create one
+    instance per worker thread; separate instances/processes are serialized by
+    SQLite and the append protocol.
     """
 
     def __init__(self, root: Path | str = ".", *, require_project: bool = True) -> None:
@@ -325,10 +377,21 @@ class Store:
         self.index_path = self.project_dir / INDEX_FILE
         self.config_path = self.project_dir / CONFIG_FILE
         self._conn: sqlite3.Connection | None = None
-        if require_project and not self.records_path.parent.is_dir():
+        self._connection_thread_id: int | None = None
+        self._index_creation_authorized = False
+        if require_project and not (
+            self.config_path.is_file()
+            and self.records_path.is_file()
+            and self.index_path.is_file()
+            and self.index_path.stat().st_size > 0
+        ):
             msg = (
-                f"no dedrift project at {self.root}: run `dedrift init` there, "
-                f"or call Store.init_project({str(self.root)!r}) to create one"
+                f"no complete dedrift project at {self.root}: expected config, raw log, "
+                f"and authoritative index ({self.config_path}, {self.records_path}, "
+                f"{self.index_path}). Do not recreate a missing index from JSONL: lifecycle "
+                "and anytime state are not reconstructible; restore the whole .dedrift backup. "
+                f"For a genuinely new project, run `dedrift init` or call "
+                f"Store.init_project({str(self.root)!r})"
             )
             raise FileNotFoundError(msg)
 
@@ -338,6 +401,11 @@ class Store:
     def init_project(cls, root: Path | str = ".") -> Store:
         """Create the ``.dedrift`` project structure (idempotent).
 
+        Initialization is allowed only when all three authoritative artifacts
+        already exist or all three are absent.  A partial project is damage,
+        not a new project: recreating (especially) ``index.db`` would silently
+        discard finalization and anytime state that JSONL cannot reconstruct.
+
         Args:
             root: Directory in which to create the project.
 
@@ -345,27 +413,51 @@ class Store:
             An open store for the new project.
         """
         store = cls(root, require_project=False)
-        store.project_dir.mkdir(parents=True, exist_ok=True, mode=_PRIVATE_DIR_MODE)
-        store.records_path.parent.mkdir(exist_ok=True, mode=_PRIVATE_DIR_MODE)
-        _harden_permissions(store.project_dir, _PRIVATE_DIR_MODE)
-        _harden_permissions(store.records_path.parent, _PRIVATE_DIR_MODE)
-        if not store.config_path.exists():
-            with suppress(FileExistsError):  # another initializer may win the race
-                _write_new_private_file(store.config_path, DEFAULT_CONFIG_TOML)
-        _harden_permissions(store.config_path, _PRIVATE_FILE_MODE)
-        descriptor = os.open(
-            store.records_path,
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
-            _PRIVATE_FILE_MODE,
-        )
-        os.close(descriptor)
-        _harden_permissions(store.records_path, _PRIVATE_FILE_MODE)
-        store.connect()
+        with _serialized_project_init(store.project_dir):
+            artifacts = (store.config_path, store.records_path, store.index_path)
+            present = tuple(path.is_file() for path in artifacts)
+            if any(present) and not all(present):
+                found = ", ".join(
+                    str(path) for path, exists in zip(artifacts, present, strict=True) if exists
+                )
+                missing = ", ".join(
+                    str(path) for path, exists in zip(artifacts, present, strict=True) if not exists
+                )
+                raise FileNotFoundError(
+                    "incomplete dedrift project; refusing to recreate authoritative state. "
+                    f"Found: {found}. Missing: {missing}. Restore the whole .dedrift backup."
+                )
+
+            store.records_path.parent.mkdir(exist_ok=True, mode=_PRIVATE_DIR_MODE)
+            _harden_permissions(store.records_path.parent, _PRIVATE_DIR_MODE)
+            if not all(present):
+                # Publish the complete config atomically; no cooperating reader
+                # can observe a zero-byte or partially written configuration.
+                with _atomic_private_writer(store.config_path) as stream:
+                    stream.write(DEFAULT_CONFIG_TOML.encode("utf-8"))
+                descriptor = os.open(
+                    store.records_path,
+                    os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL,
+                    _PRIVATE_FILE_MODE,
+                )
+                os.close(descriptor)
+            _harden_permissions(store.config_path, _PRIVATE_FILE_MODE)
+            _harden_permissions(store.records_path, _PRIVATE_FILE_MODE)
+            store._index_creation_authorized = not all(present)
+            try:
+                store.connect()
+            finally:
+                store._index_creation_authorized = False
         return store
 
     def exists(self) -> bool:
         """Return True if this looks like an initialized project."""
-        return self.config_path.exists() and self.records_path.exists()
+        return (
+            self.config_path.is_file()
+            and self.records_path.is_file()
+            and self.index_path.is_file()
+            and self.index_path.stat().st_size > 0
+        )
 
     def connect(self) -> sqlite3.Connection:
         """Open the SQLite index, migrate it, and reconcile a durable log tail.
@@ -374,54 +466,308 @@ class Store:
         SQLite commit. Reconciliation on *open* keeps reads, attribution, and
         counts consistent even when no later append happens to trigger repair.
         """
+        thread_id = get_ident()
+        if self._conn is not None and self._connection_thread_id != thread_id:
+            raise RuntimeError(
+                "a connected Store instance cannot be shared across threads; "
+                "create one Store per worker thread"
+            )
         if self._conn is None:
+            if not self._index_creation_authorized and (
+                not self.index_path.is_file() or self.index_path.stat().st_size == 0
+            ):
+                raise FileNotFoundError(
+                    "authoritative index.db is missing or empty; refusing to reconstruct "
+                    "lifecycle/check/anytime state from JSONL. Restore the whole "
+                    ".dedrift backup."
+                )
             self.index_path.parent.mkdir(parents=True, exist_ok=True, mode=_PRIVATE_DIR_MODE)
             _harden_permissions(self.index_path.parent, _PRIVATE_DIR_MODE)
-            self._conn = sqlite3.connect(self.index_path, timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000)
-            self._conn.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
-            self._conn.execute("PRAGMA foreign_keys = ON")
-            self._conn.execute("PRAGMA journal_mode = WAL")
-            self._conn.execute("PRAGMA synchronous = FULL")
-            self._conn.executescript(_SCHEMA_SQL)
-            columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(records)")}
-            if "record_digest" not in columns:
-                self._conn.execute("ALTER TABLE records ADD COLUMN record_digest TEXT")
-            if "record_json" not in columns:
-                self._conn.execute("ALTER TABLE records ADD COLUMN record_json TEXT")
-            check_columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(checks)")}
-            if "snapshot_offset" not in check_columns:
-                self._conn.execute("ALTER TABLE checks ADD COLUMN snapshot_offset INTEGER")
-            if "snapshot_record_ids_json" not in check_columns:
-                self._conn.execute("ALTER TABLE checks ADD COLUMN snapshot_record_ids_json TEXT")
-            self._conn.commit()
-            if self.records_path.exists():
-                self._conn.execute("BEGIN IMMEDIATE")
-                try:
+            conn = sqlite3.connect(self.index_path, timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000)
+            try:
+                if not self._index_creation_authorized:
+                    self._validate_existing_index_identity(conn)
+                conn.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute("PRAGMA synchronous = FULL")
+                # Schema discovery and every conditional ALTER must share one
+                # writer reservation. Otherwise two first-openers can both
+                # observe a missing legacy column and the loser fails with a
+                # duplicate-column error after the winner commits.
+                conn.execute("BEGIN IMMEDIATE")
+                self._migrate_schema(conn)
+                if self.records_path.exists():
                     # A pre-v0.3.1 index has no cached canonical payloads.
                     # Force one source-of-truth scan to backfill them before
                     # future checks switch to indexed window reads.
-                    missing_payload = self._conn.execute(
-                        "SELECT 1 FROM records WHERE record_json IS NULL LIMIT 1"
+                    missing_payload = conn.execute(
+                        "SELECT 1 FROM records "
+                        "WHERE record_json IS NULL OR record_digest IS NULL LIMIT 1"
                     ).fetchone()
                     if missing_payload is not None:
-                        self._conn.execute(
+                        conn.execute(
                             "DELETE FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
                         )
-                    self._reconcile_jsonl_tail(self._conn)
+                    else:
+                        self._validate_indexed_jsonl_prefix(conn)
+                    self._reconcile_jsonl_tail(conn)
                     self._sync_cycle_registry(
-                        self._conn,
+                        conn,
                         # Completion cannot be reconstructed from durable
                         # records alone. Upgraded histories fail closed as
                         # OPEN until the operator finalizes them explicitly.
                         legacy_finalize=False,
                     )
-                    self._conn.commit()
-                except BaseException:
-                    if self._conn.in_transaction:
-                        self._conn.rollback()
-                    raise
-            self._harden_sqlite_files()
+                conn.commit()
+                self._conn = conn
+                self._connection_thread_id = thread_id
+            except BaseException:
+                if conn.in_transaction:
+                    conn.rollback()
+                conn.close()
+                self._conn = None
+                self._connection_thread_id = None
+                raise
+            finally:
+                self._harden_sqlite_files()
         return self._conn
+
+    @staticmethod
+    def _execute_schema(conn: sqlite3.Connection) -> None:
+        """Execute the static schema without ``executescript`` auto-commits."""
+        statement = ""
+        for line in _SCHEMA_SQL.splitlines(keepends=True):
+            statement += line
+            if sqlite3.complete_statement(statement):
+                conn.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise RuntimeError("internal SQLite schema contains an incomplete statement")
+
+    @staticmethod
+    def _validate_existing_index_identity(conn: sqlite3.Connection) -> None:
+        """Reject empty, unrelated, or identity-mismatched SQLite databases."""
+        try:
+            application_id = int(conn.execute("PRAGMA application_id").fetchone()[0])
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            if application_id not in {0, _SQLITE_APPLICATION_ID}:
+                raise RuntimeError(
+                    "index.db belongs to another SQLite application; refusing to modify it"
+                )
+            # Releases before the identity marker already had these two core
+            # tables. Their presence is the only legacy migration exception.
+            if not {"records", "config_events"}.issubset(tables):
+                raise RuntimeError(
+                    "index.db is not a recognized dedrift index; refusing to create or "
+                    "migrate authoritative state in place"
+                )
+            if "store_metadata" in tables:
+                marker = conn.execute(
+                    "SELECT value FROM store_metadata WHERE key = ?",
+                    (_STORE_IDENTITY_KEY,),
+                ).fetchone()
+                if marker is not None and str(marker[0]) != _STORE_IDENTITY_VALUE:
+                    raise RuntimeError(
+                        "index.db has an incompatible dedrift identity marker; "
+                        "restore the matching project backup"
+                    )
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(
+                "index.db is not a valid dedrift SQLite index; restore the whole backup"
+            ) from exc
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Create and migrate the index while the caller holds a writer lock."""
+        self._execute_schema(conn)
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(records)")}
+        if "record_digest" not in columns:
+            conn.execute("ALTER TABLE records ADD COLUMN record_digest TEXT")
+        if "record_json" not in columns:
+            conn.execute("ALTER TABLE records ADD COLUMN record_json TEXT")
+        check_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(checks)")}
+        if "snapshot_offset" not in check_columns:
+            conn.execute("ALTER TABLE checks ADD COLUMN snapshot_offset INTEGER")
+        if "snapshot_record_ids_json" not in check_columns:
+            conn.execute("ALTER TABLE checks ADD COLUMN snapshot_record_ids_json TEXT")
+        cycle_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(canary_cycles)")}
+        if "open_seq" not in cycle_columns:
+            conn.execute("ALTER TABLE canary_cycles ADD COLUMN open_seq INTEGER")
+        if "finalize_seq" not in cycle_columns:
+            conn.execute("ALTER TABLE canary_cycles ADD COLUMN finalize_seq INTEGER")
+        if "prospective" not in cycle_columns:
+            # Existing lifecycle rows were reconstructed at or after import;
+            # there is no durable proof that they preceded observation. They
+            # remain valid fixed-sample/history data, but fail closed for an
+            # already-active anytime epoch.
+            conn.execute(
+                "ALTER TABLE canary_cycles ADD COLUMN prospective INTEGER "
+                "NOT NULL DEFAULT 0 CHECK (prospective IN (0, 1))"
+            )
+        self._backfill_cycle_open_sequences(conn)
+        self._backfill_finalized_revisions(conn)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_canary_cycles_open_seq "
+            "ON canary_cycles(open_seq) WHERE open_seq IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_canary_cycles_finalize_seq "
+            "ON canary_cycles(finalize_seq) WHERE finalize_seq IS NOT NULL"
+        )
+        duplicate_coordinate = conn.execute(
+            "SELECT cycle_id, canary_id, repetition, COUNT(*) FROM records "
+            "WHERE source = 'canary' AND cycle_id IS NOT NULL "
+            "GROUP BY cycle_id, canary_id, repetition HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate_coordinate is not None:
+            raise RuntimeError(
+                "legacy index contains duplicate canary coordinates "
+                f"{duplicate_coordinate[0]!r}/{duplicate_coordinate[1]!r}#"
+                f"{duplicate_coordinate[2]!r}; restore or repair the project before opening"
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_records_canary_coordinate "
+            "ON records(cycle_id, canary_id, repetition) "
+            "WHERE source = 'canary' AND cycle_id IS NOT NULL"
+        )
+        epoch_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(anytime_epochs)")}
+        if "start_after_open_seq" not in epoch_columns:
+            conn.execute(
+                "ALTER TABLE anytime_epochs ADD COLUMN "
+                "start_after_open_seq INTEGER NOT NULL DEFAULT 0"
+            )
+            self._backfill_epoch_open_boundaries(conn)
+        conn.execute(
+            "INSERT INTO store_metadata (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_STORE_IDENTITY_KEY, _STORE_IDENTITY_VALUE),
+        )
+        # The pin file is convenient for humans, but SQLite is authoritative
+        # lifecycle state. Backfill legacy pins once, then fail closed if a
+        # partial restore/delete leaves the two copies inconsistent.
+        embedder_path = self.project_dir / "embedder.json"
+        pinned_row = conn.execute(
+            "SELECT value FROM store_metadata WHERE key = ?", (_PINNED_EMBEDDER_KEY,)
+        ).fetchone()
+        pinned_metadata = str(pinned_row[0]) if pinned_row is not None else None
+        pinned_file: str | None = None
+        if embedder_path.exists():
+            try:
+                raw_pin = json.loads(embedder_path.read_text(encoding="utf-8"))
+                value = raw_pin["embedder"]
+                if not isinstance(value, str) or not value:
+                    raise ValueError("embedder must be a non-empty string")
+                pinned_file = value
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "embedder.json is invalid; restore the complete .dedrift snapshot"
+                ) from exc
+        if pinned_metadata is not None and pinned_file is None:
+            raise RuntimeError(
+                "the authoritative embedder pin exists but embedder.json is missing; "
+                "restore the complete .dedrift snapshot"
+            )
+        if pinned_metadata is not None and pinned_file != pinned_metadata:
+            raise RuntimeError(
+                "embedder.json conflicts with the authoritative embedder pin; "
+                "restore the complete .dedrift snapshot"
+            )
+        if pinned_metadata is None and pinned_file is not None:
+            conn.execute(
+                "INSERT INTO store_metadata (key, value) VALUES (?, ?)",
+                (_PINNED_EMBEDDER_KEY, pinned_file),
+            )
+        conn.execute(f"PRAGMA application_id = {_SQLITE_APPLICATION_ID}")
+
+    @staticmethod
+    def _backfill_cycle_open_sequences(conn: sqlite3.Connection) -> None:
+        """Give legacy cycle rows a durable first-observation order."""
+        row = conn.execute("SELECT COALESCE(MAX(open_seq), 0) FROM canary_cycles").fetchone()
+        next_seq = int(row[0]) + 1
+        missing = conn.execute(
+            "SELECT cycle_id FROM canary_cycles WHERE open_seq IS NULL ORDER BY rowid"
+        ).fetchall()
+        for (cycle_id,) in missing:
+            conn.execute(
+                "UPDATE canary_cycles SET open_seq = ? WHERE cycle_id = ?",
+                (next_seq, str(cycle_id)),
+            )
+            next_seq += 1
+
+    @staticmethod
+    def _next_cycle_open_seq(conn: sqlite3.Connection) -> int:
+        """Return the next durable first-observation sequence."""
+        row = conn.execute("SELECT COALESCE(MAX(open_seq), 0) FROM canary_cycles").fetchone()
+        return int(row[0]) + 1
+
+    @staticmethod
+    def _backfill_epoch_open_boundaries(conn: sqlite3.Connection) -> None:
+        """Translate legacy cycle-name epoch boundaries to observation order."""
+        rows = conn.execute("SELECT fingerprint, start_after_cycle FROM anytime_epochs").fetchall()
+        for fingerprint, cycle_id in rows:
+            boundary = conn.execute(
+                "SELECT open_seq FROM canary_cycles WHERE cycle_id = ?",
+                (str(cycle_id),),
+            ).fetchone()
+            if boundary is None or boundary[0] is None:
+                raise RuntimeError(
+                    "cannot migrate anytime epoch boundary because cycle "
+                    f"{cycle_id!r} is absent from lifecycle state; restore the full backup"
+                )
+            conn.execute(
+                "UPDATE anytime_epochs SET start_after_open_seq = ? WHERE fingerprint = ?",
+                (int(boundary[0]), str(fingerprint)),
+            )
+
+    @staticmethod
+    def _current_finalized_revision(conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT value FROM store_metadata WHERE key = ?", (_FINALIZED_REVISION_KEY,)
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            revision = int(row[0])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("stored finalized revision is not an integer") from exc
+        if revision < 0:
+            raise RuntimeError("stored finalized revision must be non-negative")
+        return revision
+
+    @staticmethod
+    def _set_finalized_revision(conn: sqlite3.Connection, revision: int) -> None:
+        conn.execute(
+            "INSERT INTO store_metadata (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_FINALIZED_REVISION_KEY, str(revision)),
+        )
+
+    def _backfill_finalized_revisions(self, conn: sqlite3.Connection) -> None:
+        """Give legacy finalized cycles their prior deterministic read order."""
+        max_row = conn.execute(
+            "SELECT COALESCE(MAX(finalize_seq), 0) FROM canary_cycles"
+        ).fetchone()
+        revision = max(self._current_finalized_revision(conn), int(max_row[0]))
+        rows = conn.execute(
+            "SELECT c.cycle_id FROM canary_cycles AS c "
+            "LEFT JOIN records AS r ON r.cycle_id = c.cycle_id AND r.source = 'canary' "
+            "WHERE c.status = 'finalized' AND c.finalize_seq IS NULL "
+            "GROUP BY c.cycle_id "
+            "ORDER BY CASE WHEN MIN(r.rowid) IS NULL THEN 1 ELSE 0 END, "
+            "MIN(r.rowid), c.finalized_ts, c.rowid"
+        ).fetchall()
+        for row in rows:
+            revision += 1
+            conn.execute(
+                "UPDATE canary_cycles SET finalize_seq = ? WHERE cycle_id = ?",
+                (revision, str(row[0])),
+            )
+        self._set_finalized_revision(conn, revision)
 
     def _harden_sqlite_files(self) -> None:
         """Keep the database and transient WAL files owner-readable only."""
@@ -435,8 +781,11 @@ class Store:
     def close(self) -> None:
         """Close the SQLite connection if open."""
         if self._conn is not None:
+            if self._connection_thread_id != get_ident():
+                raise RuntimeError("a connected Store instance must be closed by its owner thread")
             self._conn.close()
             self._conn = None
+            self._connection_thread_id = None
 
     def __enter__(self) -> Store:
         """Open the store as a context manager."""
@@ -453,6 +802,90 @@ class Store:
         self.close()
 
     # -- writes --------------------------------------------------------------
+
+    def begin_cycle(self, cycle_id: str, *, expected_records: int | None = None) -> None:
+        """Durably declare a prospective canary cycle before observing it.
+
+        This is the lifecycle boundary used by anytime-valid inference. A
+        cycle first discovered while records are imported is deliberately
+        marked non-prospective and cannot later be upgraded: by then its
+        outcomes may already be known. Complete-batch imports remain valid
+        for fixed checks and frozen golden/reference data.
+
+        Args:
+            cycle_id: Stable non-empty identifier for the upcoming cycle.
+            expected_records: Optional exact number of records to collect.
+        """
+        if not isinstance(cycle_id, str) or not cycle_id:
+            raise ValueError("cycle_id must be a non-empty string")
+        if (
+            expected_records is not None
+            and (
+                isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or not 1 <= expected_records <= SQLITE_INT64_MAX
+            )
+        ):
+            raise ValueError(
+                "expected_records must be a strict integer between 1 and "
+                f"{SQLITE_INT64_MAX}"
+            )
+        conn = self.connect()
+        if conn.in_transaction:
+            raise RuntimeError("begin_cycle requires ownership of the SQLite transaction")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._reconcile_jsonl_tail(conn)
+            self._sync_cycle_registry(conn, legacy_finalize=False)
+            row = conn.execute(
+                "SELECT status, prospective, expected_records FROM canary_cycles "
+                "WHERE cycle_id = ?",
+                (cycle_id,),
+            ).fetchone()
+            if row is not None:
+                status = str(row[0])
+                prospective = bool(row[1])
+                declared = int(row[2]) if row[2] is not None else None
+                if not prospective:
+                    raise ValueError(
+                        f"cycle {cycle_id!r} was already observed or imported without a "
+                        "pre-observation marker; it cannot be made prospective"
+                    )
+                if status != "open":
+                    raise ValueError(f"cycle {cycle_id!r} is already finalized")
+                if (
+                    declared is not None
+                    and expected_records is not None
+                    and declared != expected_records
+                ):
+                    raise ValueError(
+                        f"cycle {cycle_id!r} expected count is already {declared}, "
+                        f"not {expected_records}"
+                    )
+                if declared is None and expected_records is not None:
+                    conn.execute(
+                        "UPDATE canary_cycles SET expected_records = ? WHERE cycle_id = ?",
+                        (expected_records, cycle_id),
+                    )
+            else:
+                conn.execute(
+                    "INSERT INTO canary_cycles "
+                    "(cycle_id, status, open_seq, prospective, expected_records, opened_ts) "
+                    "VALUES (?, 'open', ?, 1, ?, ?)",
+                    (
+                        cycle_id,
+                        self._next_cycle_open_seq(conn),
+                        expected_records,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            self._harden_sqlite_files()
 
     def append(self, record: InteractionRecord) -> None:
         """Append one streaming record without finalizing its canary cycle.
@@ -472,15 +905,15 @@ class Store:
         finalize_cycles: bool = True,
         expected_cycle_counts: Mapping[str, int] | None = None,
     ) -> None:
-        """Durably append a batch, then update the rebuildable index.
+        """Durably append a batch, then update the operational database.
 
         The SQLite ``BEGIN IMMEDIATE`` lock serializes writers before they
         touch JSONL. JSONL is flushed and fsynced first because it is the
-        source of truth; SQLite commits only after that durability boundary.
-        A failure between those steps can leave the index behind the log,
-        but never the reverse. The next append reconciles a complete,
-        fsynced tail before applying an idempotent retry; ``rebuild_index``
-        remains the explicit full-repair path.
+        source of truth for raw interactions; SQLite commits only after that
+        durability boundary. A failure between those steps can leave the index
+        behind the log, but never the reverse. The next append reconciles a
+        complete, fsynced tail before applying an idempotent retry;
+        ``rebuild_index`` remains the explicit record-index repair path.
 
         Args:
             records: Records in the order they occurred.
@@ -507,14 +940,28 @@ class Store:
         if not unique:
             return
         expected = dict(expected_cycle_counts or {})
-        if any(not cycle_id or count < 1 for cycle_id, count in expected.items()):
-            raise ValueError("expected cycle counts require non-empty IDs and counts >= 1")
-        batch_cycle_ids = sorted(
-            {
+        if any(
+            not isinstance(cycle_id, str)
+            or not cycle_id
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= SQLITE_INT64_MAX
+            for cycle_id, count in expected.items()
+        ):
+            raise ValueError(
+                "expected cycle counts require non-empty string IDs and strict integers "
+                f"between 1 and {SQLITE_INT64_MAX}"
+            )
+        # Within a complete batch, open/finalize cycles in first-appearance
+        # order, never lexical ID order. Cycle IDs are opaque ("cycle-10"
+        # need not sort after "cycle-9"). Cross-batch first-observation order
+        # is recorded separately in ``open_seq``.
+        batch_cycle_ids = list(
+            dict.fromkeys(
                 str(record.cycle_id)
                 for record, _ in unique.values()
                 if record.source.value == "canary" and record.cycle_id is not None
-            }
+            )
         )
         unexpected = sorted(set(expected) - set(batch_cycle_ids))
         if unexpected:
@@ -526,6 +973,7 @@ class Store:
         conn.execute("BEGIN IMMEDIATE")
         try:
             self._reconcile_jsonl_tail(conn)
+            self._sync_cycle_registry(conn, legacy_finalize=False)
             pending: list[tuple[InteractionRecord, str]] = []
             for record_id, pair in unique.items():
                 record, line = pair
@@ -593,6 +1041,28 @@ class Store:
                     + ", ".join(extended_finalized)
                     + "; reopen under a new cycle ID (exact-ID retries remain allowed)"
                 )
+            pending_coordinates: set[tuple[str, str, int]] = set()
+            for record, _ in pending:
+                if record.source.value != "canary" or record.cycle_id is None:
+                    continue
+                assert record.canary_id is not None and record.repetition is not None
+                coordinate = (record.cycle_id, record.canary_id, record.repetition)
+                if coordinate in pending_coordinates:
+                    raise ValueError(
+                        "batch contains duplicate canary coordinates "
+                        f"(cycle_id, canary_id, repetition)={coordinate!r}"
+                    )
+                pending_coordinates.add(coordinate)
+                existing_coordinate = conn.execute(
+                    "SELECT id FROM records WHERE source = 'canary' AND cycle_id = ? "
+                    "AND canary_id = ? AND repetition = ? LIMIT 1",
+                    coordinate,
+                ).fetchone()
+                if existing_coordinate is not None:
+                    raise ValueError(
+                        "canary coordinate already exists under a different record id: "
+                        f"{coordinate!r}"
+                    )
             pending_per_cycle: dict[str, int] = {}
             for record, _ in pending:
                 if record.source.value == "canary" and record.cycle_id is not None:
@@ -624,6 +1094,22 @@ class Store:
                             f"cycle {cycle_id!r} would contain {projected} records, "
                             f"exceeding its declared {limit}"
                         )
+                if finalize_cycles:
+                    coordinates = conn.execute(
+                        "SELECT canary_id, repetition FROM records "
+                        "WHERE source = 'canary' AND cycle_id = ?",
+                        (cycle_id,),
+                    ).fetchall()
+                    coordinates.extend(
+                        (record.canary_id, record.repetition)
+                        for record, _ in pending
+                        if record.source.value == "canary" and record.cycle_id == cycle_id
+                    )
+                    self._validate_cycle_coordinates(
+                        cycle_id,
+                        coordinates,
+                        expected_records=limit,
+                    )
             if pending:
                 with _open_private_append(self.records_path) as stream:
                     stream.writelines(line for _, line in pending)
@@ -635,13 +1121,14 @@ class Store:
             self._set_indexed_offset(conn, log_offset)
             opened_ts = datetime.now(timezone.utc).isoformat()
             for cycle_id in batch_cycle_ids:
+                open_seq = self._next_cycle_open_seq(conn)
                 conn.execute(
                     "INSERT INTO canary_cycles "
-                    "(cycle_id, status, expected_records, opened_ts) "
-                    "VALUES (?, 'open', ?, ?) "
+                    "(cycle_id, status, open_seq, prospective, expected_records, opened_ts) "
+                    "VALUES (?, 'open', ?, 0, ?, ?) "
                     "ON CONFLICT(cycle_id) DO UPDATE SET expected_records = "
                     "COALESCE(canary_cycles.expected_records, excluded.expected_records)",
-                    (cycle_id, expected.get(cycle_id), opened_ts),
+                    (cycle_id, open_seq, expected.get(cycle_id), opened_ts),
                 )
             if finalize_cycles:
                 for cycle_id in batch_cycle_ids:
@@ -682,67 +1169,55 @@ class Store:
         now = datetime.now(timezone.utc).isoformat()
         offset = self.records_path.stat().st_size if self.records_path.exists() else 0
         for cycle_id, count, first_ts in rows:
+            open_seq = self._next_cycle_open_seq(conn)
             if legacy_finalize:
+                finalize_seq = self._current_finalized_revision(conn) + 1
+                self._set_finalized_revision(conn, finalize_seq)
                 conn.execute(
                     "INSERT INTO canary_cycles "
-                    "(cycle_id, status, expected_records, finalized_records, "
-                    "opened_ts, finalized_ts, finalized_offset) "
-                    "VALUES (?, 'finalized', ?, ?, ?, ?, ?)",
-                    (str(cycle_id), int(count), int(count), str(first_ts), now, offset),
+                    "(cycle_id, status, open_seq, prospective, expected_records, "
+                    "finalized_records, "
+                    "opened_ts, finalized_ts, finalized_offset, finalize_seq) "
+                    "VALUES (?, 'finalized', ?, 0, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(cycle_id),
+                        open_seq,
+                        int(count),
+                        int(count),
+                        str(first_ts),
+                        now,
+                        offset,
+                        finalize_seq,
+                    ),
                 )
             else:
                 conn.execute(
-                    "INSERT INTO canary_cycles (cycle_id, status, opened_ts) VALUES (?, 'open', ?)",
-                    (str(cycle_id), str(first_ts)),
+                    "INSERT INTO canary_cycles "
+                    "(cycle_id, status, open_seq, prospective, opened_ts) "
+                    "VALUES (?, 'open', ?, 0, ?)",
+                    (str(cycle_id), open_seq, str(first_ts)),
                 )
 
-    def _finalize_cycle_locked(
-        self,
-        conn: sqlite3.Connection,
+    @staticmethod
+    def _validate_cycle_coordinates(
         cycle_id: str,
+        coordinates: Collection[tuple[object, object]],
         *,
         expected_records: int | None,
-        finalized_offset: int,
-    ) -> None:
-        """Finalize one cycle inside the caller's writer transaction."""
-        row = conn.execute(
-            "SELECT status, expected_records, finalized_records "
-            "FROM canary_cycles WHERE cycle_id = ?",
-            (cycle_id,),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"unknown canary cycle {cycle_id!r}")
-        status = str(row[0])
-        declared = int(row[1]) if row[1] is not None else None
-        previous_count = int(row[2]) if row[2] is not None else None
-        if expected_records is not None and expected_records < 1:
-            raise ValueError("expected_records must be >= 1")
-        if declared is not None and expected_records is not None and declared != expected_records:
-            raise ValueError(
-                f"cycle {cycle_id!r} expected count is already {declared}, not {expected_records}"
-            )
-        expected = declared if declared is not None else expected_records
-        count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM records WHERE source = 'canary' AND cycle_id = ?",
-                (cycle_id,),
-            ).fetchone()[0]
-        )
+    ) -> int:
+        """Validate a complete cycle without mutating durable storage."""
+        rows = list(coordinates)
+        count = len(rows)
         if count == 0:
             raise ValueError(f"cannot finalize empty canary cycle {cycle_id!r}")
-        coordinates = conn.execute(
-            "SELECT canary_id, repetition FROM records "
-            "WHERE source = 'canary' AND cycle_id = ? ORDER BY canary_id, repetition",
-            (cycle_id,),
-        ).fetchall()
         by_canary: dict[str, list[int]] = {}
-        for canary_id, repetition in coordinates:
-            if canary_id is None or repetition is None:
+        for canary_id, repetition in rows:
+            if canary_id is None or not isinstance(repetition, int) or isinstance(repetition, bool):
                 raise ValueError(
                     f"cannot finalize cycle {cycle_id!r}: every canary record requires "
-                    "canary_id and repetition"
+                    "canary_id and an integer repetition"
                 )
-            by_canary.setdefault(str(canary_id), []).append(int(repetition))
+            by_canary.setdefault(str(canary_id), []).append(repetition)
         duplicate_coordinates = [
             f"{canary_id}#{repetition}"
             for canary_id, repetitions in by_canary.items()
@@ -754,7 +1229,7 @@ class Store:
                 f"cannot finalize cycle {cycle_id!r}: duplicate "
                 "(canary_id, repetition) coordinates: " + ", ".join(duplicate_coordinates[:10])
             )
-        repetition_designs = {tuple(repetitions) for repetitions in by_canary.values()}
+        repetition_designs = {tuple(sorted(repetitions)) for repetitions in by_canary.values()}
         if len(repetition_designs) != 1:
             raise ValueError(
                 f"cannot finalize cycle {cycle_id!r}: canaries have different repetition sets"
@@ -765,10 +1240,58 @@ class Store:
                 f"cannot finalize cycle {cycle_id!r}: repetitions must be contiguous "
                 "from 1 for every canary"
             )
-        if expected is not None and count != expected:
+        if expected_records is not None and count != expected_records:
             raise ValueError(
-                f"cannot finalize cycle {cycle_id!r}: observed {count} records, expected {expected}"
+                f"cannot finalize cycle {cycle_id!r}: observed {count} records, "
+                f"expected {expected_records}"
             )
+        return count
+
+    def _finalize_cycle_locked(
+        self,
+        conn: sqlite3.Connection,
+        cycle_id: str,
+        *,
+        expected_records: int | None,
+        finalized_offset: int,
+    ) -> None:
+        """Finalize one cycle inside the caller's writer transaction."""
+        if (
+            expected_records is not None
+            and (
+                isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or not 1 <= expected_records <= SQLITE_INT64_MAX
+            )
+        ):
+            raise ValueError(
+                "expected_records must be a strict integer between 1 and "
+                f"{SQLITE_INT64_MAX}"
+            )
+        row = conn.execute(
+            "SELECT status, expected_records, finalized_records "
+            "FROM canary_cycles WHERE cycle_id = ?",
+            (cycle_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown canary cycle {cycle_id!r}")
+        status = str(row[0])
+        declared = int(row[1]) if row[1] is not None else None
+        previous_count = int(row[2]) if row[2] is not None else None
+        if declared is not None and expected_records is not None and declared != expected_records:
+            raise ValueError(
+                f"cycle {cycle_id!r} expected count is already {declared}, not {expected_records}"
+            )
+        expected = declared if declared is not None else expected_records
+        coordinates = conn.execute(
+            "SELECT canary_id, repetition FROM records WHERE source = 'canary' AND cycle_id = ?",
+            (cycle_id,),
+        ).fetchall()
+        count = self._validate_cycle_coordinates(
+            cycle_id,
+            coordinates,
+            expected_records=expected,
+        )
         if status == "finalized":
             if previous_count != count:
                 raise RuntimeError(
@@ -776,17 +1299,38 @@ class Store:
                 )
             return
         now = datetime.now(timezone.utc).isoformat()
+        finalize_seq = self._current_finalized_revision(conn) + 1
+        self._set_finalized_revision(conn, finalize_seq)
         conn.execute(
             "UPDATE canary_cycles SET status = 'finalized', "
             "expected_records = ?, finalized_records = ?, finalized_ts = ?, "
-            "finalized_offset = ? WHERE cycle_id = ?",
-            (expected if expected is not None else count, count, now, finalized_offset, cycle_id),
+            "finalized_offset = ?, finalize_seq = ? WHERE cycle_id = ?",
+            (
+                expected if expected is not None else count,
+                count,
+                now,
+                finalized_offset,
+                finalize_seq,
+                cycle_id,
+            ),
         )
 
     def finalize_cycle(self, cycle_id: str, *, expected_records: int | None = None) -> None:
         """Mark a streamed canary cycle complete after validating its size."""
         if not cycle_id:
             raise ValueError("cycle_id must be non-empty")
+        if (
+            expected_records is not None
+            and (
+                isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or not 1 <= expected_records <= SQLITE_INT64_MAX
+            )
+        ):
+            raise ValueError(
+                "expected_records must be a strict integer between 1 and "
+                f"{SQLITE_INT64_MAX}"
+            )
         conn = self.connect()
         if conn.in_transaction:
             raise RuntimeError("finalize_cycle requires ownership of the SQLite transaction")
@@ -818,6 +1362,7 @@ class Store:
         row = conn.execute(
             "SELECT value FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
         ).fetchone()
+        legacy_full_scan = row is None
         offset = int(row[0]) if row is not None else 0
         size = self.records_path.stat().st_size
         if not 0 <= offset <= size:
@@ -827,6 +1372,7 @@ class Store:
             )
         with self.records_path.open("rb") as stream:
             stream.seek(offset)
+            seen_in_scan: set[str] = set()
             while raw_line := stream.readline():
                 if not raw_line.endswith(b"\n"):
                     raise RuntimeError(
@@ -837,23 +1383,193 @@ class Store:
                 if not stripped:
                     continue
                 record = InteractionRecord.from_jsonl(stripped.decode("utf-8"))
+                if record.id in seen_in_scan:
+                    raise RuntimeError(
+                        f"records.jsonl tail repeats record id {record.id!r}; "
+                        "restore the append-only log before retrying"
+                    )
+                seen_in_scan.add(record.id)
                 digest = self._record_digest(record)
                 existing = conn.execute(
                     "SELECT record_digest, record_json FROM records WHERE id = ?",
                     (record.id,),
                 ).fetchone()
+                if existing is not None and not legacy_full_scan:
+                    raise RuntimeError(
+                        f"records.jsonl tail repeats indexed record id {record.id!r}; "
+                        "restore the append-only log before retrying"
+                    )
                 if existing is None:
+                    if record.source.value == "canary" and record.cycle_id is not None:
+                        lifecycle = conn.execute(
+                            "SELECT status FROM canary_cycles WHERE cycle_id = ?",
+                            (record.cycle_id,),
+                        ).fetchone()
+                        processed = conn.execute(
+                            "SELECT 1 FROM anytime_processed_cycles WHERE cycle_id = ? LIMIT 1",
+                            (record.cycle_id,),
+                        ).fetchone()
+                        if lifecycle is not None and str(lifecycle[0]) == "finalized":
+                            raise RuntimeError(
+                                "records.jsonl externally extends finalized canary cycle "
+                                f"{record.cycle_id!r}; restore the immutable log before retrying"
+                            )
+                        if processed is not None:
+                            raise RuntimeError(
+                                "records.jsonl externally extends anytime-processed canary "
+                                f"cycle {record.cycle_id!r}; restore the immutable log "
+                                "before retrying"
+                            )
                     self._index_record(conn, record)
                 elif existing[0] is None or existing[1] is None:
+                    stored_digest = str(existing[0]) if existing[0] is not None else None
+                    if stored_digest is not None and stored_digest != digest:
+                        raise RuntimeError(
+                            f"records.jsonl contains conflicting payloads for id {record.id!r}"
+                        )
+                    if existing[1] is not None:
+                        try:
+                            cached = InteractionRecord.from_jsonl(str(existing[1]))
+                        except (TypeError, ValueError) as exc:
+                            raise RuntimeError(
+                                f"indexed payload is invalid for record {record.id!r}"
+                            ) from exc
+                        cached_digest = self._record_digest(cached)
+                        if cached.id != record.id or cached_digest != digest:
+                            raise RuntimeError(
+                                "records.jsonl conflicts with the surviving indexed payload "
+                                f"for id {record.id!r}"
+                            )
                     conn.execute(
-                        "UPDATE records SET record_digest = ?, record_json = ? WHERE id = ?",
+                        "UPDATE records SET record_digest = COALESCE(record_digest, ?), "
+                        "record_json = COALESCE(record_json, ?) WHERE id = ?",
                         (digest, record.to_jsonl(), record.id),
                     )
                 elif str(existing[0]) != digest:
                     raise RuntimeError(
                         f"records.jsonl contains conflicting payloads for id {record.id!r}"
                     )
+            self._assert_finalized_counts(conn)
             self._set_indexed_offset(conn, stream.tell())
+
+    def _validate_indexed_jsonl_prefix(self, conn: sqlite3.Connection) -> None:
+        """Verify the immutable indexed prefix against SQLite on process open.
+
+        Tail-only reconciliation cannot detect an equal-length edit before the
+        byte checkpoint.  Such an edit previously allowed raw-log reads and
+        finalized-snapshot reads to describe different histories.  Validate
+        every indexed line once when a Store connection is established; later
+        writes remain serialized by the same SQLite writer lock.
+
+        This is deliberately fail-closed and O(indexed log size) per process
+        open.  A future chunked hash manifest can make the same guarantee
+        incrementally without weakening it.
+        """
+        row = conn.execute(
+            "SELECT value FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
+        ).fetchone()
+        if row is None:
+            return
+        offset = int(row[0])
+        size = self.records_path.stat().st_size
+        if not 0 <= offset <= size:
+            raise RuntimeError(
+                "records.jsonl is shorter than its indexed checkpoint; restore the "
+                "complete .dedrift snapshot"
+            )
+        indexed = [
+            (str(record_id), str(digest) if digest is not None else None, payload)
+            for record_id, digest, payload in conn.execute(
+                "SELECT id, record_digest, record_json FROM records ORDER BY rowid"
+            )
+        ]
+        seen: set[str] = set()
+        position = 0
+        with self.records_path.open("rb") as stream:
+            while stream.tell() < offset:
+                raw_line = stream.readline()
+                if not raw_line or stream.tell() > offset or not raw_line.endswith(b"\n"):
+                    raise RuntimeError(
+                        "indexed JSONL checkpoint is not on a complete record boundary; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                try:
+                    record = InteractionRecord.from_jsonl(stripped.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "records.jsonl indexed prefix contains an invalid record; "
+                        "restore the complete .dedrift snapshot"
+                    ) from exc
+                if record.id in seen:
+                    raise RuntimeError(
+                        f"records.jsonl indexed prefix repeats record id {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                if position >= len(indexed):
+                    raise RuntimeError(
+                        f"records.jsonl indexed prefix contains unknown id {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                expected_id, stored_digest, payload = indexed[position]
+                if record.id != expected_id:
+                    raise RuntimeError(
+                        "records.jsonl indexed prefix order conflicts with SQLite: "
+                        f"expected {expected_id!r}, found {record.id!r}; restore the "
+                        "complete .dedrift snapshot"
+                    )
+                digest = self._record_digest(record)
+                if stored_digest is None or stored_digest != digest or payload is None:
+                    raise RuntimeError(
+                        f"records.jsonl indexed prefix conflicts with record {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                try:
+                    cached = InteractionRecord.from_jsonl(str(payload))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"indexed payload is invalid for record {record.id!r}"
+                    ) from exc
+                if cached.id != record.id or self._record_digest(cached) != digest:
+                    raise RuntimeError(
+                        f"records.jsonl conflicts with cached payload for record {record.id!r}; "
+                        "restore the complete .dedrift snapshot"
+                    )
+                seen.add(record.id)
+                position += 1
+            if stream.tell() != offset:
+                raise RuntimeError(
+                    "indexed JSONL checkpoint is inconsistent; restore the complete "
+                    ".dedrift snapshot"
+                )
+        if position != len(indexed):
+            missing = [record_id for record_id, _digest, _payload in indexed[position:]]
+            preview = ", ".join(missing[:5])
+            raise RuntimeError(
+                "SQLite indexes records absent from the indexed JSONL prefix "
+                f"({preview}); restore the complete .dedrift snapshot"
+            )
+
+    @staticmethod
+    def _assert_finalized_counts(conn: sqlite3.Connection) -> None:
+        """Fail closed if lifecycle metadata and indexed records diverge."""
+        bad = conn.execute(
+            "SELECT c.cycle_id, c.finalized_records, COUNT(r.id) "
+            "FROM canary_cycles AS c "
+            "LEFT JOIN records AS r ON r.cycle_id = c.cycle_id AND r.source = 'canary' "
+            "WHERE c.status = 'finalized' "
+            "GROUP BY c.cycle_id "
+            "HAVING c.finalized_records IS NULL OR COUNT(r.id) != c.finalized_records "
+            "LIMIT 1"
+        ).fetchone()
+        if bad is not None:
+            raise RuntimeError(
+                f"finalized cycle {bad[0]!r} has {int(bad[2])} indexed records, "
+                f"but lifecycle metadata records {bad[1]!r}; restore the complete "
+                "project snapshot before retrying"
+            )
 
     @staticmethod
     def _record_digest(record: InteractionRecord) -> str:
@@ -991,8 +1707,22 @@ class Store:
 
         Unlike a full JSONL scan this is proportional to the canary history
         represented in the index, does not take a writer reservation, and
-        excludes open cycles by construction. The returned offset and record
-        IDs can be persisted with a check for exact report replay.
+        excludes open cycles by construction. Callers that need exact replay
+        should use the revision-bearing variant and persist its compact
+        finalized revision.
+        """
+        records, offset, _revision = self.read_finalized_canary_snapshot_with_revision()
+        return records, offset
+
+    def read_finalized_canary_snapshot_with_revision(
+        self,
+    ) -> tuple[list[InteractionRecord], int, int]:
+        """Read finalized records, log offset, and lifecycle revision atomically.
+
+        The revision increments exactly once whenever an open cycle first
+        becomes finalized. A caller that performs expensive work after this
+        read can acquire ``BEGIN IMMEDIATE`` and call
+        :meth:`assert_finalized_revision` before committing derived state.
         """
         conn = self.connect()
         owns_transaction = not conn.in_transaction
@@ -1003,12 +1733,13 @@ class Store:
                 "SELECT r.record_json FROM records AS r "
                 "JOIN canary_cycles AS c ON c.cycle_id = r.cycle_id "
                 "WHERE r.source = 'canary' AND c.status = 'finalized' "
-                "ORDER BY r.rowid"
+                "ORDER BY c.finalize_seq, r.rowid"
             ).fetchall()
             offset_row = conn.execute(
                 "SELECT value FROM store_metadata WHERE key = 'jsonl_indexed_offset'"
             ).fetchone()
             offset = int(offset_row[0]) if offset_row is not None else 0
+            revision = self._current_finalized_revision(conn)
             if owns_transaction:
                 conn.commit()
         except BaseException:
@@ -1022,7 +1753,59 @@ class Store:
                     "SQLite record payload cache is incomplete; reopen or rebuild the index"
                 )
             records.append(InteractionRecord.from_jsonl(str(row[0])))
-        return records, offset
+        return records, offset, revision
+
+    def read_finalized_canary_snapshot_at_revision(
+        self, finalized_revision: int
+    ) -> list[InteractionRecord]:
+        """Reconstruct an exact historical snapshot from durable cycle order.
+
+        Snapshot manifests no longer need to duplicate every record ID in each
+        check row. Finalized cycles are immutable and receive a monotone
+        ``finalize_seq``, so ``finalize_seq <= finalized_revision`` identifies
+        the same record set in O(result size).
+        """
+        if finalized_revision < 0:
+            raise ValueError("finalized revision must be non-negative")
+        conn = self.connect()
+        current = self._current_finalized_revision(conn)
+        if finalized_revision > current:
+            raise ValueError(
+                f"snapshot revision {finalized_revision} is newer than current revision {current}"
+            )
+        rows = conn.execute(
+            "SELECT r.record_json FROM records AS r "
+            "JOIN canary_cycles AS c ON c.cycle_id = r.cycle_id "
+            "WHERE r.source = 'canary' AND c.status = 'finalized' "
+            "AND c.finalize_seq <= ? ORDER BY c.finalize_seq, r.rowid",
+            (finalized_revision,),
+        ).fetchall()
+        records: list[InteractionRecord] = []
+        for row in rows:
+            if row[0] is None:
+                raise RuntimeError(
+                    "SQLite record payload cache is incomplete; reopen or rebuild the index"
+                )
+            records.append(InteractionRecord.from_jsonl(str(row[0])))
+        return records
+
+    def assert_finalized_revision(self, expected_revision: int) -> None:
+        """Assert a snapshot revision while the caller owns a transaction.
+
+        Callers should first execute ``BEGIN IMMEDIATE`` so the successful
+        assertion remains true through their derived-state commit.
+        """
+        if expected_revision < 0:
+            raise ValueError("expected finalized revision must be non-negative")
+        conn = self.connect()
+        if not conn.in_transaction:
+            raise RuntimeError("assert_finalized_revision requires an existing writer transaction")
+        actual_revision = self._current_finalized_revision(conn)
+        if actual_revision != expected_revision:
+            raise FinalizedSnapshotChangedError(
+                "finalized canary snapshot changed during processing: "
+                f"expected revision {expected_revision}, found {actual_revision}; retry"
+            )
 
     def read_records_by_ids(self, record_ids: Collection[str]) -> list[InteractionRecord]:
         """Read a recorded check snapshot by immutable record ID."""
@@ -1052,11 +1835,12 @@ class Store:
         return [found[record_id] for record_id in ordered]
 
     def finalized_cycle_ids(self) -> list[str]:
-        """Return finalized canary cycles in first-record order."""
+        """Return finalized canary cycles in finalization order."""
         rows = self.connect().execute(
             "SELECT c.cycle_id FROM canary_cycles AS c "
             "JOIN records AS r ON r.cycle_id = c.cycle_id AND r.source = 'canary' "
-            "WHERE c.status = 'finalized' GROUP BY c.cycle_id ORDER BY MIN(r.rowid)"
+            "WHERE c.status = 'finalized' GROUP BY c.cycle_id "
+            "ORDER BY c.finalize_seq, MIN(r.rowid)"
         )
         return [str(row[0]) for row in rows]
 
@@ -1097,8 +1881,67 @@ class Store:
 
     # -- maintenance ---------------------------------------------------------
 
+    def _immutable_cycle_manifest(
+        self, conn: sqlite3.Connection
+    ) -> dict[str, tuple[tuple[str, str], ...]]:
+        """Return ordered record identities and content digests that cannot change.
+
+        Finalized cycles are immutable by contract.  The anytime ledger is
+        included independently because losing or rewriting an observation
+        after it has entered an e-process would invalidate exactly-once
+        processing even if lifecycle metadata were damaged or legacy.
+        """
+        protected_cycles = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT cycle_id FROM canary_cycles WHERE status = 'finalized' "
+                "UNION SELECT cycle_id FROM anytime_processed_cycles"
+            )
+        }
+        manifest: dict[str, list[tuple[str, str]]] = {cycle_id: [] for cycle_id in protected_cycles}
+        rows = conn.execute(
+            "SELECT r.cycle_id, r.id, r.record_digest, r.record_json FROM records AS r "
+            "WHERE r.source = 'canary' AND ("
+            "EXISTS (SELECT 1 FROM canary_cycles AS c "
+            "        WHERE c.cycle_id = r.cycle_id AND c.status = 'finalized') "
+            "OR EXISTS (SELECT 1 FROM anytime_processed_cycles AS p "
+            "           WHERE p.cycle_id = r.cycle_id)) "
+            "ORDER BY r.cycle_id, r.rowid"
+        )
+        for cycle_id_raw, record_id_raw, stored_digest, payload in rows:
+            cycle_id = str(cycle_id_raw)
+            record_id = str(record_id_raw)
+            if payload is None:
+                raise RuntimeError(
+                    "SQLite record payload cache is incomplete; reopen before rebuilding"
+                )
+            record = InteractionRecord.from_jsonl(str(payload))
+            if (
+                record.id != record_id
+                or record.cycle_id != cycle_id
+                or record.source.value != "canary"
+            ):
+                raise RuntimeError(
+                    f"indexed payload identity does not match record row {record_id!r}"
+                )
+            canonical_digest = self._record_digest(record)
+            if stored_digest is None or str(stored_digest) != canonical_digest:
+                raise RuntimeError(
+                    f"indexed digest does not match cached payload for record {record_id!r}"
+                )
+            manifest.setdefault(cycle_id, []).append((record_id, canonical_digest))
+        return {cycle_id: tuple(entries) for cycle_id, entries in manifest.items()}
+
     def rebuild_index(self) -> int:
-        """Rebuild the SQLite index from the JSONL log.
+        """Rebuild record/config indexes while preserving operational state.
+
+        This requires the existing SQLite database. JSONL does not encode
+        finalization, checks, alerts, or anytime state, so deleting
+        ``index.db`` is not recoverable through this method. Back up the
+        whole ``.dedrift`` directory in production. Records belonging to a
+        finalized or anytime-processed cycle must reproduce the exact ordered
+        identity/content manifest already in SQLite; rebuild refuses to turn
+        raw-log edits into a new inference snapshot.
 
         Returns:
             The number of records indexed.
@@ -1106,10 +1949,14 @@ class Store:
         conn = self.connect()
         conn.execute("BEGIN IMMEDIATE")
         try:
+            self._assert_finalized_counts(conn)
+            immutable_before = self._immutable_cycle_manifest(conn)
+            revision_before = self._current_finalized_revision(conn)
             records = self._read_stable_snapshot()
             lifecycle_rows = conn.execute(
-                "SELECT cycle_id, status, expected_records, finalized_records, "
-                "opened_ts, finalized_ts, finalized_offset FROM canary_cycles"
+                "SELECT cycle_id, status, open_seq, prospective, expected_records, "
+                "finalized_records, "
+                "opened_ts, finalized_ts, finalized_offset, finalize_seq FROM canary_cycles"
             ).fetchall()
             unique: dict[str, InteractionRecord] = {}
             digests: dict[str, str] = {}
@@ -1130,28 +1977,37 @@ class Store:
             self._set_indexed_offset(conn, self.records_path.stat().st_size)
             conn.executemany(
                 "INSERT INTO canary_cycles "
-                "(cycle_id, status, expected_records, finalized_records, opened_ts, "
-                "finalized_ts, finalized_offset) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(cycle_id, status, open_seq, prospective, expected_records, "
+                "finalized_records, opened_ts, "
+                "finalized_ts, finalized_offset, finalize_seq) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 lifecycle_rows,
             )
             # External complete JSONL lines discovered during a rebuild have
             # no completion proof. Register them OPEN; never turn persistence
             # alone into an inference-ready lifecycle claim.
             self._sync_cycle_registry(conn, legacy_finalize=False)
-            for cycle_id, status, _expected, finalized_records, *_rest in lifecycle_rows:
-                if str(status) != "finalized":
-                    continue
-                count = int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM records WHERE source = 'canary' AND cycle_id = ?",
-                        (str(cycle_id),),
-                    ).fetchone()[0]
+            self._assert_finalized_counts(conn)
+            immutable_after = self._immutable_cycle_manifest(conn)
+            if immutable_after != immutable_before:
+                changed = sorted(
+                    cycle_id
+                    for cycle_id in set(immutable_before) | set(immutable_after)
+                    if immutable_before.get(cycle_id) != immutable_after.get(cycle_id)
                 )
-                if finalized_records is None or count != int(finalized_records):
-                    raise RuntimeError(
-                        f"finalized cycle {cycle_id!r} has {count} logged records, "
-                        f"expected immutable count {finalized_records}"
-                    )
+                preview = ", ".join(changed[:10])
+                raise RuntimeError(
+                    "rebuild would alter immutable record identity, order, or content for "
+                    "finalized/anytime-processed cycle(s): "
+                    + preview
+                    + "; restore the append-only log before retrying"
+                )
+            revision_after = self._current_finalized_revision(conn)
+            if revision_after != revision_before:
+                raise RuntimeError(
+                    "rebuild changed the finalized snapshot revision from "
+                    f"{revision_before} to {revision_after}; refusing to commit"
+                )
             conn.commit()
         except BaseException:
             if conn.in_transaction:

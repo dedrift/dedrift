@@ -175,3 +175,34 @@ class TestRunner:
             records = self.make_runner(tmp_path).run_cycle(store=store, cycle_id="c1")
             assert store.count_records() == len(records)
             assert all(r.cycle_id == "c1" for r in store.read_records())
+
+    def test_store_cycle_is_durably_begun_before_first_agent_call_and_checkpointed(
+        self, tmp_path: Path
+    ) -> None:
+        observations: list[tuple[str, int, int]] = []
+        with Store.init_project(tmp_path) as store:
+
+            def inspecting_agent(inp: dict[str, Any]) -> dict[str, Any]:
+                del inp
+                lifecycle = store.connect().execute(
+                    "SELECT status, prospective FROM canary_cycles WHERE cycle_id = 'live'"
+                ).fetchone()
+                assert lifecycle is not None
+                observations.append(
+                    (str(lifecycle[0]), int(lifecycle[1]), store.count_records())
+                )
+                return {"text": "ok", "structured": {"answer": "42"}}
+
+            records = self.make_runner(tmp_path, agent=inspecting_agent, reps=2).run_cycle(
+                store=store,
+                cycle_id="live",
+            )
+
+            assert observations[0] == ("open", 1, 0)
+            assert [count for _status, _prospective, count in observations] == list(
+                range(len(records))
+            )
+            assert store.connect().execute(
+                "SELECT status, prospective, expected_records, finalized_records "
+                "FROM canary_cycles WHERE cycle_id = 'live'"
+            ).fetchone() == ("finalized", 1, len(records), len(records))

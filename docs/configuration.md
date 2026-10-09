@@ -11,6 +11,7 @@ name = "my-agent"
 canary_repetitions = 7        # N runs per canary per cycle
 rolling_window_cycles = 5     # K cycles in the rolling reference
 deterministic = false         # true only if the agent is exactly reproducible
+monitor_latency = true         # false if host timing is not product behavior
 custom_scalars = []           # numeric channels read from output.structured
 
 [detection]
@@ -22,7 +23,7 @@ ph_delta = 0.3                # Page–Hinkley dead-zone
 inference = "fixed"           # "fixed" | "anytime" (see docs/anytime.md)
 cycle_effect = "off"          # "off" (default) | "auto" — the cluster-aware battery
 cycle_effect_icc = 0.02       # ICC threshold for engaging the correction
-alert_persistence = 1         # checks a channel must alert in a row to fire
+alert_persistence = 1         # distinct fresh cycles a channel must alert on to fire
 
 [materiality]
 refusal_rate_pp = 2.0         # min refusal-rate shift, percentage points
@@ -39,6 +40,7 @@ embedding_mmd2_floor = -1.0   # -1 = auto-calibrate; 0 = off; >0 = explicit
 # per-channel overrides; unlisted channels keep the defaults above
 [materiality.per_channel.latency_ms]
 ks_distance = 0.35
+absolute_distance = 5.0       # native units; ms for latency_ms
 
 [embeddings]
 model = ""                    # set via `dedrift embedder pin`, not by hand
@@ -94,6 +96,8 @@ same materiality gates, and the same BH adjudication as a built-in signature:
 ```toml
 [project]
 custom_scalars = ["score", "top_prob"]
+deterministic = true       # only if repeated calls are exactly reproducible
+monitor_latency = false    # when host jitter is not product behavior
 ```
 
 Values must be real numbers. A missing key, a string, a boolean, or a nested
@@ -109,6 +113,16 @@ every calibration figure published for dedrift is measured on the default
 battery (m ≈ 336); channels of your own enlarge m, and their correlation
 structure is yours, not ours.
 
+### `monitor_latency`
+
+Latency is enabled by default, but it is often a measurement of the host,
+network, rate limits, or cache state rather than agent quality. Set
+`monitor_latency = false` for in-process deterministic functions or whenever
+you cannot make the timing environment repeatable. If latency matters, keep it
+enabled and set a native-unit `absolute_distance` floor rather than allowing a
+statistically significant but operationally irrelevant millisecond shift to
+gate a release.
+
 ### `materiality.per_channel`
 
 Materiality gates are global by default, which makes retuning one channel
@@ -120,12 +134,16 @@ gate for one signature and leaves the rest alone:
 [materiality.per_channel.latency_ms]
 ks_distance = 0.35
 p95_relative = 0.50
+absolute_distance = 5.0
 ```
 
-Only the three scalar gates — `ks_distance`, `p95_relative`,
-`dispersion_ratio` — are overridable, and overrides are range-validated
-exactly like the global values. Rate gates stay global: they are expressed in
-percentage points of a rate and are already per-signature by construction.
+The three scalar gates — `ks_distance`, `p95_relative`, and
+`dispersion_ratio` — are overridable. `absolute_distance` is per-channel only,
+defaults to zero, and requires the Wasserstein-1 distance between the samples
+to clear a threshold in that channel's native units for any of its primaries
+to alert. Overrides are range-validated like the global values. Rate gates
+stay global: they are expressed in percentage points of a rate and are already
+per-signature by construction.
 
 ### `fdr_q`
 
@@ -154,10 +172,10 @@ shape, design-effect Welch for location, design-effect rate z, and
 Student-t cycle-level summaries for dispersion/P95.
 `cycle_effect_icc` is the engagement
 threshold on the estimated ICC. `alert_persistence = 2` holds a first-time
-alert until the same channel alerts at the next check — wobble alerts are
-transient, drift persists; measured false-alert rates by mode are in
-docs/statistics.md#cycle-effects, including the power cost (one cycle of
-delay).
+alert until the same channel alerts on the next distinct finalized current
+cycle. Re-running against the same cycle never advances the streak. The prior
+`auto` calibration/power table was invalidated by the 0.5.1 correctness changes;
+calibrate this experimental mode on the deployed build and provider.
 
 ### `ks_distance`
 
@@ -188,7 +206,8 @@ estimated causally, from data strictly before each step — a sequential
 detector that standardised on cycles *after* the alarm would read its own
 future and understate the rate roughly sixfold. Flags compound
 across streams — a stable agent shows ≥1 flag on
-[69.8% of checks](statistics.md) — which is why flags never page anyone.
+[69.8% of checks](statistics.md) — which is why flags must never drive a
+release or page anyone.
 
 ### Embeddings
 
@@ -209,28 +228,43 @@ leave it.
 inference = "fixed"        # or "anytime"
 
 [anytime]
-alpha = 0.05               # lifetime, battery-wide false-alert budget
-rate_model = "twosample"   # or "frozen_cp" (the Clopper–Pearson interval construction)
-gamma_total = 0.02         # frozen_cp only: coverage budget
-tilts = [1.5, 2.0, 3.0]    # frozen_cp only: symmetrised to {psi, 1/psi}
+alpha = 0.05               # epoch-wide lifetime false-alert budget
+rate_model = "frozen_cp"   # only supported construction
+gamma_total = 0.02         # total frozen-reference coverage budget
+tilts = [1.5, 2.0, 3.0]    # symmetrised to {psi, 1/psi}
 epoch_allocation = "per_epoch"   # or "geometric"
 ```
 
-With `rate_model = "twosample"` (default) each rate process is a two-sample
-SAFE e-value against the frozen reference counts; there is no nuisance
-interval, so no coverage budget is spent and the e-BH level is the full
-`alpha`. `gamma_total` and `tilts` apply only to `"frozen_cp"`.
+`frozen_cp` is the default and the only accepted rate model. Version 0.5.1
+withdraws and rejects the former `"twosample"` setting: its beta-binomial
+prior-predictive ratio is not an e-value for every fixed unknown null rate
+after conditioning on the frozen reference. Configurations that still name it
+fail validation instead of silently changing their inference.
 
-Switches the inference layer from per-check FDR to lifetime-oriented rate
-e-processes. Per-process optional-stopping and per-check e-BH control are
-proven; repeated dependent e-BH has the causal assumption documented on the
-linked page. The power trade is quantified in
-[anytime-valid mode](anytime.md). Default is `fixed`.
+Anytime mode switches the inference layer from per-check FDR to
+lifetime-oriented rate e-processes. From each frozen golden count it builds a
+Clopper–Pearson interval, then evaluates configured likelihood-ratio tilts at
+the certified worst null rate in that interval. The golden cycles must be
+chosen by an outcome-independent rule fixed without inspecting their rates;
+cherry-picking apparently good cycles invalidates interval coverage. For a
+fixed epoch pool of `K` processes,
+`alpha_prime = alpha - gamma_total`: each interval gets
+`gamma_total / K`, and each process gets crossing budget `alpha_prime / K`
+(Ville threshold `K / alpha_prime`). Crossings persist for the rest of the
+epoch. The two union bounds give the battery-wide target without e-BH or an
+independence assumption between processes; the per-process stable-rate
+Bernoulli assumptions still matter.
+
+This construction is conservative: a wide reference interval can contain the
+alternative and prevent wealth growth. The prior `twosample` null and power
+headlines are retracted, and 0.5.1 publishes no replacement performance
+table. See [anytime-valid mode](anytime.md) for the guarantee boundary and
+operational semantics. Default inference remains `fixed`.
 
 ## Exit codes
 
 | Command | Exit | Meaning |
 |---|---|---|
 | `dedrift check` | 0 | OK with valid evidence coverage |
-| `dedrift check` | 2 | DRIFT DETECTED — wire this to alerting |
+| `dedrift check` | 2 | DRIFT DETECTED — investigate; do not page automatically |
 | `dedrift check` | 3 | Inconclusive: degraded, missing/invalid reference, or partial coverage |

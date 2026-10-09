@@ -13,6 +13,7 @@ outside an HTML comment is not.
 from __future__ import annotations
 
 import re
+import struct
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,19 @@ def _pages() -> list[Path]:
 def test_pages_exist() -> None:
     """Guard the guard: a silent glob failure would make every check vacuous."""
     assert _pages(), f"no HTML found under {WEB}; this test would pass vacuously"
+
+
+def test_social_preview_uses_the_current_honest_card() -> None:
+    """Published pages must not fall back to the retired overclaiming card."""
+    pages = "\n".join(page.read_text(encoding="utf-8") for page in _pages())
+    assert "og-card.png" not in pages
+    assert "og-card-v2.png" in pages
+
+    card = WEB / "og-card-v2.png"
+    payload = card.read_bytes()
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", payload[16:24])
+    assert (width, height) == (1200, 630)
 
 
 @pytest.mark.parametrize("page", _pages(), ids=lambda p: str(p.relative_to(ROOT)))

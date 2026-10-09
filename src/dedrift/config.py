@@ -25,6 +25,7 @@ _TABLE_KEYS = {
             "canary_repetitions",
             "rolling_window_cycles",
             "deterministic",
+            "monitor_latency",
             "custom_scalars",
         }
     ),
@@ -246,6 +247,7 @@ class Materiality:
             "ks_distance": (0.0, 1.0),
             "dispersion_ratio": (1.0, None),
             "p95_relative": (0.0, None),
+            "absolute_distance": (0.0, None),
         }
         for signature, gates in self.per_channel.items():
             for gate, value in gates.items():
@@ -271,14 +273,20 @@ class Materiality:
         other channel at the same time.
 
         Args:
-            gate: One of ``ks_distance``, ``dispersion_ratio``, ``p95_relative``.
+            gate: One of ``ks_distance``, ``dispersion_ratio``,
+                ``p95_relative``, or the per-channel-only
+                ``absolute_distance``.
             signature: The scalar signature being gated.
 
         Returns:
             The threshold in force for that (gate, signature) pair.
         """
         override = self.per_channel.get(signature, {}).get(gate)
-        return float(override) if override is not None else float(getattr(self, gate))
+        if override is not None:
+            return float(override)
+        if gate == "absolute_distance":
+            return 0.0
+        return float(getattr(self, gate))
 
     def rate_threshold(self, signature: str) -> float:
         """Return the pp threshold for a rate signature (in [0,1] units)."""
@@ -294,48 +302,40 @@ class AnytimeConfig:
     """Anytime-valid inference settings (``[anytime]`` in config.toml).
 
     The budget decomposes as ``alpha = alpha_prime + gamma_total``, where
-    ``alpha_prime`` is the e-BH level and ``gamma_total`` pays for the
+    ``alpha_prime`` is the Ville--Bonferroni crossing budget and
+    ``gamma_total`` pays for the
     nuisance-parameter coverage of *all* processes together — it is divided
-    by the live process count at check time, because e-BH needs every input
-    to be a valid e-value and coverage failures union-bound across the
-    battery. Getting that split wrong inflates the real guarantee without
+    by the live process count at check time because coverage failures
+    union-bound across the battery. Getting that split wrong inflates the real guarantee without
     changing anything visible in a report, so it is computed, never typed.
 
     Attributes:
         alpha: Lifetime, battery-wide false-alert budget. The claim is
             "P(ever alerting on a stable agent) <= alpha", per epoch.
         gamma_total: Portion of ``alpha`` spent on nuisance coverage;
-            ``alpha_prime = alpha - gamma_total`` is the e-BH level. The
-            default 0.02 was chosen from a sweep over allocations whose
-            battery-wide claim is actually 0.05 (per-process split
-            included). Within that valid region the trade is one-sided —
-            detection at +10pp rises 24% -> 90% as gamma_total goes
-            0.005 -> 0.03 with the measured null rate 0 throughout — so the
-            choice is made on power alone, since validity does not
-            discriminate. We stop at 0.02 rather than 0.03 because
-            ``alpha_prime`` *is* the battery's FDR level, and spending most
-            of the lifetime budget insuring against a coverage failure that
-            has never been observed buys little.
+            ``alpha_prime = alpha - gamma_total`` is the Ville--Bonferroni
+            crossing budget. The default 0.02 is a conservative starting
+            split, not a published power optimum. Changing it trades nuisance
+            coverage against the crossing threshold and must be calibrated
+            prospectively for the deployment's pool size and horizon.
         tilts: Base odds-ratio tilts; symmetrised to ``{psi, 1/psi}`` so
             drift in either direction is covered.
         epoch_allocation: ``"per_epoch"`` (default, honest: a reset means
             the hypothesis changed) or ``"geometric"`` (spends
-            ``alpha * 2**-e`` on epoch ``e``, giving a genuine
+            ``alpha * 2**-(e+1)`` on epoch ``e``, giving a genuine
             unbounded-epoch lifetime bound at a power cost).
-        rate_model: ``"twosample"`` (default) builds each rate process as a
-            two-sample SAFE e-value (beta-binomial predictive ratio against
-            the frozen reference counts) — no nuisance interval, no coverage
-            budget spent, and measured power far beyond the interval-trapped
-            construction. ``"frozen_cp"`` restores the v0.3.1
-            Clopper-Pearson worst-case e-value, for which ``gamma_total``
-            and ``tilts`` remain meaningful.
+        rate_model: ``"frozen_cp"`` builds each rate process from a frozen
+            Clopper--Pearson nuisance interval and a worst-case likelihood
+            ratio. The former ``"twosample"`` model was withdrawn because
+            its prior-predictive Bayes factor is not an e-value pointwise in
+            the unknown null rate.
     """
 
     alpha: float = 0.05
     gamma_total: float = 0.02
     tilts: tuple[float, ...] = (1.5, 2.0, 3.0)
     epoch_allocation: str = "per_epoch"
-    rate_model: str = "twosample"
+    rate_model: str = "frozen_cp"
 
     def __post_init__(self) -> None:
         """Validate the lifetime error budget and betting-grid domain."""
@@ -369,17 +369,18 @@ class AnytimeConfig:
                 "anytime.epoch_allocation must be 'per_epoch' or 'geometric', "
                 f"got {self.epoch_allocation!r}"
             )
-        if not isinstance(self.rate_model, str) or self.rate_model not in {
-            "twosample",
-            "frozen_cp",
-        }:
+        if self.rate_model == "twosample":
             raise ValueError(
-                f"anytime.rate_model must be 'twosample' or 'frozen_cp', got {self.rate_model!r}"
+                "anytime.rate_model='twosample' was withdrawn: its prior-predictive "
+                "Bayes factor is not an e-value for every fixed null rate/reference. "
+                "Use rate_model='frozen_cp'."
             )
+        if not isinstance(self.rate_model, str) or self.rate_model != "frozen_cp":
+            raise ValueError(f"anytime.rate_model must be 'frozen_cp', got {self.rate_model!r}")
 
     @property
     def alpha_prime(self) -> float:
-        """e-BH level after paying for nuisance coverage."""
+        """Family-wise crossing budget after paying for nuisance coverage."""
         return self.alpha - self.gamma_total
 
 
@@ -390,6 +391,9 @@ class ProjectConfig:
     Attributes:
         name: Project name.
         canary_repetitions: N repeated runs per canary per cycle.
+        monitor_latency: Whether runtime latency participates in the detector
+            battery. Disable this for fast in-process deterministic functions,
+            where host jitter is usually not product behavior.
         rolling_window_cycles: K cycles in the rolling reference.
         fdr_q: Benjamini-Hochberg FDR level.
         permutations: Number of label permutations for permutation tests.
@@ -406,27 +410,26 @@ class ProjectConfig:
         cycle_effect: ``"off"`` (default) keeps the exact record-level
             battery of v0.3.1 — calibrated at sigma=0. ``"auto"`` engages
             the per-channel cluster-aware correction for hosted models with
-            within-version wobble; the measured trade-off (false-alert
-            reduction vs power cost) is published in
-            docs/statistics.md#cycle-effects and the choice should be made
-            on those numbers, not by default.
+            within-version wobble. The earlier performance table no longer
+            describes the corrected implementation and is retracted; treat
+            ``"auto"`` as experimental and remeasure its false-alert/power
+            trade-off on the deployment's own traffic before enabling it.
         cycle_effect_icc: Intraclass-correlation threshold above which a
             channel switches to the cluster-aware p-value. Spurious
             engagement at sigma=0 can only inflate variance (conservative),
             never sharpen a p-value.
-        alert_persistence: Consecutive-check requirement for an alert to
-            fire (1 = every check stands alone, the v0.3.1 semantics). At 2+,
-            a channel alerts only if it also alerted at the previous check
-            on a DIFFERENT current cycle: wobble-induced false alerts are
-            transient, drift persists, so this squares the false-alert rate
-            at the cost of one cycle of detection delay. Recommended for
-            hosted models with within-version wobble; measured numbers in
-            docs/statistics.md#cycle-effects.
+        alert_persistence: Consecutive distinct-cycle requirement for an
+            alert to fire (1 = every check stands alone). At ``N > 1``, the
+            channel must be significant and material on the current cycle
+            and the immediately preceding ``N - 1`` finalized cycles.
+            Re-running a cycle cannot advance the streak; a skipped cycle
+            breaks it because its candidacy is unknown.
     """
 
     name: str = "default"
     canary_repetitions: int = 7
     deterministic: bool = False
+    monitor_latency: bool = True
     custom_scalars: tuple[str, ...] = ()
     rolling_window_cycles: int = 5
     fdr_q: float = 0.05
@@ -451,6 +454,8 @@ class ProjectConfig:
         if self.canary_repetitions < 2 and not self.deterministic:  # pragma: no cover
             msg = "canary_repetitions may be 1 only when project.deterministic = true"
             raise ValueError(msg)
+        if not isinstance(self.monitor_latency, bool):
+            raise ValueError("project.monitor_latency must be true or false")
         seen: set[str] = set()
         for name in self.custom_scalars:
             if not name.isidentifier():
@@ -557,7 +562,7 @@ class ProjectConfig:
             epoch_allocation=_toml_string(
                 anytime_raw, "epoch_allocation", "per_epoch", section="anytime"
             ),
-            rate_model=_toml_string(anytime_raw, "rate_model", "twosample", section="anytime"),
+            rate_model=_toml_string(anytime_raw, "rate_model", "frozen_cp", section="anytime"),
         )
         materiality = Materiality(
             refusal_rate_pp=_toml_float(
@@ -588,10 +593,14 @@ class ProjectConfig:
         deterministic = project.get("deterministic", False)
         if not isinstance(deterministic, bool):
             raise ValueError("project.deterministic must be true or false")
+        monitor_latency = project.get("monitor_latency", True)
+        if not isinstance(monitor_latency, bool):
+            raise ValueError("project.monitor_latency must be true or false")
         return cls(
             name=_toml_string(project, "name", "default", section="project"),
             canary_repetitions=_toml_int(project, "canary_repetitions", 7, section="project"),
             deterministic=deterministic,
+            monitor_latency=monitor_latency,
             custom_scalars=_custom_scalar_names(project.get("custom_scalars", [])),
             rolling_window_cycles=_toml_int(project, "rolling_window_cycles", 5, section="project"),
             fdr_q=_toml_float(detection, "fdr_q", 0.05, section="detection"),

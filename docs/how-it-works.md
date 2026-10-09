@@ -7,7 +7,7 @@
    prompt hash, tool-schema hash, RAG index version, agent version). The
    config block is hashed into a fingerprint; any fingerprint change becomes
    a **config event** on the project timeline.
-2. **Run canaries.** A canary suite is a frozen YAML set of 50–200 inputs,
+2. **Run canaries.** A canary suite is a frozen YAML set of inputs,
    stratified by family: `happy_path`, `edge_case`, `refusal_boundary`,
    `tool_heavy`, `adversarial`, `long_context`. Each canary runs **N times
    per cycle** (default 7) against your agent via a one-function adapter.
@@ -18,9 +18,9 @@
    ML dependencies). With a pinned embedder: semantic displacement and pooled
    embeddings per family (Tier 2 — optional extra).
 4. **Check.** The current cycle is compared against **two references at
-   once**: the rolling window of recent cycles (catches sudden breaks) and a
-   frozen golden baseline you declared known-good (catches slow boiling-frog
-   drift). Both verdicts are always reported.
+   once**: the rolling window of recent cycles (aimed at sudden breaks) and a
+   frozen golden baseline you declared known-good (aimed at cumulative
+   movement). Both verdicts are reported when they have valid references.
 5. **Attribute.** For each alert, dedrift estimates the drift onset (the
    Page–Hinkley change-point where available, else the first alerting cycle)
    and ranks config events by temporal proximity. Attribution is
@@ -34,9 +34,11 @@
 With production traffic, inputs drift too, so separating input drift from
 behavior-given-input drift requires conditional comparison — a genuinely
 harder problem. A frozen canary suite removes input variation by
-construction: any output-distribution shift is attributable to the stack.
-That is the honest v0 scope. (Conditional production-traffic drift is on the
-roadmap as a separate tier.)
+construction. It narrows the suspects, but it does not prove that the recorded
+stack change caused an output-distribution shift: provider state, sampling,
+tools, external data, and collection defects can still move. Frozen-canary
+release comparison is the honest v0 scope. Conditional production-traffic
+drift is not implemented.
 
 ## Cycles are the unit of comparison
 
@@ -54,3 +56,22 @@ model or mixing caches raises an error rather than silently producing
 garbage. The zero-dependency `hash` embedder ships for demos and tests;
 `st:<model>` uses any sentence-transformers model via the
 `dedrift[embeddings]` extra.
+
+## Optional typed-evaluator channels
+
+For qualities that the built-in structural signatures cannot observe, an
+external typed evaluator can emit a numeric score or probability into
+`output.structured`, and `project.custom_scalars` can admit that value to the
+battery. A [Jev/Noul decision](https://docs.typesafe.ai/models) is one possible
+source of such a channel.
+
+This is an architectural option, **not a shipped or validated Jev
+integration**. [RLCD calibration](https://docs.typesafe.ai/confidence) is
+aggregate evidence about an evaluator, not
+a guarantee for each decision or for your domain. The evaluator also becomes
+part of the measurement instrument: model, prompt, option order, and vendor
+changes can look like agent drift. Pin its exact version, fingerprint its
+configuration, retain the raw output, and validate calibration and power on
+labeled project data before using it in a release gate. A moving
+`jev-latest` alias would make the measuring stick move with the system being
+measured.

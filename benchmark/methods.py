@@ -154,12 +154,13 @@ def run_dedrift_trajectory(seed: int, scale: str) -> dict[str, Any]:
     """Run dedrift's two shipped paths over one 50-cycle monitored history.
 
     The fixed-sample path (``dedrift check``: BH-FDR + materiality gates,
-    dual baselines) and the anytime-valid path (e-processes + e-BH on the
-    golden baseline, ``rate_model="twosample"``) both run at the package's
-    DEFAULT configuration, cycle by cycle, exactly as in deployment. The
-    per-cycle flag channel (PSI under the validity guard plus Page-Hinkley
-    per stream) is recorded as well: flags are deliberately uncalibrated
-    diagnostics, and their rate is published rather than hidden.
+    dual baselines) and the corrected anytime-valid path (frozen
+    Clopper--Pearson e-processes with persistent Ville--Bonferroni crossings
+    on the golden baseline, ``rate_model="frozen_cp"``) both run at the
+    package's DEFAULT configuration, cycle by cycle, exactly as in
+    deployment. The per-cycle flag channel (PSI under the validity guard plus
+    Page-Hinkley per stream) is recorded as well: flags are deliberately
+    uncalibrated diagnostics, and their rate is published rather than hidden.
 
     Args:
         seed: Master seed (run index).
@@ -184,10 +185,19 @@ def run_dedrift_trajectory(seed: int, scale: str) -> dict[str, Any]:
         store.append_many(agent.run_cycles(GOLDEN_CYCLES))
         golden = [f"cycle-{i:04d}" for i in range(GOLDEN_CYCLES)]
         set_golden_baseline(store, golden)
+        declaration = run_anytime_check(store, config=cfg)
+        if declaration.processed_cycles:
+            raise RuntimeError("anytime epoch declaration replayed observed history")
         for i in range(GOLDEN_CYCLES, GOLDEN_CYCLES + 50):
             store.append_many(agent.run_cycle(i))
             check = run_check(store, config=cfg)
             at_result = run_anytime_check(store, config=cfg)
+            expected_cycle = f"cycle-{i:04d}"
+            if at_result.processed_cycles != (expected_cycle,):
+                raise RuntimeError(
+                    f"anytime benchmark did not process exactly {expected_cycle}: "
+                    f"{at_result.processed_cycles!r}"
+                )
             fixed_alerts.append(check.n_alerts)
             fixed_flags.append(len(check.flags))
             ph_flags.append(sum(1 for f in check.flags if f.kind == "page_hinkley"))

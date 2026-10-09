@@ -24,6 +24,11 @@ from pydantic import (
     model_validator,
 )
 
+# SQLite INTEGER values are signed 64-bit.  Enforce that storage contract at
+# the public schema boundary so a valid-looking JSONL record can never be
+# fsynced and then poison every later index reconciliation with OverflowError.
+SQLITE_INT64_MAX = 2**63 - 1
+
 
 class Source(str, Enum):
     """Where a record came from."""
@@ -57,7 +62,7 @@ class ToolCall(BaseModel):
 
     name: str = Field(min_length=1)
     args_schema_ok: bool = Field(strict=True)
-    order: int = Field(ge=1, strict=True)
+    order: int = Field(ge=1, le=SQLITE_INT64_MAX, strict=True)
 
     @field_validator("name")
     @classmethod
@@ -127,16 +132,18 @@ class InteractionRecord(BaseModel):
     source: Source
     canary_id: str | None = None
     cycle_id: str | None = None
-    repetition: int | None = Field(default=None, ge=1, strict=True)
+    repetition: int | None = Field(
+        default=None, ge=1, le=SQLITE_INT64_MAX, strict=True
+    )
     input: InteractionInput
     output: InteractionOutput
     tool_calls: list[ToolCall] = Field(default_factory=list)
-    steps: int = Field(default=0, ge=0, strict=True)
-    retries: int = Field(default=0, ge=0, strict=True)
+    steps: int = Field(default=0, ge=0, le=SQLITE_INT64_MAX, strict=True)
+    retries: int = Field(default=0, ge=0, le=SQLITE_INT64_MAX, strict=True)
     errors: list[str] = Field(default_factory=list)
-    latency_ms: int = Field(default=0, ge=0, strict=True)
-    tokens_in: int = Field(default=0, ge=0, strict=True)
-    tokens_out: int = Field(default=0, ge=0, strict=True)
+    latency_ms: int = Field(default=0, ge=0, le=SQLITE_INT64_MAX, strict=True)
+    tokens_in: int = Field(default=0, ge=0, le=SQLITE_INT64_MAX, strict=True)
+    tokens_out: int = Field(default=0, ge=0, le=SQLITE_INT64_MAX, strict=True)
     config: AgentConfig
 
     @field_validator("canary_id", "cycle_id")

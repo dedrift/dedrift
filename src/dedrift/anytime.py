@@ -9,11 +9,10 @@ script.
 
 The budget, and the part that is easy to get wrong
 --------------------------------------------------
-``alpha = alpha_prime + gamma_total``, where ``alpha_prime`` is the e-BH
-level and ``gamma_total`` buys nuisance-parameter coverage for the *whole
-battery*. e-BH needs every input to be a valid e-value, and a process whose
-interval misses the truth is not one, so coverage failures union-bound
-across processes:
+``alpha = alpha_prime + gamma_total``, where ``alpha_prime`` is divided
+across the frozen process pool and ``gamma_total`` buys nuisance-parameter
+coverage for the *whole battery*. A process whose interval misses the truth
+is not an e-process, so coverage failures also union-bound across processes:
 
     P(ever a false alert) <= alpha_prime + sum_i gamma_i
 
@@ -43,12 +42,12 @@ is where they were always adjudicated.
 What is and is not established
 ------------------------------
 * Per process, Ville's inequality bounds the probability of *ever* crossing.
-* Across the battery at a single cycle, e-BH controls FDR under arbitrary
-  dependence.
-* Across the battery *over the trajectory*, anytime-valid FDR requires the
-  causal condition of the stopped-e-BH result (see
-  :mod:`dedrift.evalues.ebh`), which our dependent streams plausibly but
-  not provably satisfy. Reports say "measured" for that, never "proven".
+* A Bonferroni split across the fixed pool converts those bounds to a
+  trajectory-wide family-wise bound without any cross-process independence
+  assumption.
+* A crossing is absorbing for the epoch. Checks that fold a backlog therefore
+  cannot erase an alert merely because wealth fell again before the last
+  unseen cycle.
 """
 
 from __future__ import annotations
@@ -77,19 +76,22 @@ from dedrift.evalues import (
     update_process,
     ville_threshold,
 )
-from dedrift.evalues.ebh import ebh_from_logs
 from dedrift.evalues.process import state_to_row
 from dedrift.evalues.rates import per_process_gamma
-from dedrift.evalues.twosample import twosample_rate_evalue
 from dedrift.schema import InteractionRecord
 from dedrift.signatures import signatures_frame
 from dedrift.signatures.structural import RATE_SIGNATURES
-from dedrift.store import Store
+from dedrift.store import FinalizedSnapshotChangedError, Store
 
 #: Bumped when signature extraction changes meaning; part of the epoch
 #: fingerprint, because evidence gathered with a different instrument is
 #: not evidence about the same null.
 EXTRACTOR_VERSION = "1"
+
+#: Bumped when the anytime decision rule changes. Version 2 withdrew the
+#: invalid prior-predictive model, removed dependent pooled products, and
+#: replaced repeated e-BH with persistent Ville--Bonferroni crossings.
+ANYTIME_INFERENCE_VERSION = "3"
 
 #: The only baseline the anytime path admits. A rolling reference lacks a
 #: time-uniform interval (module docstring); until a confidence sequence
@@ -139,10 +141,12 @@ class AnytimeCheckResult:
 
     Attributes:
         ts: Check timestamp (UTC, ISO).
-        current_cycle: Cycle folded in by this check.
+        current_cycle: Latest finalized cycle in this check's snapshot. It can
+            be ineligible when it was first opened before the epoch declaration;
+            ``coverage_status`` then reports ``NO OBSERVATION``.
         fingerprint: Epoch fingerprint in force.
         alpha: Lifetime battery-wide budget.
-        alpha_prime: e-BH level.
+        alpha_prime: Family-wise Ville crossing budget.
         gamma_total: Total coverage budget.
         gamma_per_process: ``gamma_total / K``, the level each interval uses.
         n_processes: Processes in the epoch's declared pool.
@@ -151,9 +155,13 @@ class AnytimeCheckResult:
             a signature with no reference data at this moment waits for the
             next epoch to join.
         verdict: ``DRIFT DETECTED`` / ``OK`` / ``DEGRADED DATA``.
-        degraded: Whether drift conclusions were suppressed.
-        coverage_status: ``FULL``, ``PARTIAL``, ``NONE``, or ``NO REFERENCE``
-            for the current cycle's declared rate-process pool.
+        degraded: Whether any monitored cycle folded into this epoch exceeded
+            the collection-error threshold. Rate evidence is still folded;
+            this persistent warning is not an outcome-dependent skip rule.
+        degraded_cycles: Epoch-eligible cycles responsible for the warning.
+        coverage_status: ``FULL``, ``PARTIAL``, ``NONE``, ``NO OBSERVATION``,
+            or ``NO REFERENCE`` for the current cycle's declared rate-process
+            pool.
         suppressed_families: Families not comparable to the frozen baseline.
         processes: Per-process report rows.
         resets: Human-readable epoch-reset notices.
@@ -173,17 +181,19 @@ class AnytimeCheckResult:
     pool_declared_now: bool
     verdict: str
     degraded: bool
+    degraded_cycles: tuple[str, ...]
     coverage_status: str
     suppressed_families: tuple[str, ...]
     processes: list[ProcessReport] = field(default_factory=list)
     resets: list[str] = field(default_factory=list)
     processed_cycles: tuple[str, ...] = field(default_factory=tuple)
     snapshot_log_offset: int = 0
+    snapshot_finalized_revision: int = 0
     snapshot_record_ids: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def n_alerts(self) -> int:
-        """Processes rejected by e-BH at this check."""
+        """Processes with a persistent Ville--Bonferroni crossing."""
         return sum(1 for p in self.processes if p.rejected)
 
     def alerts(self) -> list[ProcessReport]:
@@ -235,8 +245,8 @@ def load_states(store: Store) -> dict[tuple[str, str, str, str], EProcessState]:
             fingerprint=fingerprint,
             prior=PriorState(
                 # Only admissible observations train the predictable prior.
-                # ``cycles`` also counts neutral degraded/suppressed cycles;
-                # ``bets_placed`` does not.
+                # ``cycles`` also counts outcome-independently unavailable
+                # observations; ``bets_placed`` does not.
                 n_cycles=bets_placed,
                 successes=prior_s,
                 trials=prior_t,
@@ -278,6 +288,33 @@ def load_processed_cycles(store: Store, fingerprint: str) -> set[str]:
     return {str(row[0]) for row in rows}
 
 
+def _load_epoch_degraded_cycles(store: Store, fingerprint: str) -> tuple[str, ...]:
+    """Recover every degraded cycle previously folded into one epoch.
+
+    Degraded evidence is still part of process wealth, so its warning must be
+    as persistent as that wealth. Reading all matching check rows also repairs
+    the presentation state of early prerelease rows that stored only the
+    degraded cycles seen by one invocation.
+    """
+    degraded: dict[str, None] = {}
+    rows = store.connect().execute(
+        "SELECT params_json FROM checks WHERE baseline_kind = 'anytime' ORDER BY id"
+    )
+    for row in rows:
+        try:
+            params = json.loads(str(row[0]))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(params, dict) or params.get("fingerprint") != fingerprint:
+            continue
+        cycles = params.get("degraded_cycles", [])
+        if not isinstance(cycles, list) or not all(isinstance(cycle, str) for cycle in cycles):
+            continue
+        for cycle in cycles:
+            degraded.setdefault(cycle, None)
+    return tuple(degraded)
+
+
 def _declare_epoch(
     store: Store,
     base_fingerprint: str,
@@ -286,7 +323,9 @@ def _declare_epoch(
     *,
     initial_start_after_cycle: str,
     changed_start_after_cycle: str,
-) -> tuple[str, int, str, bool]:
+    initial_start_after_open_seq: int,
+    changed_start_after_open_seq: int,
+) -> tuple[str, int, str, int, bool]:
     """Return a durable, globally monotone epoch index.
 
     Per-process rows cannot provide this invariant: a suite change may
@@ -296,11 +335,12 @@ def _declare_epoch(
     """
     conn = store.connect()
     latest = conn.execute(
-        "SELECT fingerprint, base_fingerprint, epoch_index, start_after_cycle "
+        "SELECT fingerprint, base_fingerprint, epoch_index, start_after_cycle, "
+        "start_after_open_seq "
         "FROM anytime_epochs ORDER BY epoch_index DESC LIMIT 1"
     ).fetchone()
     if latest is not None and str(latest[1]) == base_fingerprint:
-        return str(latest[0]), int(latest[2]), str(latest[3]), False
+        return str(latest[0]), int(latest[2]), str(latest[3]), int(latest[4]), False
 
     registered = int(latest[2]) if latest is not None else -1
     state_max = max((state.epoch for state in states.values()), default=-1)
@@ -308,14 +348,26 @@ def _declare_epoch(
     start_after_cycle = (
         initial_start_after_cycle if latest is None and not states else changed_start_after_cycle
     )
+    start_after_open_seq = (
+        initial_start_after_open_seq
+        if latest is None and not states
+        else changed_start_after_open_seq
+    )
     fingerprint = f"{base_fingerprint}:e{epoch_index}"
     conn.execute(
         "INSERT INTO anytime_epochs "
-        "(fingerprint, base_fingerprint, epoch_index, start_after_cycle, declared_ts) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (fingerprint, base_fingerprint, epoch_index, start_after_cycle, ts),
+        "(fingerprint, base_fingerprint, epoch_index, start_after_cycle, "
+        "start_after_open_seq, declared_ts) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            fingerprint,
+            base_fingerprint,
+            epoch_index,
+            start_after_cycle,
+            start_after_open_seq,
+            ts,
+        ),
     )
-    return fingerprint, epoch_index, start_after_cycle, True
+    return fingerprint, epoch_index, start_after_cycle, start_after_open_seq, True
 
 
 def _canonical_suite_identity(records: list[InteractionRecord], cycle_id: str) -> str:
@@ -329,6 +381,7 @@ def _canonical_suite_identity(records: list[InteractionRecord], cycle_id: str) -
     """
     cycle_records = [r for r in records if r.cycle_id == cycle_id]
     declared: set[str] = set()
+    declared_records = 0
     for record in cycle_records:
         metadata = record.input.metadata
         reserved = metadata.get(DEDRIFT_METADATA_KEY)
@@ -337,10 +390,17 @@ def _canonical_suite_identity(records: list[InteractionRecord], cycle_id: str) -
         value = reserved.get(SUITE_FINGERPRINT_KEY)
         if isinstance(value, str) and value:
             declared.add(value)
+            declared_records += 1
     if len(declared) > 1:
         msg = f"cycle {cycle_id!r} contains conflicting suite fingerprints: {sorted(declared)}"
         raise ValueError(msg)
     if declared:
+        if declared_records != len(cycle_records):
+            msg = (
+                f"cycle {cycle_id!r} mixes records with and without a declared "
+                "suite fingerprint; refusing a partially identified instrument"
+            )
+            raise ValueError(msg)
         return next(iter(declared))
 
     definitions: dict[str, str] = {}
@@ -365,21 +425,16 @@ def _canonical_suite_identity(records: list[InteractionRecord], cycle_id: str) -
     return f"sha256:{hashlib.sha256(canonical_suite.encode()).hexdigest()}"
 
 
-def _post_golden_cycles(cycles: list[str], golden: list[str]) -> list[str]:
-    """Cycles after the frozen baseline, preserving first-observed order."""
-    if not golden:
-        return []
-    positions = {cycle: index for index, cycle in enumerate(cycles)}
-    last_golden = max(positions[cycle] for cycle in golden)
-    golden_set = set(golden)
-    return [cycle for cycle in cycles[last_golden + 1 :] if cycle not in golden_set]
-
-
 def _suppressed_families(
     ref_frame: pd.DataFrame, cur_frame: pd.DataFrame, families: list[str]
 ) -> set[str]:
     """Families whose current composition is not comparable to golden."""
-    suppressed: set[str] = set()
+    reference_families = {str(family) for family in ref_frame["family"].unique()}
+    current_families = {str(family) for family in cur_frame["family"].unique()}
+    # Detect both missing and unexpected families. The caller's ``families``
+    # comes from the frozen reference so an excluded historical suite cannot
+    # poison this comparison.
+    suppressed: set[str] = reference_families ^ current_families
     for family in families:
         ref = ref_frame[ref_frame["family"] == family]
         cur = cur_frame[cur_frame["family"] == family]
@@ -469,7 +524,7 @@ def live_keys(
     A signature with no reference observations (an ``exact_match`` column
     that is entirely absent because the suite declares no expected answers,
     say) cannot ever produce evidence, yet including it shrinks every other
-    process's coverage budget and raises the e-BH threshold. Excluding it is
+    process's coverage and crossing budgets. Excluding it is
     pure gain.
 
     The test uses reference data only. Current-cycle availability is *not*
@@ -477,7 +532,8 @@ def live_keys(
     being bet on, which is the predictability violation this package is
     built to prevent. The consequence is stated rather than hidden — a
     signature that gains data mid-epoch waits until the next epoch to join,
-    and one that loses data stays in the pool contributing ``E_t = 1``.
+    and one with outcome-independently unavailable data stays in the pool
+    contributing ``E_t = 1``. Composition mismatches fail closed.
     """
     keys: list[Key] = []
     for baseline_name, ref_cycles in baselines:
@@ -500,8 +556,22 @@ def run_anytime_check(store: Store, config: ProjectConfig | None = None) -> Anyt
     pool declaration, and the check row share the final writer transaction.
     """
     cfg = config or ProjectConfig.load(store.project_dir)
-    records, snapshot_offset = store.read_finalized_canary_snapshot()
-    return _run_anytime_check_snapshot(store, cfg, records, snapshot_offset)
+    for attempt in range(3):
+        records, snapshot_offset, snapshot_revision = (
+            store.read_finalized_canary_snapshot_with_revision()
+        )
+        try:
+            return _run_anytime_check_snapshot(
+                store,
+                cfg,
+                records,
+                snapshot_offset,
+                snapshot_revision,
+            )
+        except FinalizedSnapshotChangedError:
+            if attempt == 2:
+                raise
+    raise AssertionError("unreachable")
 
 
 def _run_anytime_check_snapshot(
@@ -509,8 +579,15 @@ def _run_anytime_check_snapshot(
     cfg: ProjectConfig,
     records: list[InteractionRecord],
     snapshot_offset: int,
+    snapshot_revision: int,
 ) -> AnytimeCheckResult:
-    """Fold every unseen post-golden cycle exactly once and adjudicate.
+    """Declare or advance an epoch, folding eligible unseen cycles once.
+
+    A brand-new epoch starts *after* the current finalized cycle.  Its first
+    check declares the pool and betting rule but cannot replay already
+    observed outcomes: choosing either after seeing those outcomes would
+    violate predictability.  Later checks may fold a backlog because that
+    epoch and pool were durably declared before every cycle in the backlog.
 
     Only the rate channel is implemented: a verified single channel is worth
     more than four unverified ones, and the scalar and semantic channels
@@ -521,6 +598,7 @@ def _run_anytime_check_snapshot(
         cfg: Validated project configuration.
         records: Immutable finalized-record snapshot.
         snapshot_offset: Committed JSONL offset recorded with the check.
+        snapshot_revision: Finalized-cycle watermark captured with the records.
 
     Returns:
         The check result. State is persisted before returning.
@@ -540,36 +618,21 @@ def _run_anytime_check_snapshot(
     # currently ends on one of them. They must never be folded as evidence.
     declared_golden = get_golden_baseline(store)
     golden = [c for c in declared_golden if c in cycles]
-    candidate_post_golden = _post_golden_cycles(cycles, golden)
 
     records_by_cycle: dict[str, list[InteractionRecord]] = {}
     for record in records:
         assert record.cycle_id is not None
         records_by_cycle.setdefault(record.cycle_id, []).append(record)
-    suite_by_cycle = {
-        cycle: _canonical_suite_identity(records_by_cycle[cycle], cycle) for cycle in cycles
-    }
-    golden_suites = {suite_by_cycle[cycle] for cycle in golden}
+    golden_suites = {_canonical_suite_identity(records_by_cycle[cycle], cycle) for cycle in golden}
     if len(golden_suites) > 1:
         msg = "golden baseline spans multiple canary-suite fingerprints; re-baseline"
         raise ValueError(msg)
     golden_suite = next(iter(golden_suites), None)
-    post_suites = {suite_by_cycle[cycle] for cycle in candidate_post_golden}
-    if len(post_suites) > 1:
-        msg = (
-            "unprocessed post-golden backlog spans a canary-suite boundary; "
-            "refusing to combine instruments. Check before changing the suite, "
-            "or re-baseline on known-good cycles from the new suite."
-        )
-        raise ValueError(msg)
-    current_suite = suite_by_cycle[current]
-    if golden_suite is not None and current_suite != golden_suite:
-        msg = (
-            "current canary suite does not match the golden baseline; refusing "
-            "to bet across different instruments. Re-baseline on known-good "
-            "cycles from the current suite."
-        )
-        raise ValueError(msg)
+    # The frozen reference defines the epoch's instrument. The latest
+    # finalized cycle may have been opened before declaration and therefore
+    # be permanently excluded; letting that cycle define (or veto) the epoch
+    # would make finalization order change the monitored hypothesis.
+    epoch_suite = golden_suite or "no-golden-baseline"
 
     inference_config = json.dumps(
         {
@@ -578,21 +641,27 @@ def _run_anytime_check_snapshot(
             "tilts": ac.tilts,
             "epoch_allocation": ac.epoch_allocation,
             "rate_model": ac.rate_model,
+            "inference_version": ANYTIME_INFERENCE_VERSION,
         },
         sort_keys=True,
         separators=(",", ":"),
     )
+    pinned_embedder = get_pinned_embedder(store)
+    if cfg.embedder and cfg.embedder != pinned_embedder:
+        raise ValueError(
+            f"embeddings.model expects {cfg.embedder!r}, but the authoritative pin is "
+            f"{pinned_embedder!r}; use `dedrift embedder pin` or restore project state"
+        )
     base_fingerprint = epoch_fingerprint(
-        suite_version=current_suite,
-        embedder=get_pinned_embedder(store) or "",
+        suite_version=epoch_suite,
+        embedder=pinned_embedder or "",
         golden_cycles=tuple(golden),
         extractor_version=EXTRACTOR_VERSION,
         inference_config=inference_config,
     )
 
     cur_frame = frame[frame["cycle_id"] == current]
-    degraded = bool(cur_frame["had_error"].mean() > DEGRADED_ERROR_FRACTION)
-    families = sorted(str(family) for family in frame["family"].unique())
+    current_degraded = bool(cur_frame["had_error"].mean() > DEGRADED_ERROR_FRACTION)
 
     # The pool is declared ONCE per epoch and then frozen. Its size sets the
     # per-process coverage budget, which sets the nuisance interval, which is
@@ -607,29 +676,107 @@ def _run_anytime_check_snapshot(
     baselines = [(ANYTIME_BASELINE, golden)]
     ref_by_baseline = dict(baselines)
     ref_frame_all = frame[frame["cycle_id"].isin(golden)]
+    # Pool membership belongs to the frozen instrument. Excluded historical
+    # cycles must not inject families into composition checks or multiplicity.
+    families = sorted(str(family) for family in ref_frame_all["family"].unique())
     conn = store.connect()
     if conn.in_transaction:
         raise RuntimeError("run_anytime_check requires ownership of the SQLite transaction")
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # A complete JSONL tail can survive a crash before its SQLite commit.
+        # Reconcile and register those observations before fixing the epoch
+        # boundary, including cycles that are still open and absent from the
+        # finalized snapshot used for the statistical computation.
+        store._reconcile_jsonl_tail(conn)
+        store._sync_cycle_registry(conn, legacy_finalize=False)
+        store.assert_finalized_revision(snapshot_revision)
         if get_golden_baseline(store) != declared_golden:
-            raise RuntimeError("golden baseline changed during the check snapshot; retry")
+            raise FinalizedSnapshotChangedError(
+                "golden baseline changed during the check snapshot; retry"
+            )
+        if get_pinned_embedder(store) != pinned_embedder:
+            raise FinalizedSnapshotChangedError(
+                "pinned embedder changed during the check snapshot; retry"
+            )
         states = load_states(store)
-        positions = {cycle: index for index, cycle in enumerate(cycles)}
-        initial_boundary = max(golden, key=positions.__getitem__) if golden else current
-        fingerprint, epoch_now, epoch_start_after, epoch_declared_now = _declare_epoch(
+        missing_open_sequences = int(
+            conn.execute("SELECT COUNT(*) FROM canary_cycles WHERE open_seq IS NULL").fetchone()[0]
+        )
+        if missing_open_sequences:
+            raise RuntimeError("canary cycle observation order is incomplete; reopen the store")
+        declaration_open_seq = int(
+            conn.execute("SELECT COALESCE(MAX(open_seq), 0) FROM canary_cycles").fetchone()[0]
+        )
+        (
+            fingerprint,
+            epoch_now,
+            epoch_start_after,
+            epoch_start_after_open_seq,
+            epoch_declared_now,
+        ) = _declare_epoch(
             store,
             base_fingerprint,
             states,
             ts,
-            initial_start_after_cycle=initial_boundary,
+            initial_start_after_cycle=current,
             changed_start_after_cycle=current,
+            initial_start_after_open_seq=declaration_open_seq,
+            changed_start_after_open_seq=declaration_open_seq,
         )
-        post_golden = [
+        # E-process time is first-observation order, never finalization order.
+        # A later cycle may finalize while an earlier one is still open, but
+        # folding it would let an outcome-visible completion schedule permute
+        # the wealth path (and manufacture an absorbing crossing). Process
+        # only the contiguous finalized prefix after the declaration boundary;
+        # defer everything behind the first open cycle.
+        post_golden: list[str] = []
+        lifecycle = (
+            conn.execute(
+                "SELECT cycle_id, status, open_seq, prospective FROM canary_cycles "
+                "WHERE open_seq > ? ORDER BY open_seq",
+                (epoch_start_after_open_seq,),
+            ).fetchall()
+            if golden
+            else []
+        )
+        snapshot_cycles = set(cycles)
+        for cycle_id, status, _open_seq, prospective in lifecycle:
+            if not bool(prospective):
+                raise ValueError(
+                    f"cycle {str(cycle_id)!r} was imported after the anytime epoch began "
+                    "without a durable pre-observation begin_cycle marker. Refusing to "
+                    "treat post-hoc outcomes as prospective evidence. Re-baseline after "
+                    "the imported history, then collect future cycles with CanaryRunner "
+                    "or call Store.begin_cycle before the first agent call."
+                )
+            if str(status) != "finalized":
+                break
+            cycle = str(cycle_id)
+            if cycle not in snapshot_cycles:
+                raise FinalizedSnapshotChangedError(
+                    f"finalized cycle {cycle!r} is absent from the check snapshot; retry"
+                )
+            post_golden.append(cycle)
+        eligible_suite_by_cycle = {
+            cycle: _canonical_suite_identity(records_by_cycle[cycle], cycle)
+            for cycle in post_golden
+        }
+        mismatched_suites = [
             cycle
-            for cycle in candidate_post_golden
-            if positions[cycle] > positions[epoch_start_after]
+            for cycle in post_golden
+            if golden_suite is not None and eligible_suite_by_cycle[cycle] != golden_suite
         ]
+        if mismatched_suites:
+            msg = (
+                "unprocessed post-golden backlog spans a canary-suite boundary; "
+                "these eligible cycles do not match the golden baseline: "
+                f"{', '.join(mismatched_suites)}. Refusing to combine instruments. "
+                "Check before changing the suite, or re-baseline on prospectively "
+                "selected cycles from the new suite."
+            )
+            raise ValueError(msg)
+        current_is_eligible = current in post_golden
         pool_keys = load_pool(store, fingerprint)
         pool_declared_now = epoch_declared_now
         if not pool_keys:
@@ -640,6 +787,16 @@ def _run_anytime_check_snapshot(
         grid = symmetric_grid(ac.tilts)
         processed = load_processed_cycles(store, fingerprint)
         unseen = [cycle for cycle in post_golden if cycle not in processed]
+        newly_degraded = tuple(
+            cycle
+            for cycle in unseen
+            if bool(frame[frame["cycle_id"] == cycle]["had_error"].mean() > DEGRADED_ERROR_FRACTION)
+        )
+        persisted_degraded = _load_epoch_degraded_cycles(store, fingerprint)
+        degraded_cycles = tuple(dict.fromkeys((*persisted_degraded, *newly_degraded)))
+        if current_is_eligible and current_degraded and current not in degraded_cycles:
+            degraded_cycles = (*degraded_cycles, current)
+        degraded = bool(degraded_cycles)
 
         if ac.epoch_allocation == "geometric":
             effective_alpha = geometric_allocation(ac.alpha, epoch_now)
@@ -655,15 +812,11 @@ def _run_anytime_check_snapshot(
                 "expected 'per_epoch' or 'geometric'"
             )
             raise ValueError(msg)
-        if ac.rate_model == "twosample":
-            # The two-sample beta-binomial e-value integrates the shared
-            # null parameter against a prior: there is no nuisance interval,
-            # so no coverage budget is spent and the e-BH level is the full
-            # per-epoch alpha. gamma_total remains meaningful only for the
-            # frozen_cp construction.
-            effective_gamma_total = 0.0
-            effective_alpha_prime = effective_alpha
         gamma_i = per_process_gamma(effective_gamma_total, max(len(pool_keys), 1))
+        # Each state gets an equal share of the trajectory-wide crossing
+        # budget. Ville per process + a union bound over this frozen pool is
+        # valid under arbitrary dependence and at arbitrary check cadence.
+        decision_alpha = effective_alpha_prime / max(len(pool_keys), 1)
 
         working: dict[Key, EProcessState] = {}
         for key in pool_keys:
@@ -678,17 +831,25 @@ def _run_anytime_check_snapshot(
             key: "no unseen cycle; persisted state read without mutation" for key in pool_keys
         }
         resets: list[str] = []
-        if epoch_declared_now and epoch_now > 0:
+        if epoch_declared_now:
             resets.append(
-                f"epoch {epoch_now} declared: monitoring instrument/config changed; "
-                f"historical cycles through {epoch_start_after!r} were not replayed"
+                f"epoch {epoch_now} declared after {epoch_start_after!r}; historical "
+                "cycles were not replayed because the pool and bets must be fixed "
+                "before observing monitored outcomes"
             )
         seen_reset_notices: set[str] = set()
 
         for cycle in unseen:
             cycle_frame = frame[frame["cycle_id"] == cycle]
-            cycle_degraded = bool(cycle_frame["had_error"].mean() > DEGRADED_ERROR_FRACTION)
             suppressed = _suppressed_families(ref_frame_all, cycle_frame, families)
+            if suppressed:
+                names = ", ".join(sorted(suppressed))
+                raise ValueError(
+                    f"cycle {cycle!r} is not composition-comparable to the frozen "
+                    f"baseline for families: {names}. Refusing to choose E_t=1 after "
+                    "observing the cycle because that would invalidate optional-stopping "
+                    "control. Repair collection or re-baseline after this cycle."
+                )
 
             for key in pool_keys:
                 baseline_name, family, sig, _channel = key
@@ -699,34 +860,15 @@ def _run_anytime_check_snapshot(
                 state = working[key]
                 reference = (int(ref_fam.sum()), len(ref_fam))
 
-                if cycle_degraded:
+                if cur_fam.empty:
                     update = _neutral_update(
                         state,
                         fingerprint=fingerprint,
-                        alpha_prime=effective_alpha_prime,
-                        reference=reference,
-                        detail="degraded cycle: neutral evidence; sufficient statistics unchanged",
-                    )
-                elif family in suppressed:
-                    update = _neutral_update(
-                        state,
-                        fingerprint=fingerprint,
-                        alpha_prime=effective_alpha_prime,
+                        alpha_prime=decision_alpha,
                         reference=reference,
                         detail=(
-                            "composition mismatch: neutral evidence; "
-                            "sufficient statistics unchanged"
-                        ),
-                    )
-                elif cur_fam.empty:
-                    update = _neutral_update(
-                        state,
-                        fingerprint=fingerprint,
-                        alpha_prime=effective_alpha_prime,
-                        reference=reference,
-                        detail=(
-                            "no current-cycle trials: neutral evidence; "
-                            "sufficient statistics unchanged"
+                            "no current-cycle trials: neutral evidence; availability "
+                            "must be determined independently of the outcome"
                         ),
                     )
                 else:
@@ -738,22 +880,19 @@ def _run_anytime_check_snapshot(
                         reference_trials=reference[1],
                     )
                     successes, trials = int(cur_fam.sum()), len(cur_fam)
-                    if ac.rate_model == "twosample":
-                        outcome = twosample_rate_evalue(successes, trials, prior)
-                    else:
-                        outcome = rate_evalue(
-                            successes,
-                            trials,
-                            prior,
-                            gamma=gamma_i,
-                            grid=grid,
-                            frozen_reference=(baseline_name == ANYTIME_BASELINE),
-                        )
+                    outcome = rate_evalue(
+                        successes,
+                        trials,
+                        prior,
+                        gamma=gamma_i,
+                        grid=grid,
+                        frozen_reference=(baseline_name == ANYTIME_BASELINE),
+                    )
                     update = update_process(
                         state,
                         outcome,
                         fingerprint=fingerprint,
-                        alpha_prime=effective_alpha_prime,
+                        alpha_prime=decision_alpha,
                         successes=successes,
                         trials=trials,
                         reference=reference,
@@ -780,34 +919,6 @@ def _run_anytime_check_snapshot(
                 state = replace(state, fingerprint=fingerprint)
             visible.append(state)
 
-        log_evalues = [state.log_wealth for state in visible]
-        # Pooled per-signature processes (two-sample model only): the
-        # product of the per-family e-values, exp(sum of log-wealths), is
-        # itself an e-value under cross-family independence within a cycle,
-        # and e-BH tolerates the resulting dependence with the per-family
-        # entries. A family-wide shift (a provider swap moves every family's
-        # refusal rate) accumulates evidence six times faster in the pooled
-        # process, while the per-family processes keep the resolution.
-        # Membership is a fixed function of the declared pool, so
-        # predictability is preserved.
-        pooled_meta: list[tuple[Key, float, list[int]]] = []
-        if ac.rate_model == "twosample":
-            for sig in sorted({key[2] for key in pool_keys}):
-                member_idx = [
-                    i
-                    for i, key in enumerate(pool_keys)
-                    if key[2] == sig and key[0] == ANYTIME_BASELINE
-                ]
-                if len(member_idx) < 2:
-                    continue
-                pooled_log = float(sum(visible[i].log_wealth for i in member_idx))
-                pooled_meta.append(
-                    ((ANYTIME_BASELINE, "pooled", sig, "rate"), pooled_log, member_idx)
-                )
-        decision = ebh_from_logs(
-            log_evalues + [w for _, w, _ in pooled_meta],
-            alpha=effective_alpha_prime,
-        )
         processes = [
             ProcessReport(
                 key=key,
@@ -818,36 +929,25 @@ def _run_anytime_check_snapshot(
                 bets_placed=state.bets_placed,
                 rise_cycle=state.rise_cycle,
                 crossed_at=state.crossed_at,
-                rejected=bool(decision.rejected[index] and not degraded),
+                # Crossings are absorbing within an epoch. Degradation is a
+                # presentation warning, not an outcome-dependent skip rule.
+                rejected=bool(state.crossed_at is not None),
                 detail=details[key],
             )
-            for index, (key, state) in enumerate(zip(pool_keys, visible, strict=True))
+            for key, state in zip(pool_keys, visible, strict=True)
         ]
-        processes.extend(
-            ProcessReport(
-                key=key,
-                log_wealth=wealth,
-                evidence=float(min(wealth, 700.0)),
-                epoch=visible[member_idx[0]].epoch,
-                cycles=max(visible[i].cycles for i in member_idx),
-                bets_placed=sum(visible[i].bets_placed for i in member_idx),
-                rise_cycle=None,
-                crossed_at=None,
-                rejected=bool(decision.rejected[len(pool_keys) + offset] and not degraded),
-                detail="pooled product of per-family e-values",
-            )
-            for offset, (key, wealth, member_idx) in enumerate(pooled_meta)
-        )
 
         n_alerts = sum(1 for process in processes if process.rejected)
         monitored_families = {key[1] for key in pool_keys}
         current_suppressed = (
-            _suppressed_families(ref_frame_all, cur_frame, families) if golden else set(families)
+            _suppressed_families(ref_frame_all, cur_frame, families)
+            if golden and current_is_eligible
+            else set()
         )
         uncovered = current_suppressed | (set(families) - monitored_families)
         if not golden:
             coverage_status = "NO REFERENCE"
-        elif not post_golden:
+        elif not current_is_eligible:
             coverage_status = "NO OBSERVATION"
         elif not monitored_families or uncovered == set(families):
             coverage_status = "NONE"
@@ -858,12 +958,12 @@ def _run_anytime_check_snapshot(
 
         if not golden:
             verdict = NO_BASELINE_VERDICT
-        elif not post_golden:
-            verdict = "NO CURRENT OBSERVATION"
-        elif degraded:
-            verdict = "DEGRADED DATA"
         elif n_alerts:
             verdict = "DRIFT DETECTED"
+        elif degraded:
+            verdict = "DEGRADED DATA"
+        elif not current_is_eligible:
+            verdict = "NO CURRENT OBSERVATION"
         elif coverage_status == "NONE":
             verdict = "NO VALID COMPARISON"
         elif coverage_status == "PARTIAL":
@@ -879,19 +979,18 @@ def _run_anytime_check_snapshot(
             alpha_prime=effective_alpha_prime,
             gamma_total=effective_gamma_total,
             gamma_per_process=gamma_i,
-            # The declared, state-persisting pool; pooled per-signature
-            # entries in `processes` are derived battery inputs without
-            # their own state, so they do not count here.
             n_processes=len(pool_keys),
             pool_declared_now=pool_declared_now,
             verdict=verdict,
             degraded=degraded,
+            degraded_cycles=degraded_cycles,
             coverage_status=coverage_status,
             suppressed_families=tuple(sorted(uncovered)),
             processes=processes,
             resets=resets,
             processed_cycles=tuple(unseen),
             snapshot_log_offset=snapshot_offset,
+            snapshot_finalized_revision=snapshot_revision,
             snapshot_record_ids=tuple(record.id for record in records),
         )
 
@@ -932,16 +1031,20 @@ def _persist(store: Store, result: AnytimeCheckResult, *, commit: bool = True) -
                     "n_processes": result.n_processes,
                     "pool_declared_now": result.pool_declared_now,
                     "coverage_status": result.coverage_status,
+                    "degraded_cycles": result.degraded_cycles,
                     "suppressed_families": result.suppressed_families,
                     "processed_cycles": result.processed_cycles,
-                    "ville_threshold_log": ville_threshold(result.alpha_prime),
+                    "ville_threshold_log": ville_threshold(
+                        result.alpha_prime / max(result.n_processes, 1)
+                    ),
                     "snapshot_log_offset": result.snapshot_log_offset,
-                    "snapshot_record_ids": result.snapshot_record_ids,
+                    "snapshot_finalized_revision": result.snapshot_finalized_revision,
+                    "snapshot_record_count": len(result.snapshot_record_ids),
                 }
             ),
             result.verdict,
             result.snapshot_log_offset,
-            json.dumps(result.snapshot_record_ids),
+            None,
         ),
     )
     if commit:

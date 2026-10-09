@@ -128,14 +128,20 @@ class TestPerChannelMateriality:
         assert m.scalar_threshold("ks_distance", "latency_ms") == 0.35
         assert m.scalar_threshold("ks_distance", "output_words") == m.ks_distance
 
-    def test_all_three_scalar_gates_are_overridable(self) -> None:
+    def test_all_scalar_gates_are_overridable(self) -> None:
         m = Materiality(
             per_channel={
-                "latency_ms": {"ks_distance": 0.35, "p95_relative": 0.5, "dispersion_ratio": 3.0}
+                "latency_ms": {
+                    "ks_distance": 0.35,
+                    "p95_relative": 0.5,
+                    "dispersion_ratio": 3.0,
+                    "absolute_distance": 25.0,
+                }
             }
         )
         assert m.scalar_threshold("p95_relative", "latency_ms") == 0.5
         assert m.scalar_threshold("dispersion_ratio", "latency_ms") == 3.0
+        assert m.scalar_threshold("absolute_distance", "latency_ms") == 25.0
 
     def test_unknown_gate_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="not an overridable scalar gate"):
@@ -186,19 +192,23 @@ class TestConfigFileRoundTrip:
 [project]
 deterministic = true
 canary_repetitions = 1
+monitor_latency = false
 custom_scalars = ["score", "top_prob"]
 
 [materiality.per_channel.latency_ms]
 ks_distance = 0.35
 p95_relative = 0.5
+absolute_distance = 25.0
 """,
             )
         )
         assert cfg.deterministic is True
         assert cfg.canary_repetitions == 1
+        assert cfg.monitor_latency is False
         assert cfg.custom_scalars == ("score", "top_prob")
         assert cfg.materiality.scalar_threshold("ks_distance", "latency_ms") == 0.35
         assert cfg.materiality.scalar_threshold("ks_distance", "score") == 0.15
+        assert cfg.materiality.scalar_threshold("absolute_distance", "latency_ms") == 25.0
 
     def test_non_string_channel_names_are_rejected_by_name(self, tmp_path) -> None:
         """A typo must name the key, not surface as an AttributeError."""
@@ -221,7 +231,7 @@ class TestDeclaredChannelEndToEnd:
     """A declared channel must reach the battery, not merely the frame."""
 
     @staticmethod
-    def _seeded_store(tmp_path, shift: float) -> Store:
+    def _seeded_store(tmp_path, shift: float, *, drop_current_score: bool = False) -> Store:
         """Six cycles of a numeric agent; the last one shifts by ``shift``."""
         rng = np.random.default_rng(20260816)
         store = Store.init_project(tmp_path)
@@ -239,7 +249,11 @@ class TestDeclaredChannelEndToEnd:
                             input=InteractionInput(text=f"row {canary}"),
                             output=InteractionOutput(
                                 text="0.500",
-                                structured={"score": float(rng.normal(centre, 0.02))},
+                                structured=(
+                                    {}
+                                    if drop_current_score and cycle == 5
+                                    else {"score": float(rng.normal(centre, 0.02))}
+                                ),
                             ),
                             config=CONFIG,
                         )
@@ -260,6 +274,17 @@ class TestDeclaredChannelEndToEnd:
         store = self._seeded_store(tmp_path, shift=0.0)
         result = run_check(store, ProjectConfig(custom_scalars=("score",)))
         assert "score" not in {t.signature for t in result.alerts()}
+        store.close()
+
+    def test_declared_channel_disappearance_is_partial_not_green(self, tmp_path) -> None:
+        store = self._seeded_store(tmp_path, shift=0.0, drop_current_score=True)
+        result = run_check(store, ProjectConfig(custom_scalars=("score",)))
+        assert result.overall_verdict == "PARTIAL COVERAGE"
+        assert all(
+            "unknown/score" in assessment.missing_channels
+            for assessment in result.assessments
+            if assessment.coverage_status != "NO REFERENCE"
+        )
         store.close()
 
     def test_channel_is_invisible_until_declared(self, tmp_path) -> None:

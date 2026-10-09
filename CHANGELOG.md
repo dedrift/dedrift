@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.5.1
+
+Safety-correction release for anytime inference. The 0.4.0 and 0.5.0
+documentation treated the `twosample` beta-binomial prior-predictive Bayes
+factor as an e-value for every fixed unknown null rate after observing the
+reference. That claim is false. For example, with 0 successes in 5 frozen
+reference trials and one current Bernoulli trial at the stable null `p = 0.5`,
+the claimed factor has expectation 2.0417, not at most 1. Realistic
+fixed-reference simulations also exceeded the advertised lifetime budget.
+
+- Withdrew `anytime.rate_model = "twosample"`. It is now rejected during
+  configuration validation rather than accepted as a production option.
+- Removed the pooled per-signature products. Multiplying dependent
+  per-family e-values did not preserve the e-value property without the
+  independence that the production streams do not have.
+- Removed repeated e-BH from the production decision. The only supported
+  model is now `frozen_cp`, the frozen Clopper–Pearson worst-case construction.
+- Froze the process pool once per epoch and split both budgets across its `K`
+  members: `gamma_total / K` per reference interval and
+  `alpha_prime / K`, where `alpha_prime = alpha - gamma_total`, per persistent
+  Ville crossing. A Bonferroni union bound handles dependence between
+  processes. Once crossed, a process stays crossed for the rest of the epoch,
+  including when one check folds a backlog of cycles.
+- Kept the scope narrow: outcome-independently selected golden baseline, rate
+  channels, finalized cycles, and the stated fixed-rate Bernoulli assumptions.
+  Outcome-independently unavailable observations contribute a neutral factor;
+  composition mismatches fail closed rather than changing the pool.
+- Retracted the old `twosample` null-rate, wobble-boundary, and power
+  headlines. They must not be used to size or approve a deployment. The
+  corrected construction is substantially more conservative at canary scale,
+  and 0.5.1 makes no replacement null-rate or power claim.
+- Made epoch creation prospective: the first anytime check declares the pool
+  after every canary cycle already observed (including open/crash-tail cycles)
+  and folds no history. Only cycles first recorded after that durable watermark
+  may contribute evidence; later backlog folding remains exactly-once.
+- Made e-process time follow durable cycle-open order. A finalized cycle now
+  waits behind any earlier open cycle, so completion order cannot permute the
+  wealth path or manufacture an absorbing crossing. Suite identity and family
+  composition are evaluated only for the golden reference and eligible
+  cycles; partial suite fingerprints fail closed.
+- Made degraded-cycle warnings persistent for the whole epoch because later
+  wealth and alerts still contain that evidence. Excluded or deferred cycles
+  cannot produce a supported green status.
+- Retracted the fixed-path `cycle_effect="auto"` calibration/power ladder after
+  correctness changes invalidated its measurements. No replacement `auto`
+  performance table is claimed in 0.5.1.
+- Corrected fixed-path semantic displacement to use reference-only centroids,
+  made cluster-aware corrections conservative relative to the exact path, and
+  tied alert-persistence streaks to distinct cycles and a detector fingerprint.
+- Replaced duplicated full snapshot-ID manifests in every check row with the
+  compact finalized-revision watermark; exact snapshots reconstruct from
+  immutable cycle order. The remaining O(history)-per-check / O(cycles²)
+  cumulative compute cost is documented as a pre-1.0 production blocker.
+- Hardened store recovery and concurrency: lifecycle/check/anytime state is
+  treated as authoritative, schema migration and project initialization are
+  serialized, finalized cycles are immutable, snapshot races retry, and a
+  missing, empty, unrelated, or incompatible SQLite index is never silently
+  rebuilt from the interaction log.
+- Closed additional review blockers before release: SQLite-sized integer and
+  expected-count validation happens before JSONL publication; duplicate
+  canary coordinates are rejected for streaming as well as finalization;
+  indexed JSONL prefixes are integrity-checked on open; embedder pins are
+  authoritative lifecycle state and are revalidated at check commit.
+- Fixed current-data-dependent multiplicity shrinkage by retaining the
+  prospectively declared primary family size when families or channels are
+  suppressed, and included the exact statistical test in persistence keys.
+- Added channel-level evidence coverage, a native-unit scalar materiality
+  floor, and a latency opt-out. A declared custom channel that disappears can
+  no longer return a green fixed result.
+- Added durable pre-observation cycle declaration for anytime inference.
+  Runner-managed cycles are declared before the first agent call and
+  checkpointed record by record; post-hoc batches after an active epoch fail
+  closed rather than masquerading as future evidence.
+- Added `dedrift doctor`, report health output, non-callable/degraded-run CLI
+  failures, Markdown-injection escaping, and honest release-gate positioning.
+
+Upgrade note: an explicit `rate_model = "twosample"` now fails closed. Remove
+that setting or replace it with `rate_model = "frozen_cp"`, then review the
+coverage/multiplicity split and the limitations in `docs/anytime.md` before
+enabling anytime alerts.
+
 ## 0.5.0
 
 Field-report release. [#9](https://github.com/dedrift/dedrift/issues/9) ran 0.4.0 against a
@@ -40,6 +121,12 @@ tool stayed quiet about the places where that assumption made it blind.
 Calibration note: every published false-alarm figure remains measured on the **default**
 battery (m ≈ 336). Declared channels enlarge m and carry their own correlation structure; the
 docs and the paper's limitations section now say so explicitly.
+
+> **Correction in 0.5.1:** The anytime section below is retained as a
+> historical record of what 0.4.0 claimed, not as current guidance. Its
+> `twosample` e-value claim, dependent pooled products, repeated e-BH
+> decision, null/wobble measurements, power numbers, and default/upgrade
+> advice are retracted and superseded by the 0.5.1 entry above.
 
 ## 0.4.0
 

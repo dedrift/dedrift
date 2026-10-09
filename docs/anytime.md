@@ -1,370 +1,226 @@
-# Anytime-valid mode
+# Experimental anytime-valid rate monitoring
 
-Every calibration number elsewhere in these docs is **per check**. Monitoring
-runs forever, so per-check control is the wrong guarantee: at the measured
-3.2% per-check rate, an unchanged agent checked hourly accrues roughly 23
-false alerts a month, and nothing in the fixed-sample theory bounds that
-accumulation.
+`dedrift check --inference anytime` monitors rate signatures over an open-ended
+sequence of finalized canary cycles. It is intentionally narrower and more
+conservative than the fixed-sample path: only rate channels are implemented,
+only a frozen golden baseline is admissible, and the decision rule controls the
+probability of any false crossing rather than optimizing discovery power.
 
-Anytime mode replaces it with lifetime-oriented rate e-processes:
+This is not a live-production or general two-sample monitor. The guarantee is
+conditional on the fixed-rate Bernoulli model and the prospective workflow
+below; no corrected end-to-end power table is published. A valid but powerless
+process can remain quiet through a real regression. Treat it as an experimental
+release-gate signal, not a pager.
 
-!!! info "The target and its boundary"
-    Per-process optional-stopping control and per-check e-BH control are
-    proven. The full repeated dependent battery targets an unbounded-horizon
-    false-alert budget of **α = 0.05 per epoch**, but that trajectory-wide
-    statement relies on the causal condition described below. It is measured,
-    not presented as an unconditional theorem.
+## Important correction in 0.5.1
 
-```bash
-dedrift check --inference anytime
-dedrift report --inference anytime --out report.md
-```
+Versions 0.4.0 and 0.5.0 made an incorrect claim about the default
+`twosample` beta-binomial predictive ratio. That ratio is a Bayes factor for a
+prior-mixture null; it is **not** an e-value pointwise for every unknown null
+rate after the reference is observed. An exact one-trial counterexample is:
 
-Default is `--inference fixed`. Read the rest of this page before switching,
-because lifetime-oriented control is bought with detection power and the exchange rate at
-canary scale is steep.
+- frozen reference: 0 successes in 5 trials;
+- current observation: one Bernoulli trial under the stable null `p = 0.5`;
+- expected claimed e-value: `2.0417`, where a valid e-value requires at most 1.
 
-## Measured, both directions
+Realistic fixed-reference cases also exceeded the advertised lifetime error
+budget. The 0.5.1 release therefore:
 
-Same seeded stable-agent histories, both inference paths, default suite scale
-(18 canaries × 7 repetitions; 24 declared rate e-processes = 6 families × 4 rate
-signatures on the **golden** baseline), 500 runs × 2000 cycles.
+- withdraws and rejects `rate_model = "twosample"`;
+- removes products of per-family e-values, which were invalid without the
+  claimed cross-family independence;
+- removes repeated e-BH from the operational decision;
+- restores the frozen Clopper--Pearson construction as the only supported
+  rate model; and
+- uses persistent Ville--Bonferroni crossings over the fixed process pool.
 
-The streams are simulated *dependent* — signatures of a family are computed
-from the same records — because independent streams would measure the one
-case in which the governing result already holds, and so would prove
-nothing about ours.
+The old 0.4/0.5 null-rate and power headlines for `twosample` are retracted.
+They must not be used to size or approve any deployment.
 
-| | ever raised a false alert |
-|---|---|
-| **anytime-valid** (two-sample e-processes + e-BH) | **2/500 (0.4%)** — Wilson upper bound 0.015 |
-| fixed-sample (BH per check) | **419/500 (84%)** by cycle 100; **500/500** by cycle 1000 |
+## Current construction
 
-The anytime column is the `twosample` rate model (the default) at the
-2000-cycle horizon; the fixed column is the record-level battery,
-`cycle_effect = "off"` — also the default. Two events in 500 runs is
-consistent with a true lifetime rate up to about 1.5% — inside the
-α = 0.05 budget,
-and not a claim of exact flatness. What the contrast establishes is the
-difference in kind — a fixed-sample guarantee decays with
-use, and this one has not been observed to breach its budget.
-
-And the cost, on the same machinery — cycles from shift onset to alert.
-Only the 6 refusal streams shift (the realistic case, since a regression
-rarely moves every channel at once); onset at cycle 10, 100 runs × 400
-cycles:
-
-| shift | anytime-valid (twosample, pooled battery) | fixed-sample |
-|---|---|---|
-| +2 pp | **0/100 — never detected** | 100%, median 17 cycles |
-| +5 pp | 1/100, median 52 | 100%, median 7 |
-| +10 pp | **89/100**, median 50 cycles | 100%, median 2 |
-| +20 pp | 100/100, median 17 cycles | 100%, median 1 |
-
-Percentages are the fraction of runs that detect **at all** within 400
-cycles; medians are conditional on detecting. Below about +10 pp the
-wealth process grows too slowly to cross inside any practical horizon —
-the right word is *inconsistency*, not delay. The battery includes one
-**pooled process per rate signature** (the product of the six per-family
-e-values — an e-value under cross-family independence, inside e-BH's
-arbitrary-dependence guarantee; battery 24 → 28): it is what roughly
-doubles family-wide drift detection (the same study without it measures
-49/100, median 66, at +10 pp), while the per-family processes keep
-single-family resolution.
-
-**Read that table before switching modes.** Anytime-valid mode is for
-catching real degradation over weeks without accumulating false alarms; it is
-not for catching a 2 pp shift this afternoon. If small shifts matter to you
-more than lifetime error control, `fixed` is the honest choice — which is
-why it is the default.
-
-The mechanism behind the cost is visible in the construction: the pooled
-denominator *learns the alternative* as the current stream accumulates, so
-per-cycle growth decays ~1/t after onset and cumulative wealth grows only
-~log t late on. Strong shifts cross in a few cycles; mid-rate ones
-(p₀ = 0.30) take tens of cycles at canary block sizes — at a 60-cycle
-harness horizon +10 pp at p₀ = 0.30 was never caught (0/20), while +20 pp
-went 4/20 (median 26) and a low-baseline +10 pp 5/20 (median 28).
-
-## The rate model: twosample (default) vs the Clopper–Pearson construction (frozen_cp)
-
-Each rate process is a **two-sample SAFE e-value** — the SAFE 2×2
-construction in sequential form (Grunwald, de Heide & Koolen, [Safe
-Testing, JRSSB 2024](https://academic.oup.com/jrsssb/article/84/3/822/7056146);
-Turner, Ly & Grunwald, [arXiv:2106.02693](https://arxiv.org/abs/2106.02693)).
-Two Bernoulli streams carry independent Beta(1,1) priors under the
-alternative and a shared Beta(1,1) prior under the null; the ratio of the
-current stream's own posterior predictive to the pooled posterior
-predictive for each new cycle block is an e-value, and the product over
-blocks is an e-process under optional continuation. For a block of s
-successes in n trials, with (S₁, F₁) the current stream's completed-cycle
-counts and (S₀, F₀) the frozen reference counts:
+Suppose the epoch contains `K` rate processes. The configured budget is
 
 ```text
-log E = [betaln(s + a1, f + b1) − betaln(a1, b1)]
-      − [betaln(s + ap, f + bp) − betaln(ap, bp)]
-
-a1 = 1 + S₁,  b1 = 1 + F₁,   ap = 1 + S₀ + S₁,  bp = 1 + F₀ + F₁
+alpha = alpha_prime + gamma_total
 ```
 
-No nuisance interval is needed: the shared null parameter is integrated
-against the prior, so **no coverage budget is spent** and the e-value
-grows at the posterior-predictive odds rate rather than the KL gap to the
-far edge of a worst-case interval.
+The two parts pay for different uncertainty.
 
-**The alternative construction, and its measured limit.** `frozen_cp`
-worst-cases over a frozen Clopper–Pearson interval for the unknown
-baseline rate, with the
-coverage budget split across the battery (γᵢ = γ_total ÷ K = 8×10⁻⁴ at
-K = 24). At canary scale that interval is so wide that it *contains the
-alternative* for any moderate shift, so the worst-case e-value cannot
-grow: the independent audit measures **0/30 detections at +5/+10/+20 pp
-over 60 cycles at p₀ = 0.30**, with median log-wealth *decaying* ≈0.07
-per cycle under a +20 pp shift. The construction ships as a documented
-ablation — its measured power profile is the evidence behind the
-twosample default, not a mode to run in production — and `gamma_total`
-and `tilts` are meaningful only there.
+1. `gamma_total / K` is the coverage-failure budget for each process's frozen
+   reference interval.
+2. `alpha_prime / K` is the lifetime crossing budget for each process.
 
-**The saturation caveat.** The pooled denominator learns the alternative
-as drifted cycles accumulate, so per-cycle growth decays ~1/t after onset
-— fast crosses for strong shifts, tens of cycles for mid-rate ones, and a
-+10 pp shift at p₀ = 0.30 is beyond a 60-cycle horizon entirely (the
-400-cycle table above is the operative measurement). The
-reference-anchored alternative that would avoid the stall was implemented
-and **rejected**: it is not an e-value when the reference posterior misses
-the true rate (measured E[E] up to 5.8 under the null).
+For a rate process, dedrift computes a Clopper--Pearson interval `I` from the
+frozen golden counts. For each new cycle it evaluates a symmetric mixture of
+Bernoulli likelihood-ratio bets and takes a certified lower bound on its worst
+value over `p in I`.
+On the event that the true stable rate is in `I`, the resulting wealth is
+dominated by a non-negative supermartingale. Ville's inequality then gives
 
-**The validity boundary, measured.** Validity rests on the iid-block null,
-and two different things fail at two different points.
+```text
+P(process ever crosses K / alpha_prime) <= alpha_prime / K.
+```
 
-The **e-value property itself** — E[E_t | F_{t-1}] ≤ 1, without which
-Ville's inequality has no premise — is what fails first. Under a shared
-per-cycle offset it is **already unresolved against 1 at σ = 0.10**
-(E[M_T] = 1.10 over 45,000 replicated trajectories) and **clearly fails by
-σ = 0.25**. Canary heterogeneity is safe in the other direction: unequal
-fixed rates within a family make the block Poisson-binomial, which is
-underdispersed relative to the binomial the null assumes, so the
-construction only gets more conservative.
+A union bound covers all `K` processes without assuming they are independent.
+A second union bound pays for all reference intervals missing their true rate.
+Under the stated stable-rate Bernoulli model, the epoch-wide result is
 
-The **observed alert rate** lags that failure, which is why watching it is
-not enough: under iid cycle wobble it stays within the α = 0.05 budget up
-to σ = 0.25 (8/500 = 1.6%, Wilson upper 3.1%) — a regime in which the
-guarantee has already lapsed. The persistent AR(1) regime σ = 0.25,
-φ = 0.9 measures **36/500 = 7.2% (upper 9.8%) — above the 5% budget**.
+```text
+P(any false alert at any checked cycle) <= alpha_prime + gamma_total = alpha.
+```
 
-So: if your endpoint wobbles at σ ≳ 0.10, do not read the anytime bound as
-covering you, whatever the alert rate looks like. Details under
-[Robustness to provider-side
-wobble](#robustness-to-provider-side-wobble).
+Crossings are durable for the rest of an epoch. This is both operationally
+useful and mathematically necessary: a batched check that folds several unseen
+cycles must not erase a crossing that occurred mid-backlog merely because
+wealth later fell.
 
-## How the budget decomposes
+For the general conditional e-value requirement behind this construction, see
+[Safe Testing](https://academic.oup.com/jrsssb/article/86/5/1091/7623686).
 
-With the default `twosample` rate model there is no nuisance interval, so
-**no coverage budget is spent and the e-BH level is the full per-epoch
-alpha: α′ = α = 0.05**. The split below applies only to the `frozen_cp`
-construction, where the unknown baseline rate is paid for out
-of α:
+## Assumptions and boundary
 
-| Component | frozen_cp default | Pays for |
-|---|---|---|
-| α — lifetime, battery-wide | 0.05 | the whole claim |
-| α′ — e-BH level | 0.03 | multiplicity across the processes |
-| γ total — coverage | 0.02 | the unknown baseline rate |
-| γ per process | γ_total ÷ K | one process's interval |
+The guarantee is not distribution-free. For each monitored rate it assumes:
 
-**Why γ is divided by the pool size.** e-BH controls FDR only if every input
-is a genuinely valid e-value. A process whose coverage interval misses the
-true rate is not one, so coverage failures union-bound across the battery:
+- the golden reference is fixed before monitoring;
+- the golden cycles are selected by an outcome-independent rule fixed without
+  inspecting their observed rates (prefer prospectively designated first
+  cycles; never cherry-pick cycles because they looked stable or "good");
+- under the null, current observations follow the same fixed Bernoulli rate;
+- the bet for a cycle is determined before that cycle is observed; and
+- whether a rate observation is available is fixed independently of its value;
+- finalized cycles are immutable and processed exactly once.
 
-> P(ever a false alert) ≤ α′ + Σᵢ γᵢ
+Hidden provider state, within-cycle correlation, overdispersion, or a rate
+that changes while the operator still calls the agent “stable” can violate the
+per-process model. Cross-family dependence alone is fine for the Bonferroni
+decision, but temporal dependence can still invalidate the underlying wealth
+process. Treat robustness simulations as measurements outside the theorem,
+not as a replacement theorem.
 
-At 24 processes, using γ = 0.02 *per process* would claim 0.05 while
-delivering 0.51. dedrift computes γᵢ = γ_total ÷ K from the live pool, so
-changing your suite cannot silently stale the arithmetic.
+## Required prospective workflow
 
-The frozen_cp default γ_total = 0.02 came from sweeping allocations whose
-claim is actually 0.05. Within that valid region the trade is one-sided —
-detection at +10 pp rises from 24% to 90% as γ_total goes 0.005 → 0.03,
-with the measured null rate 0 throughout — so the choice was made on power
-alone, since validity does not discriminate. We stop at 0.02 rather than
-0.03 because α′ *is* the battery's FDR level, and spending most of the
-lifetime budget insuring against a coverage failure never once observed
-buys little. Both are configurable — and both are inert under `twosample`,
-which the audit's 0/30 measurement of the alternative construction makes
-the recommended default.
+The epoch and process pool must exist before any monitored outcome is
+observed. Use this order:
 
-## "Per epoch" is the part to understand
+```bash
+# 1. Collect/finalize reference cycles chosen by a predeclared rule.
+dedrift baseline set --first 3
 
-An **epoch** is a stretch during which the hypothesis and the measuring
-instrument are fixed. It ends when any of these change:
+# 2. Declare the epoch and frozen pool. Exit 3 / NO CURRENT OBSERVATION is expected.
+dedrift check --inference anytime
 
-- the canary suite
-- the pinned embedder
-- the golden baseline definition
-- the signature extractor
-- the anytime α/γ allocation, tilt grid, or allocation mode
+# 3. Only now collect the first monitored cycle, then check it.
+dedrift canary run --suite canaries.yaml --agent myagent:agent_fn --model provider/model@v1
+dedrift check --inference anytime
+```
 
-At an epoch boundary every e-process resets to zero wealth, and the report
-says so prominently. Epoch instances are globally monotone: changing A→B→A
-creates three epochs, never reuses A's old pool, ledger, or budget. A changed
-epoch begins *after* the cycle visible when it is declared; historical cycles
-are not replayed under a monitoring configuration chosen later.
+The declaration check intentionally folds no history. Every finalized or open
+canary cycle first observed before that declaration watermark is permanently
+excluded from the epoch, even if it is finalized later. A later invocation may
+fold several unseen cycles only because its epoch, pool, and bets were already
+durable before all of them were observed.
 
-This is the correct semantics, not a weakened guarantee. Change the suite and
-you are testing a different null; evidence accumulated under the old one is
-not evidence about the new one, so a guarantee spanning that change would be
-*meaningless* rather than stronger. If you re-baseline monthly, your claim is
-α per month — and you should know that rather than assume otherwise.
+`dedrift canary run` and `CanaryRunner.run_cycle(store=...)` durably reserve the
+cycle with `Store.begin_cycle` before the first agent call, checkpoint every
+record, and finalize only after the expected coordinates are present. A custom
+collector must call `Store.begin_cycle(cycle_id, expected_records=...)` before
+the first agent output exists. Direct post-hoc `append_many`/`dedrift log`
+imports created after epoch declaration are rejected as anytime evidence; they
+can remain historical data only after a new baseline and epoch.
 
-For a summable cross-epoch target, `epoch_allocation = "geometric"` allocates
-both α′ and γ_total by `2⁻⁽ᵉ⁺¹⁾` on globally monotone epoch *e*. Allocating
-only α′ while re-spending γ would not be summable. It costs power and is off
-by default.
+Checkpointing prevents completed calls from disappearing after a crash, but
+this release does not automatically resume an interrupted runner. The open
+cycle deliberately blocks later anytime cycles until an outcome-independent,
+auditable abort policy exists; do not delete an inconvenient partial cycle.
 
-## What is proven and what is measured
+## Why the reference is golden-only
 
-Kept separate deliberately.
+A frozen reference creates one confidence event for the whole epoch. A rolling
+reference creates a new interval at every cycle. Paying `gamma` once for those
+repeated intervals would be incorrect; the failure probability can grow with
+the horizon. A future rolling implementation needs a time-uniform confidence
+sequence. Until then, rolling comparisons remain available only through the
+fixed-sample `dedrift check` path.
 
-| Statement | Status |
-|---|---|
-| Per process, P(ever crossing) ≤ α′ at any stopping time | **proven** (Ville) |
-| Per check, FDR ≤ α′ under arbitrary dependence among e-values | **proven** ([Wang & Ramdas](https://academic.oup.com/jrsssb/article/84/3/822/7056146)) |
-| Over the trajectory, FDR ≤ α′ applying e-BH every cycle | **assumed + measured** |
+## Power: the honest limitation
 
-That last row is the honest gap. Applying e-BH repeatedly to running
-e-processes is anytime-valid under a causal condition — no unobserved
-confounding from the past — established by the [stopped e-BH
-result](https://arxiv.org/abs/2502.08539). Our streams are dependent (two
-baselines share the current cycle; all channels share the golden sample), so
-the condition is not automatic. It is plausible here, because every stream is
-a function of the same observable cycle history, but we have not proven it for
-this battery. The candidate violation worth naming is unobserved
-provider-side state — a rolling deployment, load variation — correlating
-streams through time. Instead of asserting the guarantee, the realised rate
-is measured: 2/500 above, with the wobble boundary below.
+Worst-casing over a high-coverage interval and splitting two budgets across the
+battery is conservative. At ordinary canary scale, the interval can contain a
+moderate alternative, in which case wealth will not grow. More monitoring time
+does not fix an alternative trapped inside the frozen interval.
+
+Use anytime mode when the lifetime false-alert target is more important than
+sensitivity to small shifts. Increase *independent golden reference trials* to
+narrow the interval; do not tune away the coverage or multiplicity split.
+Run the fixed path alongside it for per-cycle sensitivity, and validate both
+modes on your own stable histories and incident replays before using either as
+a release gate.
+
+The configured tilts choose the alternatives targeted by the predictable
+bets and therefore affect power. They are **not** an observed-effect
+materiality gate: an anytime crossing does not assert that a separately
+measured practical-null threshold was exceeded. Use the fixed-sample path
+when that two-gate interpretation is required.
+
+No replacement power table is published in 0.5.1. A table will return only
+after the corrected operational decision is measured end to end at stated
+sample sizes.
 
 ## Configuration
 
 ```toml
 [detection]
-inference = "fixed"        # or "anytime"
+inference = "fixed"             # opt in with "anytime"
 
 [anytime]
-alpha = 0.05               # lifetime, battery-wide
-rate_model = "twosample"   # default; "frozen_cp" is the Clopper–Pearson interval construction (an ablation)
-gamma_total = 0.02         # frozen_cp only: coverage budget; alpha_prime = alpha - gamma_total
-tilts = [1.5, 2.0, 3.0]    # frozen_cp only: symmetrised to {psi, 1/psi}
-epoch_allocation = "per_epoch"   # or "geometric"
+alpha = 0.05                    # epoch-wide lifetime false-alert budget
+gamma_total = 0.02              # total frozen-reference coverage budget
+tilts = [1.5, 2.0, 3.0]         # symmetrized internally
+epoch_allocation = "per_epoch" # or "geometric"
+rate_model = "frozen_cp"        # only supported construction
 ```
 
-The tilt grid is symmetrised so drift in either direction is covered, and its
-support is a **fixed configured constant**. Predictability is therefore
-structural — a bet can never depend on the cycle it is betting on, because it
-comes from configuration. A helper (`tilt_from_materiality`) exists to derive
-a tilt from a materiality band, which would aim the bets at effects you have
-declared you care about, but the shipped default does not call it. The grid
-is a constant, not an aimed one. (All of this configures `frozen_cp`; the
-twosample e-value has no tilt grid at all.)
+`per_epoch` spends a fresh `alpha` after the monitored hypothesis or
+instrument changes. `geometric` spends `alpha * 2^-(epoch+1)` and the same
+fraction of `gamma_total`, producing a summable bound across arbitrarily many
+epochs at a substantial power cost.
 
-Anytime mode has **no post-hoc materiality gate**. Its
-alerts test rate stability with configured bets, while fixed-mode alerts also
-apply observed-effect thresholds. The two modes do not currently represent
-the same practical hypothesis; use anytime for sequential rate surveillance
-and fixed mode for the broader, effect-screened diagnostic battery.
+An epoch changes when the suite identity, golden baseline, embedder,
+signature/inference version, or inference configuration changes. Accumulated
+wealth is reset because it concerns a different hypothesis.
 
-## Current scope
+## Operational semantics
 
-Only the **rate channel** (refusal, format validity, schema conformance,
-error rate) is implemented in anytime mode. A verified single channel is worth
-more than four unverified ones; the scalar and semantic channels need
-constructions of their own rather than a reuse of this one, and until they
-exist, anytime mode monitors less than fixed mode does. Run both.
+- Only finalized cycles are visible to inference.
+- Cycles are folded in durable first-observation order. If an earlier cycle is
+  still open, later finalized cycles wait behind it and the check stays
+  non-green (`NO OBSERVATION`) until the contiguous prefix can be processed.
+  This prevents completion order from changing the wealth path.
+- The process pool is declared once per epoch from reference data and frozen.
+- The first check in an epoch is declaration-only; it never replays outcomes
+  already present in finalized or open cycles.
+- Degraded cycles are still evaluated: choosing whether to bet after seeing
+  their outcomes would invalidate the e-process. The degraded label remains
+  visible, and a prior crossing remains visible.
+- A composition mismatch fails closed without updating state. It cannot be
+  converted to `E_t = 1` after observation; repair collection or re-baseline.
+- A genuinely unavailable rate contributes `E_t = 1` only under the stated
+  outcome-independent availability assumption.
+- Every processed cycle and process update commits in one SQLite transaction.
+- Re-running without a new finalized cycle is a read-only operation.
+- Reports distinguish `NO REFERENCE`, `NO OBSERVATION`, `PARTIAL`, and `NONE`
+  from a supported `OK` result.
 
-Two further limitations, stated rather than discovered:
+## Why no production claim is made
 
-- **Pool membership freezes at epoch start.** Only combinations with
-  reference data at that moment are admitted. A signature that gains data
-  mid-epoch waits for the next epoch; one that loses data stays in the pool
-  contributing exactly `E_t = 1`. This is a consequence of predictability,
-  not an oversight: membership decided from the current cycle would make the
-  bet depend on the data it is betting on.
-- **A suppressed cycle contributes `E_t = 1`** — not a skipped
-  update, and not a stale value carried forward. That preserves the
-  supermartingale *under a non-informative-dropout condition*: suppression is
-  decided after the cycle is observed, so `E[E_t | past] <= 1` requires that
-  whether a cycle was suppressed carries no information about its outcome.
-  For `had_error` those are nearly the same event — a real caveat, not a
-  formality.
-
-## Reading a wealth trajectory
-
-Log-wealth is accumulated evidence since the epoch began.
-
-- **Rising** — evidence against stability. The cycle where the rise began is
-  reported as the onset estimate, and it feeds attribution better than the
-  Page–Hinkley change point it replaces.
-- **Negative** — the configured bets have lost. This is not affirmative
-  evidence of stability and must not be presented as certification.
-- **Crossing log(1/α′)** — the process alone would reject; whether it alerts
-  is decided by e-BH across the battery.
-
-## Robustness to provider-side wobble
-
-The anytime path was run on stable agents while a shared per-cycle
-offset was injected — the configured stack unchanged, but the per-record law
-drifting between cycles, which is what a hosted endpoint does on its own.
-`phi` is the AR(1) coefficient of that offset: `phi = 0` is memoryless,
-`phi > 0` makes it persist. Ever-alerted, 500 runs × 2000 cycles, twosample
-rate model (the fixed path degrades far faster under the same injection —
-its ladder is on [the statistics page](statistics.md#cycle-effects)):
-
-| σ | φ | ever alerted |
-|---|---|---|
-| 0.00 | 0 | 2/500 — 0.4%, Wilson upper 1.5% |
-| 0.10 | 0 | 2/500 |
-| 0.25 | 0 | 8/500 — 1.6%, Wilson upper 3.1% |
-| 0.10 | 0.90 | 4/500 |
-| 0.25 | 0.90 | **36/500 — 7.2%, Wilson upper 9.8%** |
-
-Harness cross-checks at a 60-cycle horizon agree at small n: 0/40 with no
-wobble (upper 8.8%), 1/30 at σ = 0.15 (upper 16.7%). (Published here at
-first as 0/60 and 1/40; those denominators did not match the run the
-figure and the paper report, and are superseded.)
-
-Read the last row against its matched controls. At σ = 0.25 the rate goes
-8/500 (φ = 0) → 36/500 (φ = 0.90): monotone in persistence at fixed
-magnitude, which is what the theory predicts if the causal condition is
-what binds — persistent offsets are exactly the configuration in which
-unobserved provider-side state can correlate streams through time. And
-7.2% **exceeds the α = 0.05 budget**. That is the measured boundary of the
-guarantee, published rather than smoothed over: the observed rate stays
-inside budget under memoryless wobble up to σ = 0.25, and does not under
-strongly persistent wobble of that magnitude. Read that alongside the
-validity boundary above — the observed rate staying inside α up to
-σ = 0.25 is not the same as the guarantee holding there, and it does not:
-the e-value property is already unresolved at σ = 0.10.
-
-Why persistence and not just magnitude: an offset redrawn independently each
-cycle has no past, so however large it is it cannot violate a condition
-about confounding *from the past*. Measuring that and calling it reassurance
-would be measuring the wrong thing.
-
-## The assumption behind the reference
-
-Under `frozen_cp`, γ buys a Clopper–Pearson interval that covers the true
-reference rate, and the per-process construction is valid *on that coverage
-event*. Clopper–Pearson coverage assumes the reference is a binomial sample
-from the rate you are trying to bound. The twosample default spends no
-coverage budget — but it compares against the same frozen reference counts,
-and the selection problem is identical either way: a golden baseline is a
-set of cycles **you declared known-good** — a selected sample. Selecting
-toward quiet cycles moves the reference away from the true stable rate in
-exactly the direction that turns "drift vs reference" into "reference vs
-truth", and no rate model repairs that.
-
-Practical consequence: freeze the baseline on the *first* cycles you
-collected rather than the ones that looked best. `dedrift baseline set
---first 3` exists for that. A hand-picked baseline weakens the guarantee by
-an amount nobody can quantify, and the 2/500 measurement above says nothing
-about it — that study draws its reference as a clean binomial sample, so
-the reference is unbiased there by construction.
+Anytime mode still covers rate channels only. It has no scalar or semantic
+e-process, no rolling confidence sequence, and no calibrated corrected power
+table yet. Each check currently reads/parses the full finalized history, so
+runtime is O(history) per check and cumulative compute can become O(cycles²)
+over a long deployment. Check rows now retain a compact finalized-revision
+watermark rather than duplicating record-ID manifests, but windowed indexed
+reads, checkpoints, retention, and scale benchmarks are required before a
+production claim of any scale.
+Storage retention/redaction are also deployment responsibilities in this
+pre-1.0 package. These are explicit limitations, not implied roadmap guarantees.

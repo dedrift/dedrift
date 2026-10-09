@@ -1,5 +1,5 @@
-# Real canary suite for the live-API demo: 18 frozen inputs, 3 per family.
-# Small by design (cost); a production suite should hold 50-200.
+# Live-provider experiment: 18 frozen inputs, 3 per family.
+# Small by design (cost); this is not a production sizing recommendation.
 version: "1"
 canaries:
   # -- happy_path: bread-and-butter requests -------------------------------

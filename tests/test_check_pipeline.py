@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
 
+import dedrift.check as check_module
 from dedrift.attribution import attribute
 from dedrift.canary import Canary, CanaryRunner, CanarySuite
-from dedrift.check import get_golden_baseline, run_check, set_golden_baseline
+from dedrift.check import CheckResult, get_golden_baseline, run_check, set_golden_baseline
 from dedrift.config import ProjectConfig
-from dedrift.report import render_report
+from dedrift.report import _markdown_escape, render_report
 from dedrift.schema import Source
 from dedrift.sim import BehaviorProfile, SimAgent, SimConfig, drifted_profile
-from dedrift.store import Store
+from dedrift.store import FinalizedSnapshotChangedError, Store
 from tests.test_schema import make_config
 
 
@@ -178,6 +180,12 @@ class TestMaterialityGate:
         )
         result = run_check(store, config=strict)
         assert result.n_alerts == 0
+        store.close()
+
+    def test_latency_channel_can_be_disabled_for_host_jitter(self, tmp_path: Path) -> None:
+        store = seeded_project(tmp_path, change_cycle=None)
+        result = run_check(store, config=ProjectConfig(monitor_latency=False, permutations=100))
+        assert all(test.signature != "latency_ms" for test in result.tests)
         store.close()
 
 
@@ -356,6 +364,14 @@ class TestSourceIsolation:
 
 
 class TestReport:
+    def test_markdown_escape_neutralizes_forged_sections_and_remote_images(self) -> None:
+        hostile = "legit\n# FORGED SYSTEM HEALTHY\n![tracker](https://evil.invalid/x)"
+        escaped = _markdown_escape(hostile)
+        assert isinstance(escaped, str)
+        assert "\n" not in escaped
+        assert "\\# FORGED" in escaped
+        assert "\\!\\[tracker\\]" in escaped
+
     def test_report_renders_and_is_deterministic(self, tmp_path: Path) -> None:
         store = seeded_project(tmp_path, n_cycles=8, change_cycle=7)
         result = run_check(store)
@@ -591,6 +607,90 @@ class TestReportCaveats:
         store.close()
 
 
+class TestSnapshotConsistency:
+    def test_fixed_check_refuses_a_stale_finalized_snapshot(self, tmp_path: Path) -> None:
+        store = seeded_project(tmp_path, n_cycles=5)
+        records, offset, revision = store.read_finalized_canary_snapshot_with_revision()
+        all_records = SimAgent(SimConfig(n_canaries=18, repetitions=7, seed=5)).run_cycles(6)
+        store.append_many([r for r in all_records if r.cycle_id == "cycle-0005"])
+        before = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
+
+        with pytest.raises(FinalizedSnapshotChangedError, match="snapshot changed"):
+            check_module._run_check_snapshot(
+                store,
+                ProjectConfig.load(store.project_dir),
+                records,
+                offset,
+                revision,
+            )
+
+        after = store.connect().execute("SELECT COUNT(*) FROM checks").fetchone()[0]
+        assert after == before
+        store.close()
+
+    def test_fixed_check_retries_when_golden_changes_before_persistence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = seeded_project(tmp_path, n_cycles=5)
+        original = check_module.get_golden_baseline
+        calls = 0
+
+        def racing_read(target: Store) -> list[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                (target.project_dir / "baseline.json").write_text(
+                    '{"golden_cycles":["cycle-0000","cycle-0001"]}',
+                    encoding="utf-8",
+                )
+            return original(target)
+
+        monkeypatch.setattr(check_module, "get_golden_baseline", racing_read)
+        result = run_check(store, config=ProjectConfig(permutations=100))
+        store.close()
+
+        assert calls >= 4
+        assert result.declared_golden_cycles == ["cycle-0000", "cycle-0001"]
+
+    def test_fixed_check_retries_when_embedder_is_pinned_before_persistence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dedrift.embeddings import pin_embedder
+
+        store = seeded_project(tmp_path, n_cycles=5)
+        original_persist = check_module._persist
+        calls = 0
+
+        def racing_persist(target: Store, result: check_module.CheckResult) -> None:
+            nonlocal calls
+            calls += 1
+            # First computation sees no pin.  Pin immediately before it takes
+            # the persistence lock; revalidation must invalidate/retry it.
+            if calls == 1:
+                pin_embedder(target, "hash")
+            original_persist(target, result)
+
+        monkeypatch.setattr(check_module, "_persist", racing_persist)
+        result = run_check(store, config=ProjectConfig(permutations=100))
+        store.close()
+
+        assert calls == 2
+        assert result.pinned_embedder == "hash"
+        assert result.mmd_floors
+
+        with Store(tmp_path) as reopened:
+            compact = (
+                reopened.connect()
+                .execute(
+                    "SELECT params_json, snapshot_record_ids_json FROM checks "
+                    "WHERE baseline_kind = 'dual' ORDER BY id DESC LIMIT 1"
+                )
+                .fetchone()
+            )
+            assert compact[1] is None
+            assert '"snapshot_record_ids"' not in str(compact[0])
+
+
 class TestCycleEffectMode:
     """The v0.4.0 cluster-aware path: engagement, and the off switch."""
 
@@ -630,4 +730,158 @@ class TestCycleEffectMode:
         store = seeded_project(tmp_path, change_cycle=None)
         result = run_check(store)
         assert result.n_alerts == 0
+        store.close()
+
+    def test_auto_correction_never_sharpens_primary_p_values(self, tmp_path: Path) -> None:
+        """Approximate cycle correction can only weaken record-level evidence."""
+        cfg = SimConfig(
+            n_canaries=18,
+            repetitions=7,
+            post=drifted_profile(BehaviorProfile()),
+            change_cycle=7,
+            seed=37,
+            cycle_effect_sigma=0.25,
+        )
+        store = Store.init_project(tmp_path)
+        records = SimAgent(cfg).run_cycles(8)
+        store.append_many(records)
+        cycles = sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        set_golden_baseline(store, cycles[0:3])
+
+        corrected = run_check(store, config=ProjectConfig(cycle_effect="auto"))
+        record_level = run_check(store, config=ProjectConfig(cycle_effect="off"))
+        raw_by_key = {
+            (t.baseline, t.family, t.signature, t.outcome.test): t.outcome
+            for t in record_level.tests
+        }
+        engaged = {
+            (str(note["baseline"]), str(note["family"]), str(note["signature"]))
+            for note in corrected.cycle_effects
+        }
+
+        compared = 0
+        corrected_ks = []
+        for test in corrected.tests:
+            channel = (test.baseline, test.family, test.signature)
+            if channel not in engaged or test.outcome.test not in {"ks", "levene", "p95_perm"}:
+                continue
+            raw = raw_by_key[(test.baseline, test.family, test.signature, test.outcome.test)]
+            if not (math.isfinite(test.outcome.p_value) and math.isfinite(raw.p_value)):
+                continue
+            compared += 1
+            assert test.outcome.p_value >= raw.p_value
+            if test.outcome.test == "ks":
+                corrected_ks.append(test.outcome)
+
+        assert compared > 0
+        assert corrected_ks
+        # The KS materiality statistic must carry the location member too;
+        # previously only effect_size did, so pure shifts were gated on the
+        # smaller shape-only statistic.
+        assert all(out.statistic == pytest.approx(out.effect_size) for out in corrected_ks)
+
+
+class TestAlertPersistence:
+    def test_degraded_cycle_cannot_seed_a_healthy_persistence_streak(self, tmp_path: Path) -> None:
+        """Suppressed non-error candidates are not evidence for the next cycle."""
+        sim = SimConfig(
+            n_canaries=18,
+            repetitions=7,
+            post=drifted_profile(BehaviorProfile()),
+            change_cycle=3,
+            seed=73,
+        )
+        records = SimAgent(sim).run_cycles(6)
+        cycles = list(dict.fromkeys(r.cycle_id for r in records if r.cycle_id is not None))
+        by_cycle = {
+            cycle: [record for record in records if record.cycle_id == cycle] for cycle in cycles
+        }
+        by_cycle[cycles[3]] = [
+            record.model_copy(update={"errors": ["forced degraded cycle"]})
+            for record in by_cycle[cycles[3]]
+        ]
+
+        store = Store.init_project(tmp_path)
+        store.append_many([record for cycle in cycles[:3] for record in by_cycle[cycle]])
+        set_golden_baseline(store, cycles[:3])
+        cfg = ProjectConfig(alert_persistence=2, fdr_q=0.10, permutations=100)
+
+        store.append_many(by_cycle[cycles[3]])
+        degraded = run_check(store, config=cfg)
+        store.append_many(by_cycle[cycles[4]])
+        first_healthy = run_check(store, config=cfg)
+        store.append_many(by_cycle[cycles[5]])
+        second_healthy = run_check(store, config=cfg)
+
+        def raw_non_error_candidates(result: CheckResult) -> set[tuple[str, str, str]]:
+            return {
+                (test.baseline, test.family, test.signature)
+                for test in result.tests
+                if test.primary
+                and test.significant
+                and test.material
+                and test.signature != "had_error"
+            }
+
+        shared = raw_non_error_candidates(degraded) & raw_non_error_candidates(first_healthy)
+        assert degraded.degraded
+        assert shared, "fixture must expose a suppressed candidate on the degraded cycle"
+        assert (
+            not {
+                (test.baseline, test.family, test.signature)
+                for test in first_healthy.alerts()
+                if test.signature != "had_error"
+            }
+            & shared
+        )
+        healthy_shared = raw_non_error_candidates(first_healthy) & raw_non_error_candidates(
+            second_healthy
+        )
+        assert healthy_shared
+        assert {
+            (test.baseline, test.family, test.signature) for test in second_healthy.alerts()
+        } & healthy_shared
+        store.close()
+
+    def test_three_requires_three_distinct_candidate_cycles(self, tmp_path: Path) -> None:
+        """Repeated checks cannot satisfy N, and N=3 must not behave as N=2."""
+        sim = SimConfig(
+            n_canaries=18,
+            repetitions=7,
+            post=drifted_profile(BehaviorProfile()),
+            change_cycle=3,
+            seed=73,
+        )
+        records = SimAgent(sim).run_cycles(6)
+        by_cycle = {
+            cycle: [record for record in records if record.cycle_id == cycle]
+            for cycle in sorted({r.cycle_id for r in records if r.cycle_id is not None})
+        }
+        cycles = list(by_cycle)
+        store = Store.init_project(tmp_path)
+        store.append_many([record for cycle in cycles[:3] for record in by_cycle[cycle]])
+        set_golden_baseline(store, cycles[:3])
+        cfg = ProjectConfig(alert_persistence=3, fdr_q=0.10, permutations=100)
+
+        store.append_many(by_cycle[cycles[3]])
+        first = run_check(store, config=cfg)
+        repeated = run_check(store, config=cfg)
+        store.append_many(by_cycle[cycles[4]])
+        second = run_check(store, config=cfg)
+        store.append_many(by_cycle[cycles[5]])
+        third = run_check(store, config=cfg)
+
+        def candidates(result: CheckResult) -> set[tuple[str, str, str]]:
+            return {
+                (test.baseline, test.family, test.signature)
+                for test in result.tests
+                if test.primary and test.significant and test.material
+            }
+
+        common = candidates(first) & candidates(second) & candidates(third)
+        assert common, "fixture must contain a persistent candidate channel"
+        assert first.n_alerts == 0
+        assert repeated.n_alerts == 0
+        assert second.n_alerts == 0
+        assert {(test.baseline, test.family, test.signature) for test in third.alerts()} & common
         store.close()

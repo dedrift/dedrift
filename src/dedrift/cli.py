@@ -1,8 +1,4 @@
-"""dedrift command-line interface.
-
-Phases 0-1 expose ``init``, ``log``, ``sim``, ``canary run``, and
-``signatures``. Later phases add ``check`` and ``report`` (see ROADMAP.md).
-"""
+"""Command-line interface for the experimental dedrift release gate."""
 
 from __future__ import annotations
 
@@ -23,7 +19,7 @@ if TYPE_CHECKING:  # annotation only: keeps CLI start-up import-light
 
 app = typer.Typer(
     name="dedrift",
-    help="Statistically rigorous behavioral drift detection for AI agents.",
+    help="Experimental behavioral regression gates for repeatable AI-agent workflows.",
     no_args_is_help=True,
 )
 canary_app = typer.Typer(help="Canary suite operations.", no_args_is_help=True)
@@ -91,6 +87,9 @@ def embedder_show(
     from dedrift.embeddings import get_pinned_embedder
 
     store = Store(path, require_project=False)
+    if not store.exists():
+        typer.echo("No dedrift project here. Run `dedrift init` first.", err=True)
+        raise typer.Exit(code=1)
     pinned = get_pinned_embedder(store)
     typer.echo(pinned or "No embedder pinned (Tier-2 semantic signatures disabled).")
 
@@ -104,10 +103,24 @@ def init(
     """Initialize a dedrift project (.dedrift/ directory)."""
     store = Store(path, require_project=False)
     if store.exists():
-        typer.echo(f"Project already initialized at {store.project_dir}")
+        try:
+            with Store(path):
+                pass
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            typer.echo(
+                "A project-shaped directory exists but failed integrity validation: "
+                f"{exc}",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"Project already initialized and validated at {store.project_dir}")
         raise typer.Exit(code=0)
-    with Store.init_project(path):
-        pass
+    try:
+        with Store.init_project(path):
+            pass
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        typer.echo(f"Could not initialize dedrift project: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Initialized dedrift project at {store.project_dir}")
     typer.echo("Edit .dedrift/config.toml to configure thresholds and the pinned embedder.")
 
@@ -154,6 +167,9 @@ def log(
     except OSError as exc:
         typer.echo(f"Could not read {file}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if not records:
+        typer.echo("Input contains no interaction records; nothing was ingested.", err=True)
+        raise typer.Exit(code=1)
     cycle_ids = sorted(
         {
             str(record.cycle_id)
@@ -265,7 +281,20 @@ def sim(
         for cycle_id in existing_cycles
         if (match := re.fullmatch(r"cycle-(\d+)", cycle_id)) is not None
     ]
-    start_cycle = max(numeric_cycles, default=-1) + 1
+    # Choose the first unused contiguous simulator cycle. A foreign/imported
+    # ID such as ``cycle-999999999`` must not make this demo helper allocate
+    # and discard a billion simulated cycles merely to reach its suffix.
+    occupied = set(numeric_cycles)
+    start_cycle = 0
+    while any(start_cycle + offset in occupied for offset in range(cycles)):
+        start_cycle += 1
+    if start_cycle > 10_000:
+        typer.echo(
+            "Simulator history exceeds 10,000 contiguous cycles; start a fresh demo "
+            "project instead of replaying an unbounded RNG history.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     # Fast-forward the seeded simulator so repeated CLI invocations are the
     # same deterministic history as one longer invocation (RNG, timestamps,
     # record IDs, and change-cycle semantics all remain aligned).
@@ -308,10 +337,14 @@ def _load_agent_fn(spec: str) -> object:
         raise typer.Exit(code=1)
     try:
         module = importlib.import_module(module_name)
-        return getattr(module, attr)
+        loaded = getattr(module, attr)
     except (ImportError, AttributeError) as exc:
         typer.echo(f"Cannot load agent {spec!r}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    if not callable(loaded):
+        typer.echo(f"Cannot load agent {spec!r}: imported attribute is not callable.", err=True)
+        raise typer.Exit(code=1)
+    return loaded
 
 
 @canary_app.command("run")
@@ -372,10 +405,12 @@ def canary_run(
         repetitions=effective_repetitions,
         deterministic=_load_project_config(store).deterministic,
     )
+    failed_records = 0
     try:
         with store:
             for _ in range(cycles):
                 records = runner.run_cycle(store=store)
+                failed_records += sum(bool(record.errors) for record in records)
                 typer.echo(f"Cycle {records[0].cycle_id}: {len(records)} records.")
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         typer.echo(f"Could not persist canary cycle: {exc}", err=True)
@@ -384,6 +419,13 @@ def canary_run(
         f"Ran {cycles} cycle(s) of suite v{loaded_suite.version} "
         f"({len(loaded_suite.canaries)} canaries x {effective_repetitions} repetitions)."
     )
+    if failed_records:
+        typer.echo(
+            f"DEGRADED RUN: {failed_records} record(s) contain agent or adapter errors; "
+            "records were preserved for diagnosis, but this command is not successful.",
+            err=True,
+        )
+        raise typer.Exit(code=3)
 
 
 @app.command()
@@ -437,6 +479,29 @@ def signatures(
         typer.echo(table[show].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
 
+@app.command()
+def doctor(
+    path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
+) -> None:
+    """Read-only readiness and detector-health inspection."""
+    from dedrift.health import assess_health
+
+    store = Store(path, require_project=False)
+    try:
+        health = assess_health(store)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        # ``assess_health`` is intentionally total, but keep the CLI
+        # fail-closed if an unfamiliar platform/filesystem error escapes it.
+        typer.echo(f"FAIL [doctor] health inspection could not complete: {exc}", err=True)
+        typer.echo("SUMMARY FAIL — inspection aborted", err=True)
+        raise typer.Exit(code=1) from exc
+    for finding in health.findings:
+        typer.echo(f"{finding.status} [{finding.code}] {finding.message}")
+    typer.echo(health.summary())
+    if health.exit_code:
+        raise typer.Exit(code=health.exit_code)
+
+
 @baseline_app.command("set")
 def baseline_set(
     cycle_ids: Annotated[
@@ -447,11 +512,12 @@ def baseline_set(
         int | None, typer.Option(help="Freeze the last N completed cycles instead.")
     ] = None,
     first: Annotated[
-        int | None, typer.Option(help="Freeze the first N cycles (the known-good era).")
+        int | None,
+        typer.Option(help="Freeze the first N prospectively designated reference cycles."),
     ] = None,
     path: Annotated[Path, typer.Option("--project", help="Project directory.")] = Path("."),
 ) -> None:
-    """Freeze known-good cycles as the golden baseline (never auto-updated)."""
+    """Freeze designated reference cycles as the golden baseline."""
     from dedrift.check import get_golden_baseline, set_golden_baseline
     from dedrift.signatures import signatures_frame
 
@@ -485,6 +551,13 @@ def baseline_set(
             raise typer.Exit(code=1) from exc
         frozen = get_golden_baseline(store)
         typer.echo(f"Golden baseline frozen: {frozen}")
+        typer.echo(
+            "CONFIRMATORY VALIDITY: baseline selection must not depend on observed "
+            "outcomes. Post-hoc baseline selection makes both fixed-sample p-values "
+            "and anytime evidence exploratory, not confirmatory. Use a prospectively "
+            "chosen rule (for example, the first N designated reference cycles).",
+            err=True,
+        )
         # Golden cycles are excluded from the rolling reference, so freezing
         # everything starves the sudden channel. Its only symptom is a
         # persistent "NO REFERENCE", which reads like "not enough history yet"
@@ -521,7 +594,7 @@ def check(
             help=(
                 "fixed = per-check FDR (default, the reference implementation); "
                 "anytime = lifetime-oriented e-processes (rate channel only; "
-                "trajectory-wide control has a documented causal assumption)."
+                "conservative Ville-Bonferroni control)."
             ),
         ),
     ] = "",
@@ -598,8 +671,16 @@ def _check_anytime(store: Store, cfg: ProjectConfig) -> None:
     for notice in res.resets:
         typer.echo(f"  RESET {notice}")
     if res.degraded:
-        typer.echo("DEGRADED DATA: current cycle error rate too high for drift analysis.")
-    typer.echo(f"Alerts: {res.n_alerts} (e-BH at q={res.alpha_prime})")
+        affected = ", ".join(res.degraded_cycles) or "unknown monitored cycle"
+        typer.echo(
+            f"DEGRADED DATA: epoch evidence includes high-error cycle(s): {affected}; "
+            "rate evidence was still folded because outcome-dependent skipping is invalid."
+        )
+    per_process = res.alpha_prime / max(res.n_processes, 1)
+    typer.echo(
+        f"Alerts: {res.n_alerts} (persistent Ville-Bonferroni crossings; "
+        f"alpha per process={per_process:.2e})"
+    )
     for p in res.alerts()[:10]:
         typer.echo(f"  {p.label}: log-wealth={p.log_wealth:.2f}, onset~cycle {p.rise_cycle}")
     top = sorted(res.processes, key=lambda x: -x.log_wealth)[:3]
@@ -610,8 +691,8 @@ def _check_anytime(store: Store, cfg: ProjectConfig) -> None:
     if res.n_processes:
         typer.echo(
             "Target: P(ever alerting on a stable agent) <= alpha, PER EPOCH. "
-            "Per-process control is proven; repeated battery-wide e-BH relies "
-            "on the documented causal assumption."
+            "Ville plus a union bound covers the frozen process pool under "
+            "the documented fixed-rate model."
         )
     else:
         typer.echo("Anytime error-control target not active: no valid processes.")
@@ -672,7 +753,11 @@ def report(
     if output is None:
         typer.echo(markdown)
     else:
-        output.write_text(markdown, encoding="utf-8")
+        try:
+            output.write_text(markdown, encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"Could not write report to {output}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
         typer.echo(f"Report written to {output}")
     if exit_code:
         raise typer.Exit(code=exit_code)

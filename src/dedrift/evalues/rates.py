@@ -21,23 +21,19 @@ construction; everything below is about not knowing ``p``.
 Handling the unknown p: worst case over an interval we pay for
 -------------------------------------------------------------
 Take a ``(1 - gamma)`` interval for ``p`` computed from data available
-before the cycle, and bet on its *worst* member:
+before the cycle and use a certified lower bound on the worst member of the
+predeclared tilt mixture:
 
-    E_t = inf_{p in I} E(S_t; n, p, psi-mixture)
+    E_t <= inf_{p in I} mean_psi E(S_t; n, p, psi)
 
-On the coverage event ``{p_true in I}`` we have ``E_t <= E(S_t; n, p_true,
-...)``, whose conditional expectation is 1, so the product is a
-supermartingale *there*; Ville bounds the trajectory at ``alpha'`` and a
-union bound pays ``gamma`` for coverage. Total budget
+On the coverage event ``{p_true in I}``, this is no larger than the
+known-``p_true`` mixture, whose conditional expectation is 1. The product is
+therefore a supermartingale *there*; Ville bounds the trajectory at
+``alpha'`` and a union bound pays ``gamma`` for coverage. Total budget
 ``alpha = alpha' + gamma``.
 
-``gamma`` is load-bearing, not a formality. Measured at the SHIPPED
-per-process budget (``gamma_i = gamma_total / K = 0.02/24 = 8.3e-4``) over
-the shipped three-tilt grid, by exact binomial enumeration: ``E_p[E_t]``
-for ``p`` *inside* the interval lies in 0.46-0.94 across representative
-streams (valid, and the shortfall from 1 is the price of worst-casing),
-while over *all* ``p`` it reaches 5.4e6 as p -> 1. The guarantee holds on
-the coverage event and nowhere else, which is why the interval is reported
+``gamma`` is load-bearing, not a formality. The guarantee holds on the
+coverage event and nowhere else, which is why the interval is reported
 alongside the wealth.
 
 Two regimes, deliberately different
@@ -68,7 +64,7 @@ import numpy as np
 from scipy.special import logsumexp
 from scipy.stats import beta, hypergeom
 
-from dedrift.evalues.base import LOG_FLOOR, EValueOutcome, PriorState
+from dedrift.evalues.base import EValueOutcome, PriorState
 
 #: Default symmetric tilt grid, spanning "materiality-sized" to "large".
 #: Symmetric by construction: rates drift in both directions, and a
@@ -135,9 +131,9 @@ def per_process_gamma(gamma_total: float, n_processes: int) -> float:
     """Split the coverage budget across processes — do not skip this.
 
     The temptation is to read ``alpha = alpha' + gamma`` as the whole story.
-    It is the *per-process* story. e-BH's FDR guarantee requires every input
-    to be a valid e-value, and a process whose nuisance interval misses the
-    truth is not one, so coverage failures union-bound across the battery:
+    It is the *per-process* story. A process whose nuisance interval misses
+    the truth is not valid, so coverage failures union-bound across the
+    battery:
 
         P(ever a false alert) <= alpha' + sum_i gamma_i
 
@@ -153,7 +149,7 @@ def per_process_gamma(gamma_total: float, n_processes: int) -> float:
 
     Args:
         gamma_total: Total coverage budget (``alpha - alpha'``).
-        n_processes: Number of e-processes entering the e-BH pool.
+        n_processes: Number of e-processes in the frozen pool.
 
     Returns:
         Per-process coverage level.
@@ -188,18 +184,23 @@ def worst_case_log_evalue(
     grid: tuple[float, ...],
     n_grid: int = 129,
 ) -> float:
-    """``inf`` over ``p`` in ``interval`` of the mixture's ``log E``.
+    """Certified lower bound on the mixture infimum over ``interval``.
 
-    The infimum is taken of the *mixture* rather than mixing the
-    per-tilt infima: both are valid, but the former is less conservative.
+    The positive mixture is convex in ``p``. Endpoint derivatives either
+    identify an endpoint minimum, or bracket the unique interior minimum.
+    In the latter case, the intersection of tangents at the bracket endpoints
+    is a global lower bound on the convex function. This retains the power of
+    minimizing the mixture without treating a sampled-grid minimum as exact.
+
+    ``n_grid`` is retained for source compatibility with pre-0.5.1 callers;
+    no numerical grid is used. The old grid minimum was an approximation
+    from above and could violate e-validity between grid points.
     """
-    lo, hi = interval
-    lo = float(np.clip(lo, 1e-9, 1 - 1e-9))
-    hi = float(np.clip(hi, 1e-9, 1 - 1e-9))
-    if hi < lo:
-        lo, hi = hi, lo
-    ps = np.linspace(lo, hi, n_grid)
-    return float(min(_log_mixture_evalue(successes, trials, float(p), grid) for p in ps))
+    del n_grid
+    values = _certified_worst_case_logs(
+        np.asarray([successes], dtype=float), trials, interval, grid
+    )
+    return float(values[0])
 
 
 def worst_case_log_evalue_table(
@@ -208,40 +209,131 @@ def worst_case_log_evalue_table(
     grid: tuple[float, ...],
     n_grid: int = 129,
 ) -> np.ndarray:
-    """``log E`` for every possible success count, computed at once.
+    """Certified ``log E`` for every possible success count at once.
 
     Predictability has a useful computational consequence: the nuisance
     interval and the tilt grid are fixed before the cycle is observed, so
     the e-value is a *function of the success count alone*. Tabulating it
-    over ``0..trials`` is therefore exact — not an approximation — and it
-    turns long-horizon simulation studies from intractable into instant,
-    which is what makes the anytime-valid null rate measurable at honest
-    scale. Also the natural form for the pipeline: one table per
-    (process, epoch) instead of a minimisation per cycle.
+    over ``0..trials`` is therefore exact and turns long-horizon simulation
+    studies from intractable into instant. It is also the natural form for
+    the pipeline: one table per ``(process, epoch)``.
 
     Args:
         trials: Current-cycle trials ``n``.
         interval: Nuisance interval for ``p``.
         grid: Symmetric tilt grid.
-        n_grid: Points in the ``p`` minimisation.
+        n_grid: Retained for source compatibility; ignored.
 
     Returns:
         Array of shape ``(trials + 1,)`` with ``log E`` per success count.
     """
-    lo, hi = interval
-    lo = float(np.clip(lo, 1e-9, 1 - 1e-9))
-    hi = float(np.clip(hi, 1e-9, 1 - 1e-9))
+    del n_grid
+    return _certified_worst_case_logs(np.arange(trials + 1, dtype=float), trials, interval, grid)
+
+
+def _mixture_logs_and_slopes(
+    successes: np.ndarray,
+    trials: int,
+    p: np.ndarray,
+    psis: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return log-mixture and ``d/dp log(mixture)`` row-wise."""
+    denominators = 1.0 + p[:, None] * (psis[None, :] - 1.0)
+    component_logs = successes[:, None] * np.log(psis)[None, :] - trials * np.log(denominators)
+    log_sums = logsumexp(component_logs, axis=1)
+    weights = np.exp(component_logs - log_sums[:, None])
+    component_slopes = -trials * (psis[None, :] - 1.0) / denominators
+    slopes = np.sum(weights * component_slopes, axis=1)
+    return np.asarray(log_sums - np.log(psis.size)), np.asarray(slopes)
+
+
+def _componentwise_fallback_logs(
+    successes: np.ndarray,
+    trials: int,
+    lo: float,
+    hi: float,
+    psis: np.ndarray,
+) -> np.ndarray:
+    """Simple certified fallback: mix each tilt's analytic infimum."""
+    worst_p = np.where(psis > 1.0, hi, lo)
+    normaliser = trials * np.log1p(worst_p * (psis - 1.0))
+    logs = successes[:, None] * np.log(psis)[None, :] - normaliser[None, :]
+    return np.asarray(logsumexp(logs, axis=1) - np.log(psis.size))
+
+
+def _certified_worst_case_logs(
+    successes: np.ndarray,
+    trials: int,
+    interval: tuple[float, float],
+    grid: tuple[float, ...],
+) -> np.ndarray:
+    """Lower-bound the convex mixture minimum, with conservative rounding."""
+    if trials < 0:
+        raise ValueError("trials must be non-negative")
+    if np.any(successes < 0) or np.any(successes > trials):
+        raise ValueError("successes must lie between zero and trials")
+    psis = np.asarray(grid, dtype=float)
+    if psis.size == 0 or not np.isfinite(psis).all() or np.any(psis <= 0):
+        raise ValueError("grid must contain at least one finite positive tilt")
+    lo, hi = (float(np.clip(value, 0.0, 1.0)) for value in interval)
     if hi < lo:
         lo, hi = hi, lo
-    ps = np.linspace(lo, hi, n_grid)[:, None]  # (P, 1)
-    psis = np.asarray(grid, dtype=float)[None, :]  # (1, T)
-    s = np.arange(trials + 1)[:, None, None]  # (S, 1, 1)
+    n_rows = successes.size
+    lower_p = np.full(n_rows, lo)
+    upper_p = np.full(n_rows, hi)
+    log_lo, slope_lo = _mixture_logs_and_slopes(successes, trials, lower_p, psis)
+    log_hi, slope_hi = _mixture_logs_and_slopes(successes, trials, upper_p, psis)
+    result = np.empty(n_rows, dtype=float)
 
-    # log E(s, p, psi) = s*log(psi) - n*log(1 - p + psi*p)
-    normaliser = trials * np.log1p(-ps + psis * ps)  # (P, T)
-    logs = s * np.log(psis)[None, :, :] - normaliser[None, :, :]  # (S, P, T)
-    mixture = logsumexp(logs, axis=2) - np.log(psis.size)  # (S, P)
-    return np.asarray(np.min(mixture, axis=1))
+    at_lo = slope_lo >= 0.0
+    at_hi = ~at_lo & (slope_hi <= 0.0)
+    interior = ~(at_lo | at_hi)
+    result[at_lo] = log_lo[at_lo]
+    result[at_hi] = log_hi[at_hi]
+
+    if np.any(interior):
+        interior_successes = successes[interior]
+        a = lower_p[interior]
+        b = upper_p[interior]
+        # Convexity makes the derivative monotone, so bisection preserves a
+        # bracket around the mixture minimum. Eighty steps reach float64's
+        # resolution even for the full [0, 1] interval.
+        for _ in range(80):
+            mid = a + (b - a) / 2.0
+            _log_mid, slope_mid = _mixture_logs_and_slopes(interior_successes, trials, mid, psis)
+            left = slope_mid <= 0.0
+            a = np.where(left, mid, a)
+            b = np.where(left, b, mid)
+
+        log_a, slope_a = _mixture_logs_and_slopes(interior_successes, trials, a, psis)
+        log_b, slope_b = _mixture_logs_and_slopes(interior_successes, trials, b, psis)
+        scale = np.maximum(log_a, log_b)
+        f_a = np.exp(log_a - scale)
+        f_b = np.exp(log_b - scale)
+        d_a = f_a * slope_a
+        d_b = f_b * slope_b
+        denominator = d_a - d_b
+        with np.errstate(divide="ignore", invalid="ignore"):
+            crossing = (f_b - f_a + d_a * a - d_b * b) / denominator
+        crossing = np.clip(np.where(np.isfinite(crossing), crossing, (a + b) / 2.0), a, b)
+        tangent_a = f_a + d_a * (crossing - a)
+        tangent_b = f_b + d_b * (crossing - b)
+        lower_scaled = np.maximum(tangent_a, tangent_b)
+        certified = scale + np.log(lower_scaled)
+
+        # This branch should be unreachable for finite positive mixtures, but
+        # the component-wise infimum is a simpler certified fallback if
+        # floating arithmetic ever loses the positive tangent intersection.
+        fallback = _componentwise_fallback_logs(interior_successes, trials, lo, hi, psis)
+        result[interior] = np.where(
+            np.isfinite(certified) & (lower_scaled > 0.0), certified, fallback
+        )
+
+    # Every operation is in log space, so no upward floor is needed. The
+    # tangent construction is a real-arithmetic lower bound; this guard also
+    # keeps accumulated float64 roundoff on the conservative side.
+    safety = 4096.0 * np.finfo(np.float64).eps * (trials + 1) * (psis.size + 1)
+    return np.nextafter(result - safety, -np.inf)
 
 
 def rate_evalue(
@@ -257,9 +349,9 @@ def rate_evalue(
 
     Args:
         successes: Current-cycle successes.
-        trials: Current-cycle trials. Zero means the family was suppressed
-            or empty, which yields ``E_t = 1`` (no bet) — the correct
-            contribution, preserving the supermartingale exactly.
+        trials: Current-cycle trials. Zero means no rate observation was
+            available and yields ``E_t = 1`` (no bet). Validity requires
+            availability to be determined independently of its value.
         prior: Completed-cycle summaries. The *only* input to the bet.
         gamma: Coverage budget for the nuisance interval, paid once for the
             frozen reference.
@@ -298,12 +390,11 @@ def rate_evalue(
 
     interval = clopper_pearson(prior.reference_successes, prior.reference_trials, gamma)
     log_e = worst_case_log_evalue(successes, trials, interval, tilts)
-    log_e = max(log_e, LOG_FLOOR)
     return EValueOutcome(
         log_e=log_e,
         placed=True,
         detail=(
-            f"worst case over p in [{interval[0]:.4f}, {interval[1]:.4f}] "
+            f"certified mixture worst case over p in [{interval[0]:.4f}, {interval[1]:.4f}] "
             f"(frozen reference, fixed CI, gamma={gamma})"
         ),
         bet=tilts,

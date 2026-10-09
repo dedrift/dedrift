@@ -47,9 +47,6 @@ from typing import Protocol
 
 import numpy as np
 
-#: Smallest log-wealth increment we bother recording; guards log(0).
-LOG_FLOOR = -50.0
-
 
 @dataclass(frozen=True)
 class PriorState:
@@ -90,8 +87,8 @@ class EValueOutcome:
 
     Attributes:
         log_e: ``log E_t``. Zero means "no bet placed" (``E_t = 1``), which
-            is the correct contribution for a suppressed or degenerate
-            cycle: it preserves the supermartingale exactly.
+            preserves the supermartingale only when the decision not to bet
+            is predictable rather than selected from the current outcome.
         placed: False when no bet was possible (insufficient data,
             degenerate margin, suppressed family).
         detail: Human-readable note for the report.

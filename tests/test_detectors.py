@@ -128,6 +128,15 @@ class TestBH:
         # m=3: the unavailable declared hypothesis is conservatively p=1.
         assert adjusted[0] == pytest.approx(0.03)
 
+    def test_declared_family_size_counts_suppressed_hypotheses(self) -> None:
+        rejected, adjusted = benjamini_hochberg([0.03], q=0.05, m_total=2)
+        assert rejected == [False]
+        assert adjusted == pytest.approx([0.06])
+
+    def test_declared_family_size_cannot_be_smaller_than_observed(self) -> None:
+        with pytest.raises(ValueError, match="at least"):
+            benjamini_hochberg([0.01, 0.02], m_total=1)
+
     def test_empty(self) -> None:
         assert benjamini_hochberg([], q=0.05) == ([], [])
 
